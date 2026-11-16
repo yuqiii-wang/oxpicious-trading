@@ -52,8 +52,8 @@ SSE-specific gaps vs the SZSE source (by design, documented):
     netted, so the series only grows while a contract trades and freezes
     after expiry. Listing-only dates (volume 0) carry the level forward.
   * Greeks — loaded directly from the exchange risk table
-    (temps/sse_options_risk/, scheduled in downloads_daily.sh); the BS
-    pipeline is the fallback only.
+    (temps/sse_options_risk/, scheduled in the downloads_daily tier);
+    the BS pipeline is the fallback only.
 
 Missing-data detection: dates available = contract-listing dates (a final
 quotes file upgrades the date to the full-EOD path); missing = those not in

@@ -368,6 +368,105 @@ MACD_SIGMA_WINDOW = 2520
 MACD_SIGMA_MIN_PERIODS = 252
 
 # ---------------------------------------------------------------------------
+# crowdedness — the pool-level crowding tail family (2026-11-16)
+# ---------------------------------------------------------------------------
+# The market crowdedness composite as rule cells ON THE INDEX ITSELF
+# (user-directed: "the buy/sell decisions are on the index/industry,
+# not on individual stocks, and the crowdedness stats are for
+# assistant info, so that buy low sell high on index"). TWO HOT-SET
+# BASES x two score axes x two RECENT-EXTREME states (the v3
+# action-logic refactor, 2026-11-16, user-directed "no long period
+# percentiles, but should consider recent crowdedness and underlying
+# curve ups and downs" — the v2 trailing-10y quantile-tail triggers
+# measured out; studies temp_scripts/crowd_action_study{,2,3}.py):
+#   drain  BUY   the crowd at its trailing-window LOW while the index
+#               ROSE over its own trailing window — the crowd drained
+#               while price rose: the move is not overcrowded
+#               (+0.39/+0.52/+0.62/+0.63% forward blend on the four
+#               bases at the 60/10 windows, all clearing the 0.25%
+#               buy bar);
+#   pilein SELL  the crowd at its trailing-window HIGH while the
+#               index FELL — distribution churn in a decline, exit
+#               timing (-0.60% raw on the raw score base; the ma5
+#               bases' ungated sells sit at ~0 and their cells are
+#               expected to measure out on evidence). The hot-tech
+#               confirmation gate measured formulation-dependent (it
+#               helped the 20-row pile-in but flipped the 60-row one)
+#               — the honest negative stands, not shipped.
+# roll_* reads the DAILY-ROLLING hot set (analysis.market_crowdedness
+# — re-ranked every date), year_* the THIS-YEAR pinned hot set
+# (analysis.market_crowdedness_year joined on hot_year = the date's
+# own calendar year — each year's frozen roster chained across
+# years). Within each base: _score_* the RAW composite (the
+# 0.30/0.30/0.25/0.15 blend of the four pillar percentiles), _ma5_*
+# its 5-pool-date moving average (the pipeline's ONLINE read). The
+# confidence depth is the breach of the PRIOR window extreme in the
+# axis's OWN trailing-window sigma. Data-driven universe: the codes
+# with crowdedness rows at the sec_type (index only — etf/stock
+# skip).
+CROWD_AXES = (
+    # (axis id, frame column, sub-type prefix)
+    ("roll_score", "crowdedness_score", "crowd_roll_score"),
+    ("roll_ma5", "crowdedness_score_ma5", "crowd_roll_ma5"),
+    ("year_score", "crowdedness_score_year", "crowd_year_score"),
+    ("year_ma5", "crowdedness_score_ma5_year", "crowd_year_ma5"),
+)
+# the recent-extreme state window: the crowd at its trailing 60-row
+# low/high (the separating window in study 2 — the 20-row pile-in is
+# unfavorable while the 60-row one carries the sell edge; the drain
+# is positive at both, the 60d uniformly stronger per event)
+CROWD_STATE_WINDOW = 60
+# the state windows' min_periods: SPARSE-CROWD TOLERANCE (the v4 fix,
+# 2026-11-16 — the crowdedness build leaves gap days, and a full-60
+# requirement blacked out whole stretches, e.g. 2026-10); 20 non-null
+# readings in the window suffice
+CROWD_STATE_MIN_PERIODS = 20
+# the underlying direction window: the index's own trailing 10-row
+# return gates the side (drain needs it UP, pilein DOWN — ret10
+# separated cleanly where ret5 did not)
+CROWD_TREND_WINDOW = 10
+
+# ---------------------------------------------------------------------------
+# crowdedness v4 additions — the turning-date catch (2026-11-16,
+# user-directed: 2020-05-29 / 2022-10-26 / 2025-06-03 / 2026-10-30 must
+# fire BUYs and 2024-11-11 / 2026-06-24 SELLS; studies
+# temp_scripts/crowd_action_study4..7 + crowd_date_diagnosis)
+# ---------------------------------------------------------------------------
+# drain_floor BUY (crowd_roll/year_score_drain_floor): the crowd
+# composite at its trailing-250-row BOTTOM (pos <= 0.10) while the
+# index ticks up over 5 rows — the year-scale crowd floor with the
+# first up-tick (the 2020-05-29 / 2025-06-03 signature; 000001's own
+# episodes +0.50% / the year axis +0.19%). The family-scoped LOOSE
+# gate (only a negative measured mean rejected — the hedge_pairs
+# precedent, run_cells gate_min/pooled_dir_ave_min overrides): the
+# pooled means sit below the global 0.25% buy bar.
+CROWD_FLOOR_WINDOW = 250
+CROWD_FLOOR_MIN_PERIODS = 20
+CROWD_FLOOR_POS_CUT = 0.10
+CROWD_FLOOR_TREND_WINDOW = 5
+# tech_washout BUY (crowd_tech_washout): the hot set's median
+# px-vs-MA60 percentile UNDER WATER — the falling-knife capitulation
+# catch, any direction (+0.92% forward blend pooled, hit 61%). Two
+# arms OR'd: the fresh-depth-extreme arm (<= 0.10 at a fresh 20-row
+# low of the percentile with volume picking up — the 2026-10-30
+# signature) and the amount-climax arm (<= 0.20 at amt >= 0.80 — the
+# 2022-10-26 signature: crowd under water + 放量 climax).
+CROWD_HOT_PX60_DEEP = 0.10
+CROWD_HOT_PX60_WIDE = 0.20
+CROWD_HOT_AMT_MIN = 0.60
+CROWD_HOT_AMT_CLIMAX = 0.80
+CROWD_HOT_FRESH_WINDOW = 20
+# tech_euphoria / tech_euphoria_div SELL: the crowd ma5 at its 60-row
+# high or within 10% of its trailing-year high while the hot set's
+# px-vs-MA20 percentile >= 0.85 — the blow-off stretch (2026-06-24);
+# the _div arm adds the crowd composite ALREADY turning down
+# (score_chg5 < 0 — the price/crowd divergence, the 2024-11-11
+# signature; 000001's own episodes -0.70% raw = favorable exit
+# timing). Sells are not pooled-gated — the per-cell gate judges.
+CROWD_HOT_PX20_STRETCH = 0.85
+CROWD_EUPHORIA_YEAR_TOP = 0.90
+
+# ---------------------------------------------------------------------------
 # ohlcv boost — the turnover-climax axis (2026-10-16)
 # ---------------------------------------------------------------------------
 # The day-0 amount axis: trading_amount / its own trading_amt_ma252,

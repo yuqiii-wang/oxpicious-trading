@@ -115,6 +115,15 @@ import type { ThreadGraphModel } from "./graphModel";
 import type { AgentLlmUsage } from "@/lib/api-client/aiThreads";
 import StatusChip from "./StatusChip";
 import RunHeartbeat from "./RunHeartbeat";
+
+// THE AUTO-EXPAND budget (2026-11-14): a never-touched thread's spawn
+// subtrees expand by default while the run has at most this many
+// rendered child rows (kind-2 stubs excluded) — the forked/spawned
+// nodes show without hunting for the ▸N cue; bigger runs keep the
+// all-folded canvas so the graph fits the window (the fold's reason).
+const AUTO_EXPAND_MAX_CHILDREN = 8;
+// The shared empty registry (AUTO mode's folded face for big runs).
+const NO_EXPANDED: ReadonlySet<string> = new Set<string>();
 import {
   loadExpandedNodes,
   saveExpandedNodes,
@@ -153,6 +162,12 @@ interface ThreadGraphViewProps {
    *  the button's busy state + the post-stop refresh pulses; the parent
    *  owns the API call and its error/notice surface (never rethrows). */
   onStop?: (superThreadId: string) => Promise<void>;
+  /** The parent is still resolving WHICH run to show (the Summary
+   *  History's dates / picked-day rows fetch in flight) — while nothing
+   *  is picked yet, the placeholder spins instead of telling the user
+   *  to click a dot they already clicked. A genuine empty (nothing
+   *  loading, no run picked) keeps the instructive text. */
+  resolvingPick?: boolean;
 }
 
 export default function ThreadGraphView({
@@ -162,6 +177,7 @@ export default function ThreadGraphView({
   refreshSignal = 0,
   onPlanTemplateSaved,
   onStop,
+  resolvingPick = false,
 }: ThreadGraphViewProps) {
   const themeMode = useChartThemeMode();
 
@@ -183,21 +199,52 @@ export default function ThreadGraphView({
     [expectLive, detail, threadId],
   );
   // THE FOLD REGISTRY — the canvas node ids ("step-<id>" / "spawn-<id>")
-  // whose spawn spurs render. Default EMPTY: the smallest level (the
-  // spawn subtrees) is folded, the layout reserves no room for a folded
-  // parent's column, and the main path stays properly spaced. A parent
-  // click toggles its subtree one level; a thread switch restores the
-  // thread's PERSISTED registry (expandedNodesStore — 2026-11-11, so a
-  // page refresh freezes the canvas: expanded/folded nodes sit exactly
-  // as before the reload), a never-seen thread starts folded.
+  // whose spawn spurs render. 2026-11-14 the DEFAULT-EXPAND default: a
+  // thread the user never touched (no persisted entry) AUTO-EXPANDS its
+  // small spawn subtrees (AUTO_EXPAND_MAX_CHILDREN child rows) so the
+  // forked/spawned nodes SHOW — the old all-folded default hid every
+  // spawned node behind a faint ▸N cue and read as "no forked/spawned
+  // nodes" (the user's 2026-11-14 report). Big subtrees stay folded (the
+  // layout-fit reason the fold exists). The FIRST parent click flips the
+  // thread to its EXPLICIT registry (`expandedNodes`, persisted verbatim
+  // — an empty set = the user's all-folded), which the reload restores.
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
-  const model = useMemo(
-    () =>
-      detail !== null
-        ? buildThreadGraphModel(detail, expandedNodes)
-        : pendingModel,
-    [detail, pendingModel, expandedNodes],
-  );
+  const [autoExpand, setAutoExpand] = useState(false);
+  // The AUTO mode's synchronous mirror — the persist effect reads the
+  // ref (the state closure lags one commit; that lag wrote an empty
+  // registry over the armed auto default under StrictMode's
+  // double-invoke).
+  const autoExpandRef = useRef(false);
+  const { effectiveExpanded, model } = useMemo(() => {
+    if (detail === null) {
+      return { effectiveExpanded: expandedNodes, model: pendingModel };
+    }
+    if (!autoExpand) {
+      return {
+        effectiveExpanded: expandedNodes,
+        model: buildThreadGraphModel(detail, expandedNodes),
+      };
+    }
+    // AUTO mode: the expandable parents are exactly the model's
+    // childCount keys with a positive count; small subtrees (by the
+    // rendered child-row total, kind-2 stubs excluded) expand all.
+    const base = buildThreadGraphModel(detail, NO_EXPANDED);
+    const kids = detail.states.filter(
+      (s) => s.parent_state_id !== null && s.child_kind !== 2,
+    );
+    const expanded =
+      kids.length === 0 || kids.length > AUTO_EXPAND_MAX_CHILDREN
+        ? NO_EXPANDED
+        : new Set(
+            [...base.childCountByNodeId.entries()]
+              .filter(([, n]) => n > 0)
+              .map(([id]) => id),
+          );
+    return {
+      effectiveExpanded: expanded,
+      model: buildThreadGraphModel(detail, expanded),
+    };
+  }, [detail, pendingModel, autoExpand, expandedNodes]);
   // The clicked graph circle (drives the beneath-the-graph items list).
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   // Step rows whose subagent sub-list is expanded (per state_id).
@@ -224,9 +271,24 @@ export default function ThreadGraphView({
     setExpandedRows(new Set());
     setCtxOpenRows(new Set());
     // The fold registry RESTORES (not resets — see expandedNodesStore):
-    // the thread's persisted expansion survives the page refresh, and
-    // the graph reflows to exactly the shape the user left it in.
-    setExpandedNodes(loadExpandedNodes(threadId));
+    // a non-empty stored entry restores verbatim; null (never touched
+    // — or an empty entry, which reads the same since 2026-11-15)
+    // flips the AUTO default on — small spawn subtrees expand, and the
+    // graph reflows to exactly the shape the user left it in once they
+    // click. The mode lands in the REF synchronously (the persist
+    // effect below reads the ref, never the stale state closure — the
+    // closure pass under StrictMode's double-invoke wrote an empty
+    // registry over the armed auto default, blocking it forever).
+    const stored = loadExpandedNodes(threadId);
+    if (stored === null) {
+      autoExpandRef.current = true;
+      setAutoExpand(true);
+      setExpandedNodes(new Set());
+    } else {
+      autoExpandRef.current = false;
+      setAutoExpand(false);
+      setExpandedNodes(stored);
+    }
     roamRef.current = null;
   }, [threadId]);
   // Persist every expansion/fold click under the thread id. Declared
@@ -239,14 +301,21 @@ export default function ThreadGraphView({
   // it — under StrictMode's double effect pass the second restore would
   // then read the clobbered store and the fold state would never
   // survive (observed live 2026-11-11: the seeded entry wiped to {}).
+  // AUTO mode never persists: the thread stays never-touched until the
+  // user's first click flips it to the explicit registry (the store's
+  // null entry is what re-arms the auto default on the next visit).
   const persistedThreadRef = useRef<string | null>(null);
   useEffect(() => {
     if (persistedThreadRef.current !== threadId) {
       persistedThreadRef.current = threadId;
       return;
     }
+    // The REF, not the state closure: the restore's setState lands a
+    // commit later, and the stale-closure pass is what wrote the
+    // blocking empty entries (see the store's header).
+    if (autoExpandRef.current) return;
     saveExpandedNodes(threadId, expandedNodes);
-  }, [threadId, expandedNodes]);
+  }, [threadId, expandedNodes, autoExpand]);
   // The chart box — the anchor the canvas width measurement reads (the
   // model is viewport-agnostic on purpose).
   const chartBoxRef = useRef<HTMLDivElement | null>(null);
@@ -388,9 +457,9 @@ export default function ThreadGraphView({
       themeMode,
       selectedNodeId,
       center !== undefined ? { roam: { zoom, center } } : { roam: null },
-      expandedNodes,
+      effectiveExpanded,
     );
-  }, [model, themeMode, selectedNodeId, chartWidth, graphHeight, viewLock, expandedNodes]);
+  }, [model, themeMode, selectedNodeId, chartWidth, graphHeight, viewLock, effectiveExpanded]);
 
   const items = useMemo(
     () => (model !== null && selectedNodeId !== null ? itemsUnderNodeId(model, selectedNodeId) : []),
@@ -494,7 +563,7 @@ export default function ThreadGraphView({
       return [] as SpawnReview[];
     }
     const stateId = Number(effectiveNodeId.replace(
-      /^(step|spawn|fork|old)-/,
+      /^(step|spawn|fork|old|resume)-/,
       "",
     ));
     const children = model?.childrenByParent.get(stateId) ?? [];
@@ -524,12 +593,14 @@ export default function ThreadGraphView({
       effectiveNodeId === null ||
       (!effectiveNodeId.startsWith("spawn-") &&
         !effectiveNodeId.startsWith("fork-") &&
-        !effectiveNodeId.startsWith("old-"))
+        !effectiveNodeId.startsWith("old-") &&
+        !effectiveNodeId.startsWith("resume-"))
     ) {
       return null;
     }
     const sliceLen = effectiveNodeId.startsWith("old-") ? 4
-      : effectiveNodeId.startsWith("fork-") ? 5 : 6;
+      : effectiveNodeId.startsWith("fork-") ? 5
+      : effectiveNodeId.startsWith("resume-") ? 7 : 6;
     return model?.statesById.get(Number(effectiveNodeId.slice(sliceLen)))
       ?? null;
   }, [effectiveNodeId, model]);
@@ -539,24 +610,6 @@ export default function ThreadGraphView({
         ? detail?.llm_contexts.find(
             (c) => c.state_id === spawnState.state_id,
           ) ?? null
-        : null,
-    [spawnState, detail],
-  );
-  const spawnInputPayload = useMemo(
-    () =>
-      spawnState?.input_context_id != null
-        ? detail?.contexts.find(
-            (c) => c.context_id === spawnState.input_context_id,
-          )?.payload ?? null
-        : null,
-    [spawnState, detail],
-  );
-  const spawnAnswerPayload = useMemo(
-    () =>
-      spawnState?.result_context_id != null
-        ? detail?.contexts.find(
-            (c) => c.context_id === spawnState.result_context_id,
-          )?.payload ?? null
         : null,
     [spawnState, detail],
   );
@@ -690,6 +743,7 @@ export default function ThreadGraphView({
                 threadId={threadId}
                 stateId={state.state_id}
                 hasContext={state.llm_context_id !== null}
+                onActionDone={refresh}
               />
             )}
           </Box>
@@ -882,7 +936,17 @@ export default function ThreadGraphView({
       <Box ref={chartBoxRef}>
         <BaseChart
           variant="bare"
-          loading={loading && detail === null}
+          loading={
+            (loading && detail === null) ||
+            // The pick-resolve windows (page mount's dates fetch, a dot
+            // click's day-rows fetch): nothing is picked yet, so spin in
+            // place of the "No run picked" caption. Scoped to the
+            // no-run placeholder — a mounted graph's background
+            // history refresh must not flash the spinner; the live
+            // window keeps its own "Starting the run…" text (no fetch
+            // is in flight there — the daemon just hasn't registered).
+            (threadId === null && !expectLive && resolvingPick)
+          }
           error={error}
           option={option}
           emptyText={
@@ -927,10 +991,14 @@ export default function ThreadGraphView({
               // A PARENT node toggles its spawn subtree (the ▸N/▾N cue's
               // contract — the ONLY expand/fold control) while the
               // click also selects the node as before; childless nodes
-              // just select.
+              // just select. In AUTO mode the first toggle seeds the
+              // EXPLICIT registry from the auto-expanded set (the
+              // thread stops being never-touched), so the user's fold
+              // survives the reload (the store's contract).
               if (model?.childCountByNodeId.has(id) === true) {
-                setExpandedNodes((prev) => {
-                  const next = new Set(prev);
+                setAutoExpand(false);
+                setExpandedNodes(() => {
+                  const next = new Set(effectiveExpanded);
                   if (next.has(id)) next.delete(id);
                   else next.add(id);
                   return next;
@@ -959,6 +1027,7 @@ export default function ThreadGraphView({
            path's checker: its runner-lane state, its ONE context and
            the kind supervisor-review document) ---- */}
       <ContextsPanel
+        threadId={threadId}
         effectiveNodeId={effectiveNodeId}
         defaultSelection={selectedNodeId === null}
         nodeLane={nodeLane}
@@ -971,8 +1040,7 @@ export default function ThreadGraphView({
         spawnReviews={spawnReviews}
         spawnState={spawnState}
         spawnCtx={spawnCtx}
-        spawnInputPayload={spawnInputPayload}
-        spawnAnswerPayload={spawnAnswerPayload}
+        onRefresh={refresh}
       />
       {/* ---- the clicked node's tasks — the plan node's planning task
            (the running planning node every run begins with), the plan

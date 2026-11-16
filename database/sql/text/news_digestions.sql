@@ -1,7 +1,8 @@
 -- ============================================================================
 --  LLM news digestions
 --  Table: text.news_digestions — one LLM digestion per article: a summary,
---  a sentiment_level score in [-5, 5], and the model that produced it.
+--  a sentiment_level score in [-5, 5], a fake-news verdict, and the model
+--  that produced it.
 --
 --  One row per news_id (PK = news_id): a re-digestion with a newer model
 --  UPSERTs over the old row rather than keeping history. industry_id and
@@ -9,8 +10,8 @@
 --  so industry/day-level sentiment queries don't need the news join.
 -- ============================================================================
 -- kg entity (ns0 db_semantics_tables reads the payload below):
--- description: Per-article LLM digestion — a summary and a sentiment score for each piece.
--- tags: digestion, 摘要, llm, sentiment, 情绪, news, 新闻
+-- description: Per-article LLM digestion — a summary, a sentiment score, and a fake-news verdict for each piece.
+-- tags: digestion, 摘要, llm, sentiment, 情绪, fake news, 假新闻, news, 新闻
 
 
 CREATE TABLE IF NOT EXISTS text.news_digestions (
@@ -19,6 +20,7 @@ CREATE TABLE IF NOT EXISTS text.news_digestions (
     industry_id     TEXT,                         -- denormalized from text.news
     summary         TEXT              NOT NULL,   -- LLM digestion of the article
     sentiment_level DOUBLE PRECISION,             -- LLM sentiment score, [-5, 5]
+    is_fake_news    BOOLEAN           NOT NULL DEFAULT false,   -- fake-news detector verdict (detector logic pending: always false)
     llm_model       TEXT,                         -- model that produced the digestion
     created_at      TIMESTAMPTZ       NOT NULL DEFAULT now(),
     search_tsv      TSVECTOR,                     -- weighted full-text search vector: summary B
@@ -55,6 +57,12 @@ COMMENT ON COLUMN text.news_digestions.sentiment_level IS
   'LLM-assigned sentiment score in [-5, 5] (-5 = most negative, +5 = most '
   'positive, 0 = neutral). NULL when the digestion produced no score. '
   'Guarded by ck_news_digestions_sentiment.';
+
+COMMENT ON COLUMN text.news_digestions.is_fake_news IS
+  'Fake-news detector verdict for the article (true = flagged fake), '
+  'written by the digestion pipeline''s fake_news detector alongside the '
+  'sentiment read. Detector logic is pending, so every row lands false '
+  '(the column default).';
 
 COMMENT ON COLUMN text.news_digestions.search_tsv IS
   'Weighted search tsvector (simple config over segmented text): summary B. '

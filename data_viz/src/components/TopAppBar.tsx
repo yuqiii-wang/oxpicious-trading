@@ -92,7 +92,9 @@ const APPS: Record<AppKey, AppConfig> = {
       { label: "Services", path: "/monitor" },
       { label: "External Resources", path: "/monitor/ext-resources" },
       { label: "AI", path: "/monitor/ai" },
+      { label: "DB", path: "/monitor/db" },
       { label: "Source Data", path: "/monitor/src-data" },
+      { label: "Non-daily", path: "/monitor/non-daily" },
     ],
   },
   config: {

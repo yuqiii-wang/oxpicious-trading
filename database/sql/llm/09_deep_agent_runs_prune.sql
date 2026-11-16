@@ -22,7 +22,9 @@
 --  states, the store's node items and the context registry while the
 --  linking rows still exist), the aux steps with them
 --  (llm.deep_agent_aux_steps — same chain resolution + the
---  thread/super-stamped rows), then states (the self-FK cascades child
+--  thread/super-stamped rows), then the authorizations
+--  (llm.deep_agent_authorizations — keyed by the chain id, which is the
+--  root thread's own id), then states (the self-FK cascades child
 --  states, and contexts.state_id CASCADE removes their task-linked
 --  context rows), then the thread's remaining contexts (kind
 --  final-result and unlinked legacy rows), then the deep-agent store items
@@ -95,6 +97,13 @@ WHERE thread_id IN (SELECT thread_id FROM _runs_purge)
     FROM llm.deep_agent_store_items i
     JOIN _runs_purge p
       ON i.namespace[1:3] = ARRAY['deep_agent', p.thread_id, 'contexts']::text[]);
+
+-- The authorizations (llm.deep_agent_authorizations) go with their run's
+-- chain: the chain id IS the root thread's own id, so it lands in the
+-- purge list by its own states when the run goes (a kept root keeps its
+-- temp-user row; extension rows key the same super_thread_id).
+DELETE FROM llm.deep_agent_authorizations
+WHERE super_thread_id IN (SELECT thread_id FROM _runs_purge);
 
 DELETE FROM llm.deep_agent_states
 WHERE thread_id IN (SELECT thread_id FROM _runs_purge);

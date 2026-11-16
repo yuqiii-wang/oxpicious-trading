@@ -5,7 +5,8 @@
 --  audit's resource family, request host and LLM provider, the DB
 --  health sampler's instance identity + WAL shipping state, the
 --  secret registry's credential type + service tier, and the
---  maintainer backup audit's batch mode + outcome. Owning
+--  maintainer backup audit's batch mode + outcome, and the per-table
+--  workload audit's write-heavy verdict. Owning
 --  tables: monitor.external_resource_audit (ext_resource /
 --  ext_http_source / ext_llm_provider — sub_type's domain is selected
 --  by resource_type), monitor.db_health (db_instance /
@@ -14,7 +15,9 @@
 --  llm / jev / tokenization, ext_http_source when web_search;
 --  secret_sub_type — the credential service tier, ONE shared domain
 --  across all types), maintenance.src_data_backup (backup_mode /
---  backup_status).
+--  backup_status), monitor.db_table_audit.write_flag +
+--  monitor.db_table_alert.severity (db_write_flag),
+--  monitor.non_daily_task_state.state (non_daily_state).
 -- ============================================================================
 
 INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
@@ -44,6 +47,9 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- web_search rows (the BigModel web_search endpoint) — the audit
     -- itself records zhipu traffic as ext_llm_provider.
     ('ext_http_source', 15, 'zhipu',     15),
+    -- E Fund fund-site family (downloads.etf.efunds.*): the efundcf.com.cn
+    -- detail pages and the www/api.efunds.com.cn fundlist/assetinfo backends.
+    ('ext_http_source', 16, 'efunds',    16),
     ('ext_http_source', 99, 'other',     99),
     -- ext_llm_provider: sub_type when resource_type = 1 — the provider
     -- name (RetryingJsonClient's owning BaseLlmProvider.name); 99 fallback
@@ -117,4 +123,24 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- best -> worst
     ('backup_status', 0, 'ok',      0),
     ('backup_status', 1, 'partial', 1),
-    ('backup_status', 2, 'failed',  2);
+    ('backup_status', 2, 'failed',  2),
+    -- db_write_flag: monitor.db_table_audit.write_flag +
+    -- monitor.db_table_alert.severity — the per-table write-heavy verdict
+    -- of the db_table_audit sampler ((ins+upd+del rows)/s over the sample
+    -- window vs the fixed amber/red thresholds). Code order is semantic:
+    -- best -> worst (mirrors backup_status).
+    ('db_write_flag', 0, 'ok',    0),
+    ('db_write_flag', 1, 'amber', 1),
+    ('db_write_flag', 2, 'red',   2);
+
+INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
+    -- non_daily_state: monitor.non_daily_task_state.state — the
+    -- identity-grounded completeness verdict of ONE non-daily task
+    -- (monthly/quarterly/semiannual tiers) checked by the monitor
+    -- area's NonDailyOps; the maintainer's Saturday backfill re-runs
+    -- code 2 rows weekly until they pass. Code order is semantic:
+    -- unknown -> complete -> missing -> the check itself failed
+    ('non_daily_state', 0, 'unknown',       0),
+    ('non_daily_state', 1, 'complete',      1),
+    ('non_daily_state', 2, 'missing',       2),
+    ('non_daily_state', 3, 'check_failed',  3);

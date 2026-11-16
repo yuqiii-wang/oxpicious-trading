@@ -29,8 +29,9 @@ const router = Router();
 //  force is set, the run is AUTO-SKIPPED when the service's configured
 //  freq (service_config/ static tree) says the last successful exit is
 //  still inside the current period — daily = last 24h, monthly = last 30d,
-//  semiannually = last 183d, once = any success ever; always /
-//  occasionally / on_demand never auto-skip. Force rerun bypasses the
+//  quarterly = last 92d, semiannually = last 183d, once = any success
+//  ever; always / occasionally / on_demand never auto-skip. Force rerun
+//  bypasses the
 //  guard. The spawn is FIRE-AND-FORGET (batch runs take hours): the POST
 //  resolves as soon as the process is handed to WSL, the heartbeat table
 //  carries the run's liveness/state from there, and the py-runner tag

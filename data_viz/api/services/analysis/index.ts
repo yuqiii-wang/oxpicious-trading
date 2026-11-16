@@ -27,15 +27,11 @@ export { listDividendDeliveries } from "./dividends.js";
 export {
   listMarketCrowdednessCodes,
   getMarketCrowdednessChart,
+  getMarketCrowdednessHotTech,
+  listMarketCrowdednessHotYears,
   listMarketCrowdednessThemes,
   listMarketCrowdednessStrategyThemes,
 } from "./market-crowdedness/index.js";
-export {
-  listHotStockMomentumCodes,
-  getHotStockMomentumChart,
-  listHotStockMomentumThemes,
-  listHotStockMomentumStrategyThemes,
-} from "./hot-stock-momentum/index.js";
 export {
   listMarginTrendThemes,
   listMarginTrendStrategyThemes,

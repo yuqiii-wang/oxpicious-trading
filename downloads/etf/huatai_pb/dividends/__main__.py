@@ -14,8 +14,9 @@ no distributions render an ``info-noData`` 暂无内容 block instead of the
 table (512890/561630/018173 today). The sibling 基金拆分记录 table is
 display:none and empty — nothing to parse there.
 
-Default universe: the curated checkin watchlist (CHECKIN_FUND_CODES in
-``_endpoints``, from config.json). Output per fund (full-history refresh,
+Default universe: the curated ACTIVE ETF registry (ACTIVE_ETF_CODES in
+``_endpoints``, from database/sec_statics/active_funds/pinebridge.json).
+Output per fund (full-history refresh,
 semi-annual cadence — registered in downloads_semiannually.sh):
 
   ``temps/huatai_pb_dividends/raw/huatai_pb_page_<code>_<YYYYMMDD>.html``
@@ -60,7 +61,7 @@ from downloads._common import (
     setup_logger,
 )
 from downloads.etf.huatai_pb._endpoints import (
-    CHECKIN_FUND_CODES,
+    ACTIVE_ETF_CODES,
     build_proxy,
 )
 
@@ -139,8 +140,8 @@ class HuataiPbDividendsDownload(DownloadJob):
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--fund-codes", type=str, default=None,
-                        help="Comma-separated fund codes (default: the checkin "
-                             "watchlist — see _endpoints.CHECKIN_FUND_CODES)")
+                        help="Comma-separated fund codes (default: the curated "
+                             "active-ETF registry — see _endpoints.ACTIVE_ETF_CODES)")
         parser.add_argument("--out-root", type=str, default=None,
                         help="Alternative output root directory")
         parser.add_argument("--sleep-sec", type=float, default=None,
@@ -167,7 +168,7 @@ class HuataiPbDividendsDownload(DownloadJob):
         out_dir = resolve_out_dir("", "huatai_pb_dividends", out_root)
         raw_dir = out_dir / "raw"
         raw_dir.mkdir(parents=True, exist_ok=True)
-        codes = [c.strip() for c in (fund_codes or list(CHECKIN_FUND_CODES)) if c.strip()]
+        codes = [c.strip() for c in (fund_codes or list(ACTIVE_ETF_CODES)) if c.strip()]
 
         session = build_default_session()
         proxy = build_proxy(SERVICE, sleep_sec)

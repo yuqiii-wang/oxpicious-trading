@@ -31,13 +31,20 @@ FROM (VALUES
     ('analysis.trend_days', 'analysis.trend_episode_days', 'similar_to', 'about_trend'),
     -- RSI tail episodes ride the full-history RSI ranks rebuild
     ('analysis.trend_episode_days', 'analysis.mov_ave_rsi_ranks', 'computed_from', 'for_rsi_ranks'),
-    -- Crowdedness pillars (per analysis/market_crowdedness/__main__.py):
+    -- Crowdedness pillars (per analysis/market_crowdedness/compute/):
     -- pool membership from composition/classification, turnover amounts,
     -- stock PE for the valuation pillar
     ('analysis.market_crowdedness', 'stats.stock_liquidity_margin', 'computed_from', 'for_trading_amount'),
     ('analysis.market_crowdedness', 'stats.sec_composition',        'computed_from', 'for_pool_membership'),
     ('analysis.market_crowdedness', 'stats.sec_classification',     'computed_from', 'for_industry_map'),
-    ('analysis.market_crowdedness', 'stats.stock_basic_stats',      'computed_from', 'for_pe')
+    ('analysis.market_crowdedness', 'stats.stock_basic_stats',      'computed_from', 'for_pe'),
+    -- Year-pinned variants (2026-11-14): same ingredient chain, hot
+    -- membership frozen per YEAR; the frozen rosters live in hot_sets
+    -- (the same facts the rolling table computes, one basket per year)
+    ('analysis.market_crowdedness_year', 'analysis.market_crowdedness',          'similar_to',    'about_crowdedness'),
+    ('analysis.market_crowdedness_year', 'analysis.market_crowdedness_hot_sets', 'computed_from', 'for_hot_membership'),
+    ('analysis.market_crowdedness_hot_sets', 'stats.stock_liquidity_margin',     'computed_from', 'for_trading_amount'),
+    ('analysis.market_crowdedness_hot_sets', 'stats.stock_identity',             'computed_from', 'for_stock_name')
 ) AS e(subject, object, relation, sub_relation)
 JOIN llm.kg_entities a ON a.namespace = 0 AND a.name = e.subject
 JOIN llm.kg_entities b ON b.namespace = 0 AND b.name = e.object

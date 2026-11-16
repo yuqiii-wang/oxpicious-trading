@@ -38,6 +38,15 @@ echo "hot_standby = on" >> "$PGDATA/postgresql.conf"
 # postgresql.conf on a re-seed.
 echo "hot_standby_feedback = on" >> "$PGDATA/postgresql.conf"
 
+# pg_stat_statements on the standby: the extension's catalog row replicates
+# from the primary, but the MODULE is preloaded per-server — without this
+# the view errors "must be loaded via shared_preload_libraries" here and
+# database/sql_audit.py skips this instance (losing the API's read half of
+# the SQL audit: the data_viz API reads THIS replica, not the primary).
+# Same unconditional-append pattern as above (survives a pg_basebackup
+# re-seed, which overwrites postgresql.conf).
+echo "shared_preload_libraries = 'pg_stat_statements'" >> "$PGDATA/postgresql.conf"
+
 # listen_addresses: the primary gets '*' from its container CMD flag, which
 # is NOT part of the basebackup-copied config (initdb default is localhost).
 # Without this, host port-forward connections are reset (ECONNRESET).

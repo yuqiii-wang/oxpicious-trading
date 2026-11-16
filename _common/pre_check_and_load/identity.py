@@ -17,6 +17,11 @@ Supported identity table shapes:
 
 Optional filters let callers narrow the query:
   * code=...           -> only rows for this code (e.g. "510050.SS")
+  * code_scope=...     -> only rows whose code matches this POSIX regex
+                          (e.g. the CFFEX contract scope on the SHARED
+                          stats.futures_identity — a date populated by the
+                          offshore CN/MCA families must not count as present
+                          for the CFFEX contracts)
   * exchange=...       -> only rows for this exchange (e.g. "SS", "SZ", "BJ")
   * time_value=...     -> only rows for this intraday bar time (e.g. time(15, 0))
 
@@ -56,6 +61,7 @@ def _build_identity_where_clause(
     date_column: str,
     code: Optional[str],
     code_column: str,
+    code_scope: Optional[str],
     exchange: Optional[str],
     exchange_column: str,
     time_value: Optional[time],
@@ -71,6 +77,10 @@ def _build_identity_where_clause(
     ]
     if code is not None:
         clauses.append(sql.SQL("{col} = %s").format(col=sql.Identifier(code_column)))
+    if code_scope is not None:
+        clauses.append(
+            sql.SQL("{col} ~ %s").format(col=sql.Identifier(code_column))
+        )
     if exchange is not None:
         clauses.append(
             sql.SQL("{col} = %s").format(col=sql.Identifier(exchange_column))
@@ -93,6 +103,7 @@ def _build_identity_params(
     start_date: date,
     end_date: date,
     code: Optional[str],
+    code_scope: Optional[str],
     exchange: Optional[str],
     time_value: Optional[time],
 ) -> list:
@@ -100,6 +111,8 @@ def _build_identity_params(
     params: list = [start_date, end_date]
     if code is not None:
         params.append(code)
+    if code_scope is not None:
+        params.append(code_scope)
     if exchange is not None:
         params.append(exchange)
     if time_value is not None:
@@ -127,6 +140,7 @@ def check_identity(
     end_date: date,
     *,
     code: Optional[str] = None,
+    code_scope: Optional[str] = None,
     exchange: Optional[str] = None,
     time_value: Optional[time] = None,
     date_column: str = "date",
@@ -146,6 +160,9 @@ def check_identity(
         code: optional filter on the ``code_column`` value (e.g. "510050.SS").
             When omitted, every code is considered -- the function returns
             dates with NO row of ANY code.
+        code_scope: optional POSIX-regex filter on the ``code_column``
+            (``code ~ %s``). Same masking guard as ``code``/``exchange`` for
+            tables whose rows are code-prefix families (see module docstring).
         exchange: optional filter on the exchange column
             (e.g. "SS", "SZ", "BJ").
         time_value: optional filter on the intraday bar time column
@@ -172,12 +189,14 @@ def check_identity(
         start_date=start_date, end_date=end_date,
         date_column=date_column,
         code=code, code_column=code_column,
+        code_scope=code_scope,
         exchange=exchange, exchange_column=exchange_column,
         time_value=time_value, time_column=time_column,
     )
     params = _build_identity_params(
         start_date=start_date, end_date=end_date,
-        code=code, exchange=exchange, time_value=time_value,
+        code=code, code_scope=code_scope,
+        exchange=exchange, time_value=time_value,
     )
 
     owns_conn = conn is None
@@ -207,6 +226,7 @@ async def check_identity_async(
     end_date: date,
     *,
     code: Optional[str] = None,
+    code_scope: Optional[str] = None,
     exchange: Optional[str] = None,
     time_value: Optional[time] = None,
     date_column: str = "date",
@@ -237,6 +257,10 @@ async def check_identity_async(
     if code is not None:
         clauses.append(f'"{code_column}" = ${placeholder_idx}')
         params.append(code)
+        placeholder_idx += 1
+    if code_scope is not None:
+        clauses.append(f'"{code_column}" ~ ${placeholder_idx}')
+        params.append(code_scope)
         placeholder_idx += 1
     if exchange is not None:
         clauses.append(f'"{exchange_column}" = ${placeholder_idx}')

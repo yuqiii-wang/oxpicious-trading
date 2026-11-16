@@ -99,56 +99,52 @@ from _common.db_commons import get_db_connection
 # ---------------------------------------------------------------------------
 # Registry — unique service name -> (scope, sub_scope)
 # ---------------------------------------------------------------------------
-# The always-on services the stream watchdog supervises. scope is the
+# The stream watchdog's own scan charges — after the 2026-11 resident
+# migration, exactly ONE (plus the watchdog itself). scope is the
 # top-level pipeline area (downloads / builds / analysis / strategy / live /
-# database); sub_scope the level below it. Batch pipelines register ad-hoc
-# with explicit scope args instead of being listed here.
+# database); sub_scope the level below it. Batch pipelines and the resident
+# services register ad-hoc / with explicit scope args instead of being
+# listed here.
 WATCHDOG_SERVICE = "database.stream_watchdog"
 
 MONITORED_SERVICES: dict[str, tuple[str, str | None]] = {
-    # The cluster SERVERS (server_cluster/, python -m server_cluster.<area>)
-    # moved OUT of this registry 2026-11 — THREE-LEVEL supervision now: the
-    # pollers went to the downloader server's resident table and the other
-    # seven servers (downloader/builder/analyzer/strategist/llm/config/
-    # maintainer) to the monitor server's resident table
-    # (server_cluster/_common/resident_supervisor.py — desired state, crash
-    # backoff, persisted manual stops, adoption; the central watchdog
-    # unconditionally revives, the area supervisor does not). Only
-    # ``server_cluster.monitor`` stays here: a server cannot supervise
-    # itself, so the watchdog → monitor → residents chain needs the
-    # watchdog to keep the monitor alive.
+    # The 2026-11 RESIDENT MIGRATION, COMPLETE — every always-on process
+    # but the boot-hook root is now an area server's resident
+    # (server_cluster/_common/resident_supervisor.py — desired state,
+    # crash backoff, persisted manual stops, adoption, hung-runtime
+    # kills; the central watchdog unconditionally revives, the area
+    # supervisor does not). The pollers went to the downloader server's
+    # resident table, the seven other cluster servers to the monitor's,
+    # and the six infra daemons (db_health / db_table_audit / sql_audit
+    # / mcp / sandbox / deep_agents server) plus the WATCHDOG ITSELF
+    # joined the monitor's table: the mutual pair — the monitor holds
+    # the watchdog's life as a resident, the watchdog keeps the monitor
+    # here as its ONE scan charge (a server cannot supervise itself,
+    # and the chain still needs a root: WSL boot → stream_watchdog →
+    # monitor → residents).
     "server_cluster.monitor": ("server_cluster", "monitor"),
-    # DB health sampler (database/db_health.py) — always-on like the
-    # pollers; the watchdog restarts it when its beat goes stale. Grouped
-    # under the stream sub-scope (the always-on services) rather than a
-    # monitoring one.
-    "database.db_health": ("database", "stream"),
-    # MCP server (llm_agents/mcp, python -m llm_agents.mcp) — always-on
-    # read-only DB query server for MCP clients; the watchdog
-    # starts/restarts it like the pollers. Grouped under the stream
-    # sub-scope (the always-on services); the service name IS the module
-    # name (spawn contract).
-    "llm_agents.mcp": ("database", "stream"),
-    # Docker py-sandbox MCP middleware (llm_agents/sandbox, python -m
-    # llm_agents.sandbox) — always-on daemon delegating LLM-generated
-    # files into the oxpicious-py-sandbox docker container (the
-    # cutepandas py3.12 sandbox). The watchdog supervises the
-    # MIDDLEWARE like the pollers; the CONTAINER half is kept live by
-    # the compose restart policy + HEALTHCHECK plus the middleware's
-    # own `docker start` self-heal (llm_agents/sandbox/docker_api.py).
-    # Grouped under the stream sub-scope; the service name IS the
-    # module name (spawn contract).
-    "llm_agents.sandbox": ("database", "stream"),
-    # Deep-agents HTTP server (llm_agents/deep_agents/server.py, python
-    # -m llm_agents.deep_agents.server) — always-on FastAPI JSON API over
-    # the DeepAgent tool loop; the data_viz API bridge's transport for
-    # the analysis-summary generation. The watchdog starts/restarts it
-    # like the pollers; grouped under the stream sub-scope (the
-    # always-on services); the service name IS the module name (spawn
-    # contract).
-    "llm_agents.deep_agents.server": ("database", "stream"),
     WATCHDOG_SERVICE: ("database", "monitoring"),
 }
+
+
+def always_on_roster() -> list[str]:
+    """Every service that should ALWAYS have a heartbeat: the watchdog's
+    own scan charges (the registry above) plus every area server's
+    residents (server_cluster/_common/config.py — the completed 2026-11
+    resident migration moved the pollers, the seven cluster servers, the
+    six infra daemons and the watchdog itself into resident tables, so
+    the registry alone no longer names the fleet). The one source of
+    truth for the liveness views that must cover the whole always-on
+    set (database.monitoring's stream check, the monitor area's
+    always-on aggregation). Lazy config import: that module pulls
+    pydantic only, but this module must stay importable for services
+    that never touch the cluster."""
+    from server_cluster._common.config import ClusterConfig
+
+    names = set(MONITORED_SERVICES)
+    for cfg in ClusterConfig.load().areas.values():
+        names.update(r.service for r in cfg.residents)
+    return sorted(names)
 
 # Per-service SOURCE-FINGERPRINT roots — the repo-relative directories
 # whose *.py files define the code a monitored service runs. The process
@@ -163,9 +159,16 @@ MONITORED_SERVICES: dict[str, tuple[str, str | None]] = {
 FINGERPRINT_ROOTS: dict[str, tuple[str, ...]] = {
     "server_cluster.monitor": ("server_cluster", "_common"),
     "database.db_health": ("database", "_common"),
+    "database.db_table_audit": ("database", "_common"),
+    "database.sql_audit": ("database", "_common"),
     "llm_agents.mcp": ("llm_agents", "_common"),
     "llm_agents.sandbox": ("llm_agents", "_common"),
-    "llm_agents.deep_agents.server": ("llm_agents", "_common"),
+    # The deep-agents daemon ALSO imports the test package at runtime —
+    # the ``[this is test]`` self-test walks test/dummy_langgraph's
+    # bodies — so its fingerprint covers the test tree too (an edit
+    # there must recycle the daemon or the in-process module cache
+    # keeps serving the old walk code; observed 2026-11-14 f).
+    "llm_agents.deep_agents.server": ("llm_agents", "_common", "test"),
     WATCHDOG_SERVICE: ("database", "_common"),
 }
 

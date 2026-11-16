@@ -53,11 +53,13 @@ Output:
 
 ``<today>`` is the run date in ``YYYY-MM-DD`` format (e.g. ``2026-07-30``).
 
-Month-start refresh:
-  On the 1st day of each month the cache is bypassed and the ETF list is
-  re-downloaded. On other days, if today's CSV already exists it is reused
-  (skip re-download). Use --force-month-start to trigger the month-start
-  behavior on any day for testing.
+Quarter-start refresh (quarterly cadence since 2026-11 — the
+downloads_quarterly tier):
+  On the 1st day of a quarter-start month (Jan/Apr/Jul/Oct) the cache is
+  bypassed and the ETF list is re-downloaded. On other days, if today's
+  CSV already exists it is reused (skip re-download). Use
+  --force-quarter-start to trigger the quarter-start behavior on any day
+  for testing.
 
 The entry point is the :class:`CsindexLinkedEtfDownload` DownloadJob — the
 former ``__main__`` body is its ``run()`` and the orchestration functions
@@ -69,7 +71,7 @@ module-level.
 Usage:
   python download_csindex_linked_etf.py
   python download_csindex_linked_etf.py --min-aum 2.0   # AUM > 2亿
-  python download_csindex_linked_etf.py --force-month-start
+  python download_csindex_linked_etf.py --force-quarter-start
   python download_csindex_linked_etf.py --out-root /tmp/csindex_etf
 """
 from __future__ import annotations
@@ -100,7 +102,7 @@ from downloads._common import (
     service_urls,
     setup_logger,
 )
-from downloads._common.monthly import is_month_start
+from downloads._common.monthly import is_quarter_start
 
 # ---------------------------------------------------------------------------
 # csindex.com.cn API endpoints
@@ -337,9 +339,9 @@ class CsindexLinkedEtfDownload(DownloadJob):
                              f"(default: external_request_config JSON for {SERVICE})")
         parser.add_argument("--no-excel", action="store_true", default=False,
                         help="Skip downloading the raw Excel export")
-        parser.add_argument("--force-month-start", action="store_true", default=False,
-                        help="Force month-start behavior: bypass cache and re-download "
-                             "the ETF list. For testing the monthly refresh flow on any day.")
+        parser.add_argument("--force-quarter-start", action="store_true", default=False,
+                        help="Force quarter-start behavior: bypass cache and re-download "
+                             "the ETF list. For testing the quarterly refresh flow on any day.")
 
     def fetch_funds_list(
         self,
@@ -464,7 +466,7 @@ class CsindexLinkedEtfDownload(DownloadJob):
         min_aum: float = DEFAULT_MIN_AUM,
         sleep_sec: Optional[float] = None,
         fetch_excel: bool = True,
-        force_month_start: bool = False,
+        force_quarter_start: bool = False,
     ) -> dict:
         """Download all CSI index-linked ETFs and filter by AUM > *min_aum* (亿元).
 
@@ -474,24 +476,25 @@ class CsindexLinkedEtfDownload(DownloadJob):
           3. Convert to DataFrame, save unfiltered ``etf_index_map_all_<today>.csv``.
           4. Filter by AUM > min_aum, save ``etf_index_map_<today>.csv`` (the deliverable).
 
-        On non-month-start days, if today's deliverable CSV already exists it is
-        reused (skip re-download). On the 1st of each month (or when
-        *force_month_start* is set) the cache is bypassed.
+        On non-quarter-start days, if today's deliverable CSV already exists it
+        is reused (skip re-download). On the 1st of a quarter-start month
+        Jan/Apr/Jul/Oct (or when *force_quarter_start* is set) the cache is
+        bypassed.
         """
         out_dir = resolve_out_dir(str(Path(__file__).resolve()), "csindex_linked_etf", out_root)
 
         today_date = date.today()
         today = today_date.isoformat()
-        month_start = force_month_start or is_month_start(today_date)
+        quarter_start = force_quarter_start or is_quarter_start(today_date)
 
-        # Cache check (non-month-start): reuse today's CSV if it already exists.
-        if not month_start:
+        # Cache check (non-quarter-start): reuse today's CSV if it already exists.
+        if not quarter_start:
             cached_csv = out_dir / f"etf_index_map_{today}.csv"
             cached_feeder = out_dir / f"etf_feeder_map_{today}.csv"
             if is_valid_file(cached_csv, min_bytes=100) and is_valid_file(cached_feeder, min_bytes=100):
                 cached_all = out_dir / f"etf_index_map_all_{today}.csv"
                 logger.info(
-                    "[cache] today's ETF list already downloaded: %s (use --force-month-start to re-download)",
+                    "[cache] today's ETF list already downloaded: %s (use --force-quarter-start to re-download)",
                     cached_csv.name,
                 )
                 return {
@@ -504,11 +507,11 @@ class CsindexLinkedEtfDownload(DownloadJob):
                     "cached_feeder_file": str(cached_feeder),
                 }
 
-        if month_start:
+        if quarter_start:
             logger.info(
-                "Month-start refresh (today=%s, forced=%s): bypassing cache and "
+                "Quarter-start refresh (today=%s, forced=%s): bypassing cache and "
                 "re-downloading the ETF list.",
-                today, force_month_start,
+                today, force_quarter_start,
             )
 
         session = build_default_session(merge_browser_profile(CSINDEX_HEADERS))
@@ -602,7 +605,7 @@ class CsindexLinkedEtfDownload(DownloadJob):
             min_aum=self.args.min_aum,
             sleep_sec=self.args.sleep_sec,
             fetch_excel=not self.args.no_excel,
-            force_month_start=self.args.force_month_start,
+            force_quarter_start=self.args.force_quarter_start,
         )
         logger.info(result)
 

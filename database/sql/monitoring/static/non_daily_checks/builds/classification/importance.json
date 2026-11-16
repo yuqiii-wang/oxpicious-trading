@@ -1,0 +1,9 @@
+{
+  "service": "builds.classification.importance",
+  "check": "db_asof_current",
+  "params": {
+    "view": "server_cluster/monitor/non_daily/sec_importance_current"
+  },
+  "rerun_args": [],
+  "notes": "stats.sec_importance_ranks max(as_of) must be inside the current month (monthly truncate+rebuild)."
+}

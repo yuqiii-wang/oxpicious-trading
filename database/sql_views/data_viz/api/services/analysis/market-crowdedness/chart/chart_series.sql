@@ -18,6 +18,7 @@
       b.close,
       b.trading_amount,
       m.crowdedness_score,
+      m.crowdedness_score_ma5,
       m.concentration,
       m.flow_change,
       m.comovement,

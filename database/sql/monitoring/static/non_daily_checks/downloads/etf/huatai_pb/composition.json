@@ -1,0 +1,14 @@
+{
+  "service": "downloads.etf.huatai_pb.composition",
+  "check": "snapshot_fresh",
+  "params": {
+    "dir": "temps/huatai_etf_composition",
+    "pattern": "huatai_etf_comp_*.csv",
+    "min_bytes": 100,
+    "max_age_days": 100
+  },
+  "rerun_args": [
+    "--force-quarter-start"
+  ],
+  "notes": "PCF composition CSVs (feeds builds.etf.pipeline -> stats.sec_composition); quarter cache guard requires the force flag."
+}

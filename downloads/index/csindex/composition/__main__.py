@@ -43,10 +43,10 @@ class CsindexCompositionDownload(DownloadJob):
             help="Re-download even if a cached CSV exists",
         )
         parser.add_argument(
-            "--force-month-start", action="store_true", default=False,
-            help="Force monthly-refresh behavior: bypass cache and stamp CSVs with "
+            "--force-quarter-start", action="store_true", default=False,
+            help="Force quarterly-refresh behavior: bypass cache and stamp CSVs with "
                  "today's date (overrides xls snapshot_date). For testing the "
-                 "monthly refresh flow on any day.",
+                 "quarterly refresh flow on any day.",
         )
         parser.add_argument(
             "--sleep-sec", type=float, default=None,
@@ -64,7 +64,7 @@ class CsindexCompositionDownload(DownloadJob):
             out_root=self.args.out_root,
             skip_cached=not self.args.no_skip_cached,
             sleep_sec=self.args.sleep_sec,
-            force_month_start=self.args.force_month_start,
+            force_quarter_start=self.args.force_quarter_start,
         )
         logger.info(result)
 

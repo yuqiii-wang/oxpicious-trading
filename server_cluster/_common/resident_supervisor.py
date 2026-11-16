@@ -1,14 +1,16 @@
 """server_cluster._common.resident_supervisor — the area's always-on
 children, converging to their desired state.
 
-Two-level supervision: ``database.stream_watchdog`` supervises the four
-cluster SERVERS; each server supervises its own area's residents (for
-the downloader: the five stream pollers that moved out of
+Two-level supervision: ``database.stream_watchdog`` heartbeat-scans the
+monitor server; each server supervises its own area's residents (for
+the monitor: the seven other cluster servers, the six infra daemons and
+the watchdog itself — the completed 2026-11 resident migration; for the
+downloader: the five stream pollers that moved out of
 ``MONITORED_SERVICES``). The loop every ``poll_interval_s``:
 
 1. A resident with a dead/unknown pid is ADOPTED when it is actually
-   running (``/proc`` scan — an operator may have started it via
-   ``scripts/stream_always.sh``); an adopted resident is left running,
+   running (``/proc`` scan — an operator may have started it by hand);
+   an adopted resident is left running,
    whatever its desired state says (desired ``stopped`` only means
    "don't START it", never "kill what the operator started").
 2. A resident that is NOT running and DESIRES ``running`` is started —
@@ -16,6 +18,12 @@ the downloader: the five stream pollers that moved out of
    ``crash_burst_limit`` starts within ``crash_burst_window_s`` back
    the resident off for ``crash_backoff_s`` (the stream watchdog's
    burst-guard values by default).
+3. The SLOW sub-passes ride every ~12th loop (the watchdog's 60s
+   cadence): the stale-code restart (``_check_staleness``) and the
+   HUNG restart (``_check_hung``) — a live pid whose heartbeat beat is
+   older than ``hung_after_s`` is a wedged runtime (stuck I/O, dead
+   work loop): terminated + restarted, the watchdog's HUNG_AFTER_S
+   rule.
 
 A manual stop (``POST /processes/{service}/stop``) flips the desired
 state to ``stopped`` and PERSISTS it under the gitignored
@@ -54,16 +62,23 @@ from .process_manager import ProcessManager, find_running_module
 
 logger = logging.getLogger(__name__)
 
-# The stale-process sub-pass cadence: every Nth converge pass (5s poll →
+# The slow sub-pass cadence: every Nth converge pass (5s poll →
 # ~60s), the same interval database/stream_watchdog.py scans at — a
 # content hash over the resident's source roots is milliseconds-cheap
-# but pointless per-5s.
+# but pointless per-5s; the same cadence carries the hung pass (a beat
+# age read per resident is one query for the whole table).
 _STALE_CHECK_EVERY_PASSES = 12
 
 _FINGERPRINT_SQL = """
 SELECT code_fingerprint
 FROM monitor.service_heartbeat
 WHERE service = %s
+"""
+
+_BEAT_AGE_SQL = """
+SELECT service, EXTRACT(EPOCH FROM (now() - beat_at))::bigint
+FROM monitor.service_heartbeat
+WHERE service = ANY(%s)
 """
 
 
@@ -172,9 +187,10 @@ class ResidentSupervisor:
             if until is not None and now < until:
                 continue  # crash-looped — wait it out
             self._start_resident(service)
-        # The stale-process sub-pass rides the same loop on its slower
-        # cadence (a dead resident is the fast pass's concern; a resident
-        # running OLD code is this one's).
+        # The slow sub-passes ride the same loop on their slower cadence
+        # (a dead resident is the fast pass's concern; a resident running
+        # OLD code, or one whose runtime WEDGED under a live pid, are
+        # these two's).
         self._pass_count += 1
         if self._pass_count % _STALE_CHECK_EVERY_PASSES == 0:
             try:
@@ -182,6 +198,11 @@ class ResidentSupervisor:
             except Exception:  # noqa: BLE001 — same never-take-the-
                 logger.exception(  # noqa: BLE001 — server-down contract
                     "%s: staleness pass failed", self._config.service)
+            try:
+                self._check_hung()
+            except Exception:  # noqa: BLE001 — same never-take-the-
+                logger.exception(  # noqa: BLE001 — server-down contract
+                    "%s: hung pass failed", self._config.service)
 
     def _start_resident(self, service: str) -> bool:
         """Start one resident (burst-guarded): through the MAINTAINER
@@ -287,6 +308,65 @@ class ResidentSupervisor:
             return row[0] if row else None
         finally:
             conn.close()
+
+    def _heartbeat_beat_ages(self) -> dict[str, float]:
+        """Beat ages (seconds) for this area's residents' heartbeat rows
+        (ONE query; a service with no row yet is absent — a process
+        before its first beat is the liveness pass's concern)."""
+        from _common.db_commons import get_db_connection
+
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(_BEAT_AGE_SQL, (list(self._specs),))
+                return {r[0]: float(r[1]) for r in cur.fetchall()
+                        if r[1] is not None}
+        finally:
+            conn.close()
+
+    def _check_hung(self) -> None:
+        """One hung pass over the RUNNING residents (the stream
+        watchdog's wedged-runtime rule, resident-tier): the heartbeat
+        thread is independent of the work loop, so a FRESH beat proves
+        the process runs — and a beat older than ``hung_after_s`` with a
+        STILL-LIVE pid means the runtime itself is wedged (stuck I/O,
+        D-state, a dead work loop) — not trustworthy: terminated +
+        restarted through the delegate. A beat between ``STALE_AFTER_S``
+        and ``hung_after_s`` alerts only (a slow startup or a brief DB
+        outage gets time to recover). Fail-soft end to end: a DB outage
+        raises out of the beat-age read and the caller's guard skips
+        the pass."""
+        from _common.service_heartbeat import STALE_AFTER_S
+
+        ages = self._heartbeat_beat_ages()
+        for service, pid in list(self._pids.items()):
+            if service not in self._specs or pid is None:
+                continue
+            if not self._processes.alive(pid, service):
+                continue  # dead — the liveness pass owns that case
+            if self._desired.get(service, "running") != "running":
+                continue  # desired stopped — its life is Ending anyway
+            beat_age_s = ages.get(service)
+            if beat_age_s is None or beat_age_s <= STALE_AFTER_S:
+                continue  # fresh beat (or no row yet) — healthy
+            if beat_age_s <= self._config.hung_after_s:
+                logger.warning(
+                    "[ALERT] %s (pid %d): beat stale %.0fs with a live "
+                    "pid — wedged unless it recovers by %.0fs",
+                    service, pid, beat_age_s, self._config.hung_after_s)
+                continue
+            logger.warning(
+                "[ALERT] %s (pid %d): WEDGED — beat stale %.0fs with a "
+                "live pid; restarting through the maintainer",
+                service, pid, beat_age_s)
+            # Same shape as the staleness restart: terminate the known
+            # pid (instant, the child records its own exit) and let
+            # _start_resident run the delegated/burst-guarded start.
+            if self._processes.alive(pid, service):
+                self._processes.terminate(pid, service)
+            self._pids.pop(service, None)
+            self._adopted.discard(service)
+            self._start_resident(service)
 
     # ------------------------------------------------------------------
     # operator control (the /processes router)

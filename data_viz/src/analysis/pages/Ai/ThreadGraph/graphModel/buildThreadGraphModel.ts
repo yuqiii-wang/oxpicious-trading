@@ -173,12 +173,45 @@ export function buildThreadGraphModel(
       // THE INTER-GRAPH EDGE — one graph's FINAL OUTPUT to the next
       // graph's entry: chain-styled but dashed, spanning the wider
       // X_CHAIN_GAP, so the two graphs read as two graphs joined by
-      // the handoff.
-      edges.push({
-        source: models[k - 1].terminalId,
-        target: m.firstNodeId,
-        kind: "handoff",
-      });
+      // the handoff. A TERMINAL FORK continuation (2026-11-16) sitting
+      // on the lane row right of the previous terminal would have the
+      // straight edge run through it — the bent variant routes the
+      // handoff one row ABOVE the lane (two handoff_lead legs over the
+      // continuation, the arrowed handoff dropping into the entry).
+      const prevModel = models[k - 1];
+      const term = prevModel.nodes.find(
+        (n) => n.id === prevModel.terminalId,
+      );
+      const blocked = term !== undefined && prevModel.nodes.some(
+        (n) => n.y === 0 && n.x > term.x && n.kind !== "endpoint",
+      );
+      if (!blocked) {
+        edges.push({
+          source: prevModel.terminalId,
+          target: m.firstNodeId,
+          kind: "handoff",
+        });
+      } else {
+        const entry = nodes.find((n) => n.id === m.firstNodeId);
+        const bendIds = [term!.x, entry?.x ?? shift].map((x, leg) => {
+          const id = `bend-handoff-${k}-${leg}`;
+          nodes.push({
+            id, kind: "bend", label: "", status: "neutral",
+            x, y: -Y_STEP,
+          });
+          return id;
+        });
+        edges.push({
+          source: prevModel.terminalId, target: bendIds[0],
+          kind: "handoff_lead",
+        });
+        edges.push({
+          source: bendIds[0], target: bendIds[1], kind: "handoff_lead",
+        });
+        edges.push({
+          source: bendIds[1], target: m.firstNodeId, kind: "handoff",
+        });
+      }
     }
     shift += m.maxX + X_CHAIN_GAP;
   });

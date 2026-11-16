@@ -54,8 +54,9 @@ Usage:
   python -m builds.classification.importance --force    # always rebuild
 
 Incremental contract: without --force the run is a NO-OP when the table
-already has an as_of within the current month (the nightly main_run tier
-invokes it daily; it rebuilds once per month). --force always rebuild.
+already has an as_of within the current month (the maintainer's nightly
+pipeline chain invokes it daily; it rebuilds once per month). --force
+always rebuild.
 
 The :class:`ImportanceBuild` entry class (a :class:`ClassificationBuild`
 subclass — inheritance mirrors the directory layout) owns the runtime

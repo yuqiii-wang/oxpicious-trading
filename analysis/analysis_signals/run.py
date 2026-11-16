@@ -166,6 +166,21 @@ def _source_horizon_sql(label: str, sec_type: str) -> tuple[str, tuple]:
         return ("SELECT code, max(date) AS latest FROM "
                 f"stats.{sec_type}_tech_stats "
                 "WHERE code = ANY($1) GROUP BY code", ())
+    if label == "crowdedness":
+        # the family's value sources: BOTH hot-set bases of the nightly
+        # crowdedness build (the daily-rolling + the this-year pinned
+        # tables) — ANY source growth forces the rebuild; the family's
+        # universe is the codes with rolling rows
+        return ("SELECT code, max(latest) AS latest FROM ("
+                "SELECT code, max(date) AS latest FROM "
+                "analysis.market_crowdedness "
+                "WHERE sec_type = $1 AND code = ANY($2) GROUP BY code "
+                "UNION ALL "
+                "SELECT code, max(date) AS latest FROM "
+                "analysis.market_crowdedness_year "
+                "WHERE sec_type = $1 AND code = ANY($2) GROUP BY code"
+                ") t GROUP BY code",
+                (SEC_TYPE_CODE[sec_type],))
     if label == "hedge_pairs":
         # the trio's value sources: the legs' composite closes, the
         # market's closes, the offsets estimates — ANY source growth

@@ -31,6 +31,9 @@ MAX_TITLE_LEN = 300
 MAX_NODE_LEN = 60
 # A delegation goal must stay a goal, not a second plan document.
 MAX_DELEGATE_LEN = 1500
+# A delegate-only study focus (the DB-scope extension trigger,
+# core/authorization) is a domain phrase, not a second goal.
+MAX_FOCUS_LEN = 200
 
 
 # ----------------------------------------------------------------------

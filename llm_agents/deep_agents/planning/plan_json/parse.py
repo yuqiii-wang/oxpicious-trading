@@ -27,8 +27,8 @@ from llm_agents.deep_agents.limits import run_limits
 from llm_agents.deep_agents.planning.store import PlannedStep
 
 from llm_agents.deep_agents.planning.plan_json.contract import (
-    MAX_DELEGATE_LEN, MAX_NODE_LEN, MAX_TITLE_LEN, REVIEW_NODE_TAGS,
-    PlanJsonError,
+    MAX_DELEGATE_LEN, MAX_FOCUS_LEN, MAX_NODE_LEN, MAX_TITLE_LEN,
+    REVIEW_NODE_TAGS, PlanJsonError,
 )
 
 logger = logging.getLogger("deep_agents.plan_json")
@@ -115,18 +115,41 @@ def _parallel_mark(raw: Dict[str, Any]) -> bool:
     return raw.get("parallel") is True
 
 
+def _study_focus(raw: Dict[str, Any],
+                 delegate: Optional[str]) -> Optional[str]:
+    """One raw step's DB-scope study focus (core/authorization,
+    2026-11-13) — the DELEGATE-ONLY explicit extension trigger: the
+    spawn hook KG-locates the focus's related tables and widens the
+    child's table scope by exactly those. Read from the delegate
+    object's ``study_focus`` or the flat key; None/empty/oversized (or
+    no delegate — an inline step never extends anything) degrades to
+    None: the child inherits the thread scope verbatim."""
+    if delegate is None:
+        return None
+    holder = raw.get("delegate") if isinstance(raw.get("delegate"), dict) \
+        else raw
+    candidate = holder.get("study_focus", raw.get("study_focus")) \
+        if isinstance(holder, dict) else None
+    if not isinstance(candidate, str):
+        return None
+    focus = candidate.strip()
+    return focus[:MAX_FOCUS_LEN] or None
+
+
 def _review_fixup(step: PlannedStep) -> PlannedStep:
     """The REVIEW WAVE's structural normalization, applied at every
     parse site: a review-tagged step is an INDEPENDENT inline reviewer -
     parallel forced on (it joins the closing wave whatever the model
-    marked) and any delegate goal stripped BEFORE the delegated cap
-    counts it (a delegated spawn never sees the findings bridge, so a
-    spawn cannot review; the callers apply this before the cap logic)."""
+    marked) and any delegate goal (and its study focus) stripped BEFORE
+    the delegated cap counts it (a delegated spawn never sees the
+    findings bridge, so a spawn cannot review; the callers apply this
+    before the cap logic)."""
     if step.node not in REVIEW_NODE_TAGS:
         return step
     if step.delegate is None and step.parallel:
         return step
-    return step.model_copy(update={'delegate': None, 'parallel': True})
+    return step.model_copy(update={'delegate': None, 'parallel': True,
+                                   'study_focus': None})
 
 
 class PlanReply(BaseModel):
@@ -224,12 +247,14 @@ def parse_plan_json(text: str) -> List[PlannedStep]:
             notes = str(notes)
         parallel = _parallel_mark(raw)
         node = str(raw.get("node") or "").strip() or f"step_{len(steps) + 1}"
+        delegate = _step_delegate(raw)
         step = PlannedStep(
             node=node[:MAX_NODE_LEN],
             title=title[:MAX_TITLE_LEN],
             notes=notes,
-            delegate=_step_delegate(raw),
+            delegate=delegate,
             parallel=parallel,
+            study_focus=_study_focus(raw, delegate),
         )
         # The review wave normalizes FIRST (delegate stripped before the
         # cap logic counts it - a review step is always inline+parallel).
@@ -240,7 +265,8 @@ def parse_plan_json(text: str) -> List[PlannedStep]:
                 logger.info("plan JSON: delegate marker dropped on %d-th "
                             "spawn (cap %d)", delegated,
                             limits.max_delegated_steps)
-                step = step.model_copy(update={'delegate': None})
+                step = step.model_copy(
+                    update={'delegate': None, 'study_focus': None})
         steps.append(step)
     if not steps:
         raise PlanJsonError(
@@ -276,7 +302,8 @@ def parse_update_steps(raw_steps: Any) -> Tuple[List[PlannedStep], str]:
         steps.append(_review_fixup(PlannedStep(
             node=node[:MAX_NODE_LEN], title=title[:MAX_TITLE_LEN],
             notes=notes, delegate=_step_delegate(raw),
-            parallel=_parallel_mark(raw))))
+            parallel=_parallel_mark(raw),
+            study_focus=_study_focus(raw, _step_delegate(raw)))))
     ops = _ops_complaints(steps)
     if ops:
         return [], f"update_plan error: {ops}"

@@ -43,7 +43,7 @@ from downloads._common import (
     add_exchange_suffix,
     random_browser_profile,
 )
-from downloads._common.monthly import is_month_start, most_recent_trading_day
+from downloads._common.monthly import QUARTER_MONTHS, is_quarter_start, most_recent_trading_day
 
 
 SERVICE = "downloads.etf.szse.composition"
@@ -567,13 +567,15 @@ class SzseEtfCompositionDownload(DownloadJob):
                         help="Convert downloaded .md files to CSV (default: enabled)")
         parser.add_argument("--no-convert-csv", action="store_true", default=False,
                         help="Skip CSV conversion")
-        parser.add_argument("--download-mode", type=str, default="hybrid",
+        parser.add_argument("--download-mode", type=str, default="quarterly",
                         choices=["hybrid", "monthly", "quarterly"],
-                        help="Download mode: hybrid (quarterly for history + monthly for latest month), monthly, or quarterly (default: hybrid)")
-        parser.add_argument("--force-month-start", action="store_true", default=False,
-                        help="Force month-start behavior: bypass cache for the most recent "
+                        help="Download mode: quarterly (quarter-start months Jan/Apr/Jul/Oct "
+                             "only — the quarterly cadence, default), hybrid (quarterly for "
+                             "history + monthly for latest month), or monthly")
+        parser.add_argument("--force-quarter-start", action="store_true", default=False,
+                        help="Force quarter-start behavior: bypass cache for the most recent "
                              "trading day and stamp files with today's date. For testing the "
-                             "monthly refresh flow on any day.")
+                             "quarterly refresh flow on any day.")
 
     def apply_args(self) -> None:
         # Former post-parse flag resolution (X and not no-X).
@@ -773,29 +775,29 @@ class SzseEtfCompositionDownload(DownloadJob):
         max_dates: Optional[int] = None,
         skip_today: bool = True,
         convert_csv: bool = True,
-        download_mode: str = "hybrid",
-        force_month_start: bool = False,
+        download_mode: str = "quarterly",
+        force_quarter_start: bool = False,
     ) -> dict:
         out_dir = resolve_out_dir(str(Path(__file__).resolve()), "szse_etf_composition", out_root)
 
         _start = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else datetime.strptime(DEFAULT_START_DATE, "%Y-%m-%d").date()
         _end = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else date.today()
 
-        # Month-start trigger: on the 1st of each month (or when forced), bypass
-        # the cache for the most recent trading day and stamp files with today's
-        # date so a fresh monthly snapshot flows to prod even if the actual data
-        # is from the previous business day.
+        # Quarter-start trigger: on the 1st of a quarter-start month (Jan/Apr/Jul/Oct,
+        # or when forced), bypass the cache for the most recent trading day and stamp
+        # files with today's date so a fresh quarterly snapshot flows to prod even if
+        # the actual data is from the previous business day.
         today = date.today()
-        month_start = force_month_start or is_month_start(today)
+        quarter_start = force_quarter_start or is_quarter_start(today)
         dl_date: Optional[date] = None   # the trading day to download from the API
         stamp_date: Optional[date] = None  # the date to stamp in filenames/trade_date
-        if month_start:
+        if quarter_start:
             dl_date = most_recent_trading_day(today)
             stamp_date = today
             logger.info(
-                "Month-start refresh (today=%s, forced=%s): forcing download for "
+                "Quarter-start refresh (today=%s, forced=%s): forcing download for "
                 "trading day %s, stamping files with today's date %s.",
-                today.isoformat(), force_month_start,
+                today.isoformat(), force_quarter_start,
                 dl_date.isoformat(), stamp_date.isoformat(),
             )
 
@@ -805,18 +807,18 @@ class SzseEtfCompositionDownload(DownloadJob):
             target_dates = generate_monthly_first_biz_dates(_start, _end)
         elif download_mode == "quarterly":
             target_dates = generate_hybrid_dates(_start, _end)
-            target_dates = [d for d in target_dates if d.month in (1, 4, 7, 10)]
+            target_dates = [d for d in target_dates if d.month in QUARTER_MONTHS]
         else:
             target_dates = generate_monthly_first_biz_dates(_start, _end)
 
-        # On month-start, don't skip today (we need dl_date in the target set).
-        if skip_today and not month_start:
+        # On quarter-start, don't skip today (we need dl_date in the target set).
+        if skip_today and not quarter_start:
             target_dates = [d for d in target_dates if d != today]
         if max_dates is not None and max_dates > 0:
             target_dates = target_dates[:max_dates]
 
-        # On month-start, ensure dl_date is in target_dates (prepend if missing).
-        if month_start and dl_date and dl_date not in target_dates:
+        # On quarter-start, ensure dl_date is in target_dates (prepend if missing).
+        if quarter_start and dl_date and dl_date not in target_dates:
             target_dates.insert(0, dl_date)
 
         if not target_dates:
@@ -837,9 +839,9 @@ class SzseEtfCompositionDownload(DownloadJob):
                 except ValueError:
                     pass
 
-        # On month-start, force re-download of dl_date by removing it from the
+        # On quarter-start, force re-download of dl_date by removing it from the
         # cached set (the API is still queried and files are re-downloaded).
-        if month_start and dl_date:
+        if quarter_start and dl_date:
             cached_dates.discard(dl_date)
 
         missing_dates = len(target_dates) - len(cached_dates & set(target_dates))
@@ -912,15 +914,15 @@ class SzseEtfCompositionDownload(DownloadJob):
                     proxy.sleep(auto_sleep * 0.3)
                     continue
 
-                # On month-start, stamp items for dl_date with today's date so
+                # On quarter-start, stamp items for dl_date with today's date so
                 # files are named with today's date and the trade_date column in
-                # the CSV reflects the new month — even though the actual PCF
+                # the CSV reflects the new quarter — even though the actual PCF
                 # data is from the most recent trading day (dl_date).
-                if month_start and stamp_date and d == dl_date:
+                if quarter_start and stamp_date and d == dl_date:
                     for it in items:
                         it.trade_date = stamp_date
                         it.md_filename = md_filename_for(stamp_date, it.etf_code)
-                    logger.info("  [month-start] Stamped %d items with %s (data from %s)",
+                    logger.info("  [quarter-start] Stamped %d items with %s (data from %s)",
                                 len(items), stamp_date.isoformat(), d.isoformat())
 
                 logger.info("  Found %d ETFs for %s", len(items), d)
@@ -1016,7 +1018,7 @@ class SzseEtfCompositionDownload(DownloadJob):
             skip_today=self.args.skip_today,
             convert_csv=self.args.convert_csv,
             download_mode=self.args.download_mode,
-            force_month_start=self.args.force_month_start,
+            force_quarter_start=self.args.force_quarter_start,
         )
         logger.info(result)
 

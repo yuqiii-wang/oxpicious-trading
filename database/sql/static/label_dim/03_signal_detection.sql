@@ -589,6 +589,83 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- SELL (exit timing — the equity asymmetry)
     ('signal_sub_type', 6000, 'macd_cross_up', 6000),
     ('signal_sub_type', 6001, 'macd_cross_dn', 6001),
+    -- signal_type 11 (2026-11-16): the crowdedness family — the market
+    -- crowdedness composite (the nightly pool-level crowding gauge over
+    -- each index's member-stock pool) as rule cells on the INDEX
+    -- itself; the crowdedness stats are the assistant metric, the
+    -- trade is the index. v3 the same day (user-directed "no long
+    -- period percentiles, but should consider recent crowdedness and
+    -- underlying curve ups and downs" — the v2 trailing-10y
+    -- quantile-tail triggers measured out; studies
+    -- temp_scripts/crowd_action_study{,2,3}.py): the trigger is the
+    -- crowd's RECENT-EXTREME state (60-row window) gated by the
+    -- underlying index's own 10d direction.
+    ('signal_type', 11, 'crowdedness', 11),
+    -- the crowdedness family's sub types (block 6120+, the v3
+    -- recent-extreme inventory; the v2 long-percentile tail block
+    -- 6100-6111 was retired the same day — its rows purged with the
+    -- v3 --force rebuild): {hot set}_{axis}_{state} over the TWO
+    -- HOT-SET BASES x the two score axes x the two states.
+    -- roll_* = the DAILY-ROLLING hot set (re-ranked every date —
+    -- analysis.market_crowdedness); year_* = the THIS-YEAR pinned hot
+    -- set (the date's own calendar year's frozen roster —
+    -- analysis.market_crowdedness_year joined on hot_year = the
+    -- date's year, chained across years). Within each base _score_* =
+    -- the RAW composite (the 0.30/0.30/0.25/0.15 blend of the four
+    -- pillar percentiles), _ma5_* its 5-pool-date moving average (the
+    -- ONLINE read).
+    --   drain  BUY   the crowd at its trailing 60-row LOW while the
+    --               index ROSE over its own trailing 10 rows (+0.39 /
+    --               +0.52 / +0.62 / +0.63% forward blend on the four
+    --               bases) — the crowd drained while price rose: the
+    --               move is not overcrowded;
+    --   pilein SELL  the crowd at its trailing 60-row HIGH while the
+    --               index FELL over its own trailing 10 rows (-0.60%
+    --               on the raw score base) — distribution churn in a
+    --               decline, exit timing. The hot-tech confirmation
+    --               gate measured formulation-dependent (it helped the
+    --               20-row pile-in but flipped the 60-row one) — not
+    --               shipped (the honest negative stands).
+    ('signal_sub_type', 6120, 'crowd_roll_score_drain', 6120),
+    ('signal_sub_type', 6121, 'crowd_roll_score_pilein', 6121),
+    ('signal_sub_type', 6122, 'crowd_roll_ma5_drain', 6122),
+    ('signal_sub_type', 6123, 'crowd_roll_ma5_pilein', 6123),
+    ('signal_sub_type', 6124, 'crowd_year_score_drain', 6124),
+    ('signal_sub_type', 6125, 'crowd_year_score_pilein', 6125),
+    ('signal_sub_type', 6126, 'crowd_year_ma5_drain', 6126),
+    ('signal_sub_type', 6127, 'crowd_year_ma5_pilein', 6127),
+    -- the v4 additions (2026-11-16, user-directed: 2020-05-29 /
+    -- 2022-10-26 / 2025-06-03 / 2026-10-30 must fire BUYs and
+    -- 2024-11-11 / 2026-06-24 SELLS — the v3 states missed each for a
+    -- different reason; studies temp_scripts/crowd_action_study4..7 +
+    -- crowd_date_diagnosis):
+    --   drain_floor  BUY  the crowd composite at its trailing-250-row
+    --               bottom (pos <= 0.10) while the index ticks up
+    --               (ret5 > 0) — the year-scale crowd floor with the
+    --               first up-tick (the 2020-05-29 / 2025-06-03
+    --               signature; family-scoped LOOSE gate: only a
+    --               negative measured mean is rejected)
+    --   tech_washout BUY  the hot set's median px-vs-MA60 percentile
+    --               under water (<= 0.10 at a fresh 20-row depth low
+    --               with volume picking up, or <= 0.20 at an
+    --               amount-climax >= 0.80) — the falling-knife
+    --               capitulation catch, any direction (+0.92% forward
+    --               blend pooled; the 2022-10-26 / 2026-10-30
+    --               signature)
+    --   tech_euphoria SELL the crowd ma5 at its 60-row high or within
+    --               10% of its trailing-year high while the hot set's
+    --               px-vs-MA20 percentile >= 0.85 — the blow-off
+    --               stretch (the 2026-06-24 signature; sells are not
+    --               pooled-gated — the per-cell gate judges)
+    --   tech_euphoria_div SELL the euphoria stretch with the crowd
+    --               composite ALREADY turning down (score_chg5 < 0) —
+    --               the price/crowd divergence (-0.70% raw forward on
+    --               000001; the 2024-11-11 signature)
+    ('signal_sub_type', 6128, 'crowd_roll_score_drain_floor', 6128),
+    ('signal_sub_type', 6129, 'crowd_year_score_drain_floor', 6129),
+    ('signal_sub_type', 6130, 'crowd_tech_washout', 6130),
+    ('signal_sub_type', 6131, 'crowd_tech_euphoria', 6131),
+    ('signal_sub_type', 6132, 'crowd_tech_euphoria_div', 6132),
     -- analysis_cache_kind: analysis_signals.analysis_cache.kind — the
     -- generic intermediate-result cache's tenant (which analysis owns
     -- the row's cache jsonb)

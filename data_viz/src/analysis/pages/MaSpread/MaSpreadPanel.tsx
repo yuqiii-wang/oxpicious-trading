@@ -28,6 +28,12 @@
  *     the plot freezes under a translucent spinner (BaseChart
  *     freezeOnLoading); a pick on an unloaded section fetches its group
  *     first and applies when it lands.
+ *   · The main plot and the MA-Chain Alignment section share one synced
+ *     viewport + hover crosshair (zoomRange state threaded into both
+ *     option builders + shared/charts/tooltipSync forwarding — manual
+ *     sync, no echarts.connect): this plot's slider drives the alignment
+ *     chart's window (the alignment chart has no slider) and a hover on
+ *     either raises the vertical axisPointer + tooltip on both.
  */
 import { useCallback, useMemo, useRef, useState } from "react";
 import { Box, Stack, Typography } from "@mui/material";
@@ -49,8 +55,9 @@ import {
   computeBreakStreaks,
   computeStreakBandWindow,
 } from "@/shared/charts/streakBands";
-import type { PanelProps, ChartOverlay } from "./types";
+import type { PanelProps, ChartOverlay, ChartZoomRange } from "./types";
 import { RF_ESTIMATE_DEFAULT_METHOD } from "./constants";
+import { syncTipTo } from "@/shared/charts/tooltipSync";
 import {
   shortLabel,
   type MomentumTerm,
@@ -132,6 +139,35 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
   // OHLC display mode — "percentage" (default) rebases OHLC + MAs to % change
   // from the first valid close; "absolute" shows raw prices.
   const [ohlcMode, setOhlcMode] = useState<OhlcMode>("percentage");
+
+  // ---- Cross-chart zoom sync (types.ChartZoomRange) --------------------------
+  // ONE synced dataZoom viewport (zoomRange state, threaded into both option
+  // builders): the main plot's slider drives it and either chart's pan/zoom
+  // feeds back — the alignment chart has no slider of its own. Manual state
+  // sync, NOT echarts.connect: a connect group between the two charts
+  // re-broadcasts the hover's updateAxisPointer across them and the echoed
+  // pixel-form event lands in the tooltip sync's hideTip branch, killing the
+  // companion chart's own tooltip (2026-11-14 probes). Survives a same-code
+  // refresh (EChart's zoom preservation keeps the live window anyway); a
+  // code switch remounts the panel.
+  const [zoomRange, setZoomRange] = useState<ChartZoomRange | null>(null);
+  const handleZoom = useCallback(
+    (params: unknown) => {
+      if (!params || typeof params !== "object") return;
+      const ev = params as {
+        batch?: Array<{ start?: number; end?: number }>;
+        start?: number;
+        end?: number;
+      };
+      const batchItem = ev.batch?.[0] ?? ev;
+      const cur = zoomRange ?? { start: 0, end: 100 };
+      const start = typeof batchItem.start === "number" ? batchItem.start : cur.start;
+      const end = typeof batchItem.end === "number" ? batchItem.end : cur.end;
+      if (Math.abs(start - cur.start) < 0.01 && Math.abs(end - cur.end) < 0.01) return;
+      setZoomRange({ start, end });
+    },
+    [zoomRange],
+  );
 
   // Enabled roof/floor window (trading days) — null = off; the trendlines
   // converge on anchorIdx (declared with the pair pick above).
@@ -407,6 +443,7 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
         ohlcRows: extras.ohlc ?? null,
         rfEstimates: extras.rfEstimates ?? null,
         rfRebounds: extras.rfRebounds ?? null,
+        zoom: zoomRange,
       }),
     [
       loading,
@@ -444,11 +481,16 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
       extras.ohlcGaps,
       gapMarks.spike,
       gapMarks.flush,
+      zoomRange,
     ],
   );
 
   // ---- AI Ask — wire the OUTER card (the chart body is a bare BaseChart).
   const maAiAskRef = useRef<ECharts | null>(null);
+  // The alignment companion chart's instance + the re-entrancy guard for
+  // the cross-chart hover sync (shared/charts/tooltipSync).
+  const alignmentChartRef = useRef<ECharts | null>(null);
+  const syncingRef = useRef(false);
   const shortName = selectedPair ? shortLabel(selectedPair.ma_short, selectedPair.kind) : "";
   const longName = selectedPair
     ? selectedPair.kind === "ema"
@@ -519,6 +561,46 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
     spec: aiAskSpec,
     getInstance: () => maAiAskRef.current,
   });
+
+  // ---- Cross-chart sync: shared zoom window + hover tooltip ------------------
+  // Hovering either chart forwards the hovered category index to the other
+  // as a pixel point (manual showTip/hideTip via shared/charts/tooltipSync),
+  // so both plots raise the vertical axisPointer + tooltip on the same
+  // date. The plot and the alignment chart share the exact same full-window
+  // date axis, so the index maps 1:1.
+  const handleMainTipSync = useCallback(
+    (params: unknown) => {
+      syncTipTo(alignmentChartRef.current, params, syncingRef, maAiAskRef.current);
+    },
+    [],
+  );
+  const handleAlignmentTipSync = useCallback(
+    (params: unknown) => {
+      syncTipTo(maAiAskRef.current, params, syncingRef, alignmentChartRef.current);
+    },
+    [],
+  );
+  // Leaving either chart hides the tooltip + axis pointer on BOTH charts.
+  const hideAllTips = useCallback(() => {
+    maAiAskRef.current?.dispatchAction({ type: "hideTip", escapeConnect: true });
+    alignmentChartRef.current?.dispatchAction({ type: "hideTip", escapeConnect: true });
+  }, []);
+  const mainChartEvents = useMemo(
+    () => ({
+      dataZoom: handleZoom,
+      updateAxisPointer: handleMainTipSync,
+      globalout: hideAllTips,
+    }),
+    [handleZoom, handleMainTipSync, hideAllTips],
+  );
+  const alignmentChartEvents = useMemo(
+    () => ({
+      dataZoom: handleZoom,
+      updateAxisPointer: handleAlignmentTipSync,
+      globalout: hideAllTips,
+    }),
+    [handleZoom, handleAlignmentTipSync, hideAllTips],
+  );
 
   // ---- Sub-header + canvas interaction ---------------------------------------
 
@@ -643,7 +725,8 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
       {/* Chart body (loading / error / empty placeholders + the EChart) is
           owned by the shared BaseChart, embedded bare inside this card; the
           section rows go in its children slot (rendered above the chart
-          body in every state). */}
+          body in every state) and the MA-Chain Alignment section rides the
+          footer slot (beneath the chart body). */}
       <BaseChart
         variant="bare"
         option={chartOption}
@@ -657,9 +740,29 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
             : "No data"
         }
         onCanvasClick={handleCanvasClick}
+        onEvents={mainChartEvents}
         onReady={(c) => {
           maAiAskRef.current = c;
         }}
+        footer={
+          !loading && !error && pairs.length > 0 ? (
+            /* MA-Chain Alignment — beneath the main plot (its own mini
+               chart + verdict chip; see sections/AlignmentSection). The
+               shared zoomRange viewport + the hover-tip forwarding bind it
+               to this plot: the slider drives its window and a hover on
+               either chart raises the vertical axisPointer + tooltip on
+               both. */
+            <AlignmentSection
+              alignmentRows={extras.alignment}
+              loading={loadingMetrics.includes("alignment")}
+              zoom={zoomRange}
+              onReady={(c) => {
+                alignmentChartRef.current = c;
+              }}
+              onEvents={alignmentChartEvents}
+            />
+          ) : undefined
+        }
       >
       {/* Section rows — one component per row (see sections/); order is
           the layout: pair chips → RSI Trends → Momentum → Roof/Floor →
@@ -692,11 +795,6 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
             disabled={extrasLoading}
             loadingMomentum={loadingMetrics.includes("momentum")}
             momentumRows={extras.momentum}
-          />
-
-          <AlignmentSection
-            alignmentRows={extras.alignment}
-            loading={loadingMetrics.includes("alignment")}
           />
 
           <RoofFloorSection

@@ -64,10 +64,18 @@ _FLAKE_RE = re.compile(r"^the flake is armed once$", re.IGNORECASE)
 # output-ceiling scenario): the DocString is the JSON the model
 # INTENDED; the provider emits its arguments chopped in half (invalid
 # JSON — the parse failure the real ceiling produces) and stamps
-# ``finish_reason: "length"`` on the message.
+# ``finish_reason: "length"`` on the message. The SAYS form (2026-11-13,
+# the drift-fork scenarios): ``the reply says "<head>" and calls
+# "<tool>" with`` — a content-CARRYING tool call (the head rides the
+# assistant message's content beside the call, the OpenAI shape real
+# models produce), which the fork-point checkpoint builder needs: the
+# drift walk's parent turns carry distinct response heads the
+# ``_fork_point_candidates`` reader picks from.
 _CALL_CUT_RE = re.compile(
     r'the reply calls "(.+?)" with its arguments cut', re.IGNORECASE)
 _CALL_RE = re.compile(r'the reply calls "(.+?)" with', re.IGNORECASE)
+_CALL_SAYS_RE = re.compile(
+    r'the reply says "(.+?)" and calls "(.+?)" with', re.IGNORECASE)
 
 
 class ReplyNotFound(LookupError):
@@ -138,9 +146,12 @@ class _ScenarioRule:
                 f"scenario @{scenario.tag}: its Then carries no "
                 f"DocString reply")
         cut = _CALL_CUT_RE.search(then.text)
+        says = _CALL_SAYS_RE.search(then.text)
         call = _CALL_RE.search(then.text)
+        self.reply_head: Optional[str] = says.group(1) if says else None
         self.tool_call: Optional[str] = (
-            (cut or call).group(1) if (cut or call) else None)
+            (cut or says or call).group(2 if says else 1)
+            if (cut or says or call) else None)
         self.arguments_cut = bool(cut)
         self.arguments: Dict[str, Any] = {}
         if self.tool_call:
@@ -250,7 +261,7 @@ class DummyLlmProvider:
                         args_json = args_json[:max(1, len(args_json) // 2)]
                     message = {
                         "role": "assistant",
-                        "content": "",
+                        "content": rule.reply_head or "",
                         "tool_calls": [{
                             "id": f"call_{self.n_calls}",
                             "type": "function",

@@ -1,0 +1,11 @@
+{
+  "service": "downloads.stock.sse.dividend",
+  "check": "db_source_freshness",
+  "params": {
+    "view": "server_cluster/monitor/non_daily/stock_dividends_fresh",
+    "source": "SSE",
+    "max_age_days": 200
+  },
+  "rerun_args": [],
+  "notes": "stats.stock_dividends source=SSE freshness; a plain rerun fetches only codes the 6-month freshness guard sees stale (never --force: per-code refetch of everything)."
+}

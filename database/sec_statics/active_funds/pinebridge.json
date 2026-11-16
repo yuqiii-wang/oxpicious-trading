@@ -1,0 +1,208 @@
+{
+  "owner_id": "pinebridge",
+  "owner_name": "华泰柏瑞",
+  "comment": "Curated active-funds registry of 华泰柏瑞基金 (owner_id matches sec_owners.json). Selection 2026-11-14: every actively-managed LISTED ETF of the issuer (3 = 2 增强策略ETF + 1 主动管理ETF, the complete set) plus the top OTC active funds by 资产规模 with long 成立历史 (A-share class primary; sibling share classes in share_classes). aum_yi = 资产规模(亿元) as of the 2026-09-30 quarterly report unless a per-fund note says otherwise. Facts verified per fund against eastmoney F10 (fundf10.eastmoney.com/jbgk_<code>.html) and the issuer fundlist (www.huatai-pb.com products index → temps/huatai_pb_nav/huatai_pb_nav_trend_*.csv). Consumers: builds.classification (venue=etf rows → strategy ACTIVE), downloads.etf.huatai_pb.* per-fund services, builds.etf.feeder_nav listed backfill. Hand-editable — edit the file, never the consumers.",
+  "funds": [
+    {
+      "code": "561550",
+      "name": "中证500增强ETF华泰柏瑞",
+      "style": "enhanced_index",
+      "venue": "etf",
+      "exchange": "SS",
+      "inception": "2021-12-02",
+      "aum_yi": 18.54,
+      "benchmark": "中证500指数",
+      "share_classes": [],
+      "note": "largest enhanced ETF of the two tracked issuers"
+    },
+    {
+      "code": "561590",
+      "name": "中证1000增强ETF华泰柏瑞",
+      "style": "enhanced_index",
+      "venue": "etf",
+      "exchange": "SS",
+      "inception": "2022-11-23",
+      "aum_yi": 1.47,
+      "benchmark": "中证1000指数",
+      "share_classes": [],
+      "note": null
+    },
+    {
+      "code": "581090",
+      "name": "价值精选主动ETF华泰柏瑞",
+      "style": "active_mgmt",
+      "venue": "etf",
+      "exchange": "SS",
+      "inception": "2026-10-29",
+      "aum_yi": 20.0,
+      "benchmark": "中证800价值",
+      "share_classes": [],
+      "note": "SSE 主动管理型ETF first batch (581xxx code range); aum_yi is the inception-day figure 2026-10-29 (no quarterly report yet); still in 封闭期 at 2026-11-14 — NAV publishing but not yet tradable on exchange"
+    },
+    {
+      "code": "019240",
+      "name": "华泰柏瑞中证1000指数增强A",
+      "style": "enhanced_index",
+      "venue": "otc",
+      "inception": "2023-09-19",
+      "aum_yi": 11.16,
+      "benchmark": "中证1000指数",
+      "share_classes": ["019241"],
+      "note": "C=019241"
+    },
+    {
+      "code": "001074",
+      "name": "华泰柏瑞沪深300指数增强A",
+      "style": "enhanced_index",
+      "venue": "otc",
+      "inception": "2015-03-24",
+      "aum_yi": 4.92,
+      "benchmark": "沪深300指数",
+      "share_classes": ["006531"],
+      "note": "C=006531"
+    },
+    {
+      "code": "014305",
+      "name": "华泰柏瑞中证500指数增强A",
+      "style": "enhanced_index",
+      "venue": "otc",
+      "inception": "2022-04-27",
+      "aum_yi": 4.43,
+      "benchmark": "中证500指数",
+      "share_classes": ["014306"],
+      "note": "C=014306"
+    },
+    {
+      "code": "025696",
+      "name": "华泰柏瑞上证科创板综合指数增强A",
+      "style": "enhanced_index",
+      "venue": "otc",
+      "inception": "2025-11-18",
+      "aum_yi": 4.01,
+      "benchmark": "上证科创板综合指数",
+      "share_classes": ["025697"],
+      "note": "C=025697"
+    },
+    {
+      "code": "019923",
+      "name": "华泰柏瑞中证2000指数增强A",
+      "style": "enhanced_index",
+      "venue": "otc",
+      "inception": "2024-01-12",
+      "aum_yi": 3.62,
+      "benchmark": "中证2000指数",
+      "share_classes": ["019924"],
+      "note": "C=019924"
+    },
+    {
+      "code": "026433",
+      "name": "华泰柏瑞中证A500指数增强A",
+      "style": "enhanced_index",
+      "venue": "otc",
+      "inception": "2026-02-03",
+      "aum_yi": 3.1,
+      "benchmark": "中证A500指数",
+      "share_classes": ["026434"],
+      "note": "C=026434"
+    },
+    {
+      "code": "004010",
+      "name": "华泰柏瑞鼎利混合A",
+      "style": "active_mgmt",
+      "venue": "otc",
+      "inception": "2016-12-22",
+      "aum_yi": 43.7,
+      "benchmark": null,
+      "share_classes": ["004011"],
+      "note": "C=004011"
+    },
+    {
+      "code": "008528",
+      "name": "华泰柏瑞质量成长混合A",
+      "style": "active_mgmt",
+      "venue": "otc",
+      "inception": "2020-03-18",
+      "aum_yi": 32.21,
+      "benchmark": null,
+      "share_classes": ["011452"],
+      "note": "C=011452"
+    },
+    {
+      "code": "004475",
+      "name": "华泰柏瑞富利混合A",
+      "style": "active_mgmt",
+      "venue": "otc",
+      "inception": "2017-09-12",
+      "aum_yi": 29.39,
+      "benchmark": null,
+      "share_classes": ["014597"],
+      "note": "C=014597"
+    },
+    {
+      "code": "001069",
+      "name": "华泰柏瑞消费成长混合A",
+      "style": "active_mgmt",
+      "venue": "otc",
+      "inception": "2015-05-20",
+      "aum_yi": 13.48,
+      "benchmark": null,
+      "share_classes": ["029725"],
+      "note": "C=029725"
+    },
+    {
+      "code": "460001",
+      "name": "华泰柏瑞盛世中国混合",
+      "style": "active_mgmt",
+      "venue": "otc",
+      "inception": "2005-04-27",
+      "aum_yi": 7.69,
+      "benchmark": null,
+      "share_classes": [],
+      "note": "oldest active fund of the family"
+    },
+    {
+      "code": "000172",
+      "name": "华泰柏瑞量化增强混合A",
+      "style": "active_mgmt",
+      "venue": "otc",
+      "inception": "2013-08-02",
+      "aum_yi": 9.13,
+      "benchmark": null,
+      "share_classes": ["010234"],
+      "note": "C=010234; active-quant equity (no tracking index), hence active_mgmt not enhanced_index"
+    },
+    {
+      "code": "460005",
+      "name": "华泰柏瑞价值增长混合A",
+      "style": "active_mgmt",
+      "venue": "otc",
+      "inception": "2008-07-16",
+      "aum_yi": 4.6,
+      "benchmark": null,
+      "share_classes": ["010037"],
+      "note": "C=010037"
+    },
+    {
+      "code": "009990",
+      "name": "华泰柏瑞品质优选混合A",
+      "style": "active_mgmt",
+      "venue": "otc",
+      "inception": "2020-08-28",
+      "aum_yi": 4.4,
+      "benchmark": null,
+      "share_classes": ["009991"],
+      "note": "C=009991"
+    },
+    {
+      "code": "005805",
+      "name": "华泰柏瑞医疗健康混合A",
+      "style": "active_mgmt",
+      "venue": "otc",
+      "inception": "2018-06-25",
+      "aum_yi": 4.38,
+      "benchmark": null,
+      "share_classes": ["011453"],
+      "note": "C=011453"
+    }
+  ]
+}

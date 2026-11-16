@@ -45,10 +45,11 @@ interface RestartRow {
   sub_scope: string | null;
 }
 
-/** One resident process row (SERVICE_CATALOG — the always-on services
- *  the stream watchdog supervises): liveness + the watchdog restart
- *  trail. The category was called "stream services" back when the
- *  resident set was only the market-data pollers. */
+/** One resident process row (SERVICE_CATALOG — the always-on services:
+ *  the area servers' residents + the watchdog's one scan charge).
+ *  Liveness + the restart trail. The category was called "stream
+ *  services" back when the resident set was only the market-data
+ *  pollers. */
 export interface ResidentProcessStatus {
   service: string;
   scope: string;
@@ -108,8 +109,9 @@ export interface MonitorStreamResponse {
   staleAfterS: number;
   watchdog: ResidentProcessStatus | null;
   /** The resident processes (SERVICE_CATALOG): always-on pollers,
-   *  db_health, the llm_agents daemons — everything the stream watchdog
-   *  supervises, minus the watchdog itself. */
+   *  cluster servers, infra daemons — the whole always-on fleet (the
+   *  completed 2026-11 resident migration), minus the watchdog itself
+   *  (it gets its own row below). */
   services: ResidentProcessStatus[];
   processes: ProcessStatus[];
   recentRestarts: Array<{

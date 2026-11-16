@@ -1,9 +1,9 @@
 """server_cluster.monitor.app — the ops area's composition root.
 
 The shared jobs surface (``app_factory.create_app`` — jobs, processes,
-health routers + the resident supervisor) PLUS this package's fleet and
-orchestration routers. (The daily 07:00 bring-up scheduler lived here
-until 2026-11 — it moved to the maintainer area,
+health routers + the resident supervisor) PLUS this package's fleet,
+orchestration and non-daily routers. (The daily 07:00 bring-up scheduler
+lived here until 2026-11 — it moved to the maintainer area,
 ``maintainer/bring_up.py``; its fire comes back as a POST to
 ``/residents/ensure-up``.) No route logic lives here."""
 from __future__ import annotations
@@ -14,8 +14,9 @@ from typing import Optional
 from fastapi import FastAPI
 
 from server_cluster._common.config import AreaConfig
-from . import fleet, orchestration
+from . import fleet, non_daily, orchestration
 from .fleet import FleetOps
+from .non_daily import NonDailyOps
 from .orchestration import OrchestrationRunner
 
 logger = logging.getLogger(__name__)
@@ -33,10 +34,11 @@ def create_monitor_app(config: Optional[AreaConfig] = None) -> FastAPI:
     app = create_app(config)
 
     app.state.fleet = FleetOps(
-        config, app.state.registry, app.state.processes,
-        app.state.supervisor)
+        config, app.state.processes, app.state.supervisor)
     app.state.orchestration = OrchestrationRunner(app.state.registry)
+    app.state.non_daily = NonDailyOps(app.state.registry)
 
     app.include_router(fleet.router)
     app.include_router(orchestration.router)
+    app.include_router(non_daily.router)
     return app

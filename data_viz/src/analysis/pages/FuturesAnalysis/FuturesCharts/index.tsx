@@ -40,7 +40,7 @@ import {
 import { useDocs, compactDefined } from "@/shared/docs";
 import { useFuturesExt } from "./useFuturesExt";
 import { useExpiryDots } from "./expiryDots";
-import { syncTipTo } from "./tooltipSync";
+import { syncTipTo } from "@/shared/charts/tooltipSync";
 import { buildCorrelationChartOption } from "./buildCorrOption";
 import { ChartSection } from "./ChartSection";
 

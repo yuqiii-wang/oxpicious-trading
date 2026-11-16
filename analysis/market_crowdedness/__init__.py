@@ -17,4 +17,14 @@ stock union for an industry); see the __main__ module docstring for the
 full definition.
 
 Run via ``python -m analysis.market_crowdedness``.
+
+Layout (the 2026-11-14 split of the former monolithic __main__.py —
+pure code motion, every name unchanged):
+  config.py   — the four output tables, the metric knobs and the
+                output column contracts (pure literals)
+  fetch.py    — the raw-input SQL reads (sql_views: .../fetch/)
+  compute/    — metrics / finalize / pinned / pool_batch / driver —
+                the chunked compute core
+  pipeline.py — the MarketCrowdednessAnalysis run orchestration +
+                incremental writes (sql_views: .../pipeline/)
 """

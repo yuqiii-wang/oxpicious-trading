@@ -20,10 +20,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from _common.sql_writes import render_sql_write
 from llm_agents.deep_agents import events
+
+logger = logging.getLogger(__name__)
 
 from llm_agents.deep_agents.planning.store.base import _StoreBase
 from llm_agents.deep_agents.planning.store.models import (
@@ -183,7 +186,8 @@ class StateStoreMixin(_StoreBase):
             for ordinal, step in enumerate(steps, start=1):
                 input_context_id = None
                 notes_json = _normalize_notes(
-                    step.notes, step.delegate, step.parallel)
+                    step.notes, step.delegate, step.parallel,
+                    step.study_focus)
                 if notes_json is not None:
                     input_context_id = await self._insert_context(
                         conn, custom_thread_id, "step-input", notes_json,
@@ -260,7 +264,8 @@ class StateStoreMixin(_StoreBase):
             for ordinal, step in enumerate(steps, start=1):
                 input_context_id = None
                 notes_json = _normalize_notes(
-                    step.notes, step.delegate, step.parallel)
+                    step.notes, step.delegate, step.parallel,
+                    step.study_focus)
                 if notes_json is not None:
                     input_context_id = await self._insert_context(
                         conn, thread_id, "step-input", notes_json,
@@ -339,18 +344,22 @@ class StateStoreMixin(_StoreBase):
 
     async def fetch_step_delegate(self,
         state_id: int,
-    ) -> Tuple[Optional[str], bool]:
-        """A step's delegation goal and independence mark from its input
-        context payload — the step-graph engine's spawn/wave detector. Works
-        for planned AND runtime-added steps (both store the flags in the
-        step-input payload; goal None = an inline step, parallel False =
-        ordered — only consecutive delegated-or-parallel steps wave)."""
+    ) -> Tuple[Optional[str], bool, Optional[str]]:
+        """A step's delegation goal, independence mark and DB-scope
+        study focus from its input context payload — the step-graph
+        engine's spawn/wave detector (the focus rides a delegated step
+        to its spawn's authorization extension, core/authorization).
+        Works for planned AND runtime-added steps (both store the flags
+        in the step-input payload; goal None = an inline step, parallel
+        False = ordered — only consecutive delegated-or-parallel steps
+        wave)."""
         conn = await self._connect()
         try:
             row = await conn.fetchrow(
                 "SELECT c.payload ->> 'delegate_goal' AS goal, "
                 "COALESCE((c.payload ->> 'parallel')::boolean, false) "
-                "AS parallel "
+                "AS parallel, "
+                "c.payload ->> 'study_focus' AS study_focus "
                 "FROM llm.deep_agent_states s "
                 "JOIN llm.deep_agent_contexts c "
                 "  ON c.context_id = s.input_context_id "
@@ -358,9 +367,10 @@ class StateStoreMixin(_StoreBase):
         finally:
             await conn.close()
         if row is None:
-            return None, False
+            return None, False, None
         return (str(row["goal"]) if row["goal"] else None,
-                bool(row["parallel"]))
+                bool(row["parallel"]),
+                str(row["study_focus"]) if row["study_focus"] else None)
 
 
     async def _thread_super(self, conn, thread_id: str) -> Optional[str]:
@@ -433,7 +443,8 @@ class StateStoreMixin(_StoreBase):
             for offset, step in enumerate(steps):
                 input_context_id = None
                 notes_json = _normalize_notes(
-                    step.notes, step.delegate, step.parallel)
+                    step.notes, step.delegate, step.parallel,
+                    step.study_focus)
                 if notes_json is not None:
                     input_context_id = await self._insert_context(
                         conn, thread_id, "step-input", notes_json,
@@ -498,9 +509,14 @@ class StateStoreMixin(_StoreBase):
                     "SELECT COALESCE((c.payload ->> 'parallel')::boolean, "
                     "false) FROM llm.deep_agent_contexts c "
                     "WHERE c.context_id = $1", current.input_context_id)
+                keep_focus = await conn.fetchval(
+                    "SELECT c.payload ->> 'study_focus' "
+                    "FROM llm.deep_agent_contexts c "
+                    "WHERE c.context_id = $1", current.input_context_id)
                 payload: Dict[str, Any] = json.loads(
                     _normalize_notes(notes, delegate,
-                                     bool(keep_parallel)) or "{}")
+                                     bool(keep_parallel),
+                                     keep_focus) or "{}")
                 input_context_id = await self._insert_context(
                     conn, current.thread_id, "step-input",
                     json.dumps(payload, ensure_ascii=False),
@@ -559,7 +575,8 @@ class StateStoreMixin(_StoreBase):
         return len(rows)
 
 
-    async def reopen_state(self, state_id: int, *, thread_id: str = "") -> bool:
+    async def reopen_state(self, state_id: int, *, thread_id: str = "",
+                           note: str = "") -> bool:
         """REPAIR LANE re-open (the supervisor's retry primitive, 2026-11-06):
         flip a FAILED state row back to pending — error/finished_at
         cleared (a later successful settle COALESCEs over error and would
@@ -567,15 +584,62 @@ class StateStoreMixin(_StoreBase):
         lane's normal routing re-picks it next hop. Guarded failed→pending
         ONLY (a completed/skipped row never reopens; a concurrent settle
         makes the guard miss and this returns False). Returns whether the
-        row actually reopened."""
+        row actually reopened.
+
+        THE RESUME MARKER (2026-11-15, the fork action on the UI): on a
+        successful flip the store writes a child_kind 3 (agent_child_kind
+        resume) RECORD row under the step — it preserves the failed
+        attempt's error (which the flip just cleared off the parent) and
+        carries *note* (the retry verdict's instruction) as its title —
+        so the Thread Graph draws the resumption as a resume spur
+        instead of the failure vanishing. Fail-soft: a marker write
+        failure logs and moves on (the retry itself already landed)."""
         conn = await self._connect()
         try:
+            prior = await conn.fetchrow(
+                "SELECT thread_id, super_thread_id, node, title, error "
+                "FROM llm.deep_agent_states WHERE state_id = $1",
+                int(state_id))
+            if prior is None:
+                return False
             write = render_sql_write(
                 "llm_agents/deep_agents/planning/store/"
                 "deep_agent_states/reopen_failed",
                 int(state_id),
             )
             rows = await conn.fetch(write.sql, *write.params)
+            if rows and prior["error"]:
+                # THE MARKER — the parent's error is about to clear;
+                # record the attempt (title = the verdict note) as a
+                # resume child row. Fail-soft: never break the retry.
+                try:
+                    marker = render_sql_write(
+                        "llm_agents/deep_agents/planning/store/"
+                        "deep_agent_states/insert_resume_marker",
+                        str(prior["thread_id"]),
+                        prior["super_thread_id"],
+                        int(state_id),
+                        str(prior["node"]),
+                        ("supervisor resume — " + note.strip()[:120]).strip()
+                        if note.strip() else "supervisor resume",
+                        str(prior["error"])[:800],
+                    )
+                    marker_id = await conn.fetchval(
+                        marker.sql, *marker.params)
+                    events.publish(events.DeepAgentEvent(
+                        type=events.EventType.STATE_CREATED,
+                        thread_id=str(prior["thread_id"]),
+                        state_id=int(marker_id),
+                        node=str(prior["node"]),
+                        title=str(marker.params[4]),
+                        status="failed",
+                        ordinal=0,
+                        parent_state_id=int(state_id),
+                    ))
+                except Exception as marker_exc:  # noqa: BLE001 — fail-soft
+                    logger.warning(
+                        "resume marker write failed (state %s): %s",
+                        state_id, marker_exc)
         finally:
             await conn.close()
         if rows:
@@ -587,6 +651,57 @@ class StateStoreMixin(_StoreBase):
             ))
         return bool(rows)
 
+
+    async def record_failure_marker(self, state_id: int, *,
+                                    title: str) -> bool:
+        """THE FAILURE-FORK MARKER for a verdict that leaves the row
+        failed (the supervisor's no-action, 2026-11-15): a child_kind 3
+        (agent_child_kind resume) RECORD row under the still-failed
+        step — the failed attempt as a RED DEAD-END BRANCH on the canvas
+        (the fork action on the UI), preserving the error and carrying
+        *title* (the disposition, e.g. ``supervisor no-action``) as its
+        title. Guarded on the row being failed (a row that moved on
+        records nothing); fail-soft (the marker never breaks the
+        verdict's own path). Returns whether the marker landed."""
+        conn = await self._connect()
+        try:
+            prior = await conn.fetchrow(
+                "SELECT thread_id, super_thread_id, node, error "
+                "FROM llm.deep_agent_states "
+                "WHERE state_id = $1 AND status = 'failed'",
+                int(state_id))
+            if prior is None:
+                return False
+            try:
+                write = render_sql_write(
+                    "llm_agents/deep_agents/planning/store/"
+                    "deep_agent_states/insert_resume_marker",
+                    str(prior["thread_id"]),
+                    prior["super_thread_id"],
+                    int(state_id),
+                    str(prior["node"]),
+                    title.strip()[:160] or "supervisor no-action",
+                    str(prior["error"])[:800],
+                )
+                marker_id = await conn.fetchval(write.sql, *write.params)
+                events.publish(events.DeepAgentEvent(
+                    type=events.EventType.STATE_CREATED,
+                    thread_id=str(prior["thread_id"]),
+                    state_id=int(marker_id),
+                    node=str(prior["node"]),
+                    title=str(write.params[4]),
+                    status="failed",
+                    ordinal=0,
+                    parent_state_id=int(state_id),
+                ))
+                return True
+            except Exception as marker_exc:  # noqa: BLE001 — fail-soft
+                logger.warning(
+                    "failure-marker write failed (state %s): %s",
+                    state_id, marker_exc)
+                return False
+        finally:
+            await conn.close()
 
     async def ignore_state(self, state_id: int, note: str = IGNORE_NOTE, *,
                            thread_id: str = "") -> bool:
@@ -715,6 +830,44 @@ class StateStoreMixin(_StoreBase):
             parent_state_id=parent_state_id,
         ))
         return int(child_id)
+
+
+    async def create_toplevel_fork(self,
+        thread_id: str, node: str, title: str,
+        *,
+        llm_context_id: str,
+    ) -> int:
+        """The RUN-NODE FORK's main-line row (2026-11-15): a fork fired
+        off a STATE-LESS runner-lane seat (the output node) continues
+        THE MAIN LINE — the child lands as a TOP-LEVEL row on the
+        OWNING segment's thread (parent NULL, ordinal after the last
+        top-level row, child_kind 1 fork), so the canvas's lane walk
+        renders it in the lane and the pre-fork failed attempt (the
+        kind-2 old-chain stub the caller hangs under it) reads as the
+        side branch. Mirror of :meth:`create_child_state` for the
+        top-level lane case."""
+        conn = await self._connect()
+        try:
+            write = render_sql_write(
+                "llm_agents/deep_agents/planning/store/"
+                "deep_agent_states/insert_toplevel_fork",
+                thread_id, await self._thread_super(conn, thread_id),
+                node, title, llm_context_id,
+            )
+            state_id = await conn.fetchval(write.sql, *write.params)
+        finally:
+            await conn.close()
+        events.publish(events.DeepAgentEvent(
+            type=events.EventType.STATE_CREATED,
+            thread_id=thread_id,
+            state_id=int(state_id),
+            node=node,
+            title=title,
+            status="in_progress",
+            ordinal=0,
+            parent_state_id=None,
+        ))
+        return int(state_id)
 
 
     async def stamp_states_context(self,

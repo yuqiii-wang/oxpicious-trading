@@ -6,6 +6,6 @@
   "freq": "monthly",
   "schedule": "calendar-monthly pass (cron-scheduled; no in-script date guard)",
   "notes": null,
-  "source_ref": "scripts/downloads_monthly.sh",
+  "source_ref": "scripts/orchestration/downloads_monthly.json",
   "updated_at": "2026-10-10T06:29:48.410435+00:00"
 }

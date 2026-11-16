@@ -260,6 +260,9 @@ class TailNodes:
                 # would run unregistered (no child state row, no
                 # supervision), so the lane carries no spawn tool.
                 allow_subagents=False,
+                # The run's thread scope gates this lane's SQL too
+                # (core/authorization — every agent SQL transaction).
+                authorization=getattr(self, "_authorization", None),
                 # The ladder's dynamic rung rides the degraded lane too
                 # (the plan node resolved the budget even when the plan
                 # itself failed — the catalog is the conversation's menu),
@@ -376,7 +379,13 @@ class TailNodes:
             build_message=lambda: message,
             make_tools=lambda: {
                 **StatsToolSet(
-                    descriptions=dict(state.get("tool_prompts") or {})
+                    descriptions=dict(state.get("tool_prompts") or {}),
+                    # The output seat's SQL is scoped like every other
+                    # lane's (core/authorization — the run's thread
+                    # scope; the stats views gate on the permission).
+                    permission=(self._authorization.permission
+                                if getattr(self, "_authorization", None)
+                                is not None else None),
                 ).builtin_tools(),
                 **KgToolSet(
                     descriptions=dict(state.get("tool_prompts") or {}),
@@ -397,6 +406,14 @@ class TailNodes:
                         or limits.max_conversation_steps),
                     limits.max_steps_cap)),
                 temperature=state.get("temperature"),
+                # The node ROLE (2026-11-15): "output" arms the loop's
+                # final-document reserve (one step before the cap the
+                # seat ships what it has instead of dying with nothing).
+                node_role="output",
+                # The run's thread scope gates this seat's SQL too (the
+                # kwarg spreads into the DeepAgent ctor — the same seam
+                # the degraded lane rides).
+                authorization=getattr(self, "_authorization", None),
             ),
             mcp=self._mcp,
         )

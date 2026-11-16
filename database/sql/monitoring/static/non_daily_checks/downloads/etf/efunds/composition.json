@@ -1,0 +1,14 @@
+{
+  "service": "downloads.etf.efunds.composition",
+  "check": "snapshot_fresh",
+  "params": {
+    "dir": "temps/efunds_composition",
+    "pattern": "efunds_comp_*.csv",
+    "min_bytes": 64,
+    "max_age_days": 100
+  },
+  "rerun_args": [
+    "--force-quarter-start"
+  ],
+  "notes": "Quarterly-report top-10 snapshots (temps-only, no DB consumer yet); quarter-end file guard requires the force flag."
+}

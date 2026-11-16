@@ -107,12 +107,22 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- foreground — the parent awaits); 2 abandoned = the drift fork's
     -- ABANDONED pre-fork tail stub (the drifted segment after the fork
     -- point, settled skipped with the drift note — the canvas demotes
-    -- it to the right-side edge path beside the forked continuation).
+    -- it to the right-side edge path beside the forked continuation);
+    -- 3 resume (2026-11-15) = the SUPERVISOR FAILURE-FORK RECORD —
+    -- a record row the repair lane writes under a failed step it
+    -- handled (the fork action on the UI: the failed attempt as a RED
+    -- DEAD-END BRANCH, settled failed, one dashed leg in): the retry
+    -- writes it as the flip clears the parent's error; a no-action
+    -- verdict writes it beside the still-failed row. Carries the prior
+    -- attempt's error and the verdict note as its title (``supervisor
+    -- resume — …`` | ``supervisor no-action``); never routed, excluded
+    -- from the summary-run step counts.
     -- NULL = a top-level row (not a child); child rows predating the
     -- column read as spawn. Seventh llm.* vocabulary
     ('agent_child_kind', 0, 'spawn', 0),
     ('agent_child_kind', 1, 'fork', 1),
     ('agent_child_kind', 2, 'abandoned', 2),
+    ('agent_child_kind', 3, 'resume', 3),
     -- search_table: text.search_lexicon_df.search_table — which
     -- searchable table a high-DF lexeme row counts. Code order =
     -- TSV_SPECS order (_common/tokenization/search_indexing.py): the

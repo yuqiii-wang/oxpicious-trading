@@ -17,6 +17,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from langgraph.store.base import BaseStore
 
 from llm_agents._core.request_log import bind_request_chain, end_request_chain
+from llm_agents.deep_agents.core.authorization import (
+    AUTHORIZATION_SERVICE, AuthorizationContext,
+)
 from llm_agents.deep_agents.core.delegation import (
     SubagentRun, format_subagent_result,
 )
@@ -159,6 +162,8 @@ class SpawnHooks:
         extra_builtin_tools: Optional[Dict[str, Any]] = None,
         preplanned_steps: Optional[List[PlannedStep]] = None,
         decision_engine: Optional[Any] = None,
+        authorization: Optional[AuthorizationContext] = None,
+        preregistered: bool = False,
     ) -> None:
         # The KG RELEVANCE GATE's engine (2026-11-12) — duck-typed,
         # passed to the spawn's KgToolSet; None keeps the child's kg
@@ -166,6 +171,20 @@ class SpawnHooks:
         self._decision_engine = decision_engine
         self._thread_id = thread_id
         self._step_state_id = step_state_id
+        # THE PREREGISTERED LANE (2026-11-15, the run-node fork): the
+        # caller created the child row ITSELF (a topology the generic
+        # under-parent creation cannot express — the main-line fork row
+        # is TOP-LEVEL on the owning segment) and pre-stamped
+        # run.state_id / run.llm_context_id; the input hook then skips
+        # row creation and registers the maps off the stamps, mounting
+        # the kits/hints/system under the existing row exactly the same
+        # way.
+        self._preregistered = preregistered
+        # The PARENT'S authorization context (core/authorization,
+        # 2026-11-13) — what an un-extended child inherits verbatim and
+        # what a study-focused child's extension unions onto. None =
+        # plain non-thread usage (children ungated).
+        self._authorization = authorization
         self._store = store
         self._parent_context_id = parent_context_id
         self._model = model
@@ -184,14 +203,19 @@ class SpawnHooks:
 
     def child_hooks(
         self, state_id: int, context_id: Optional[str],
+        *, authorization: Optional[AuthorizationContext] = None,
     ) -> "SpawnHooks":
         """The sub-sub child's own hooks: parented at the child's state
-        row and context, the pass-down and tool mounts inherited. The
-        trio recurses naturally — a depth-1 child's input hook stamps
-        nothing at depth 2, the cap."""
+        row and context, the pass-down and tool mounts inherited.
+        *authorization* — the CHILD's effective context (its own
+        extension when it earned one, else the parent's): the child's
+        spawns inherit from where the child actually stands
+        (core/authorization). The trio recurses naturally — a depth-1
+        child's input hook stamps nothing at depth 2, the cap."""
         return SpawnHooks(
             self._thread_id, state_id,
             store=self._store, parent_context_id=context_id,
+            authorization=(authorization or self._authorization),
             model=self._model, biz_context=self._biz_context,
             agent_prompts=self._agent_prompts,
             tool_prompts=self._tool_prompts,
@@ -205,7 +229,16 @@ class SpawnHooks:
         agent_prompts = self._agent_prompts
         state_by_run = self._state_by_run
         context_by_run = self._context_by_run
-        context_id = new_context_id() if store is not None else None
+        if self._preregistered and run.state_id is not None:
+            # THE PREREGISTERED LANE: the caller created the child row
+            # itself (the run-node fork's top-level main-line row) and
+            # pre-stamped the ids — register the maps and skip creation.
+            state_id = run.state_id
+            context_id = run.llm_context_id
+            state_by_run[run.run_id] = state_id
+            context_by_run[run.run_id] = context_id
+        else:
+            context_id = new_context_id() if store is not None else None
         # The parent's prompt pass-down: the child sees its spawn goal
         # AND the run's business context (rendered into its first user
         # message as the structured-context block). Never overwrite a
@@ -236,30 +269,61 @@ class SpawnHooks:
                 allowed_tables=table_scope_from_data(biz_context),
                 allowed_schemas=schema_scope_from_data(biz_context))
             if hints:
-                run.request.user_addendum = data_hints_block(hints)
+                # COMPOSE, never overwrite (2026-11-15): the request may
+                # already carry an addendum minted at spawn time (the
+                # delegated resume's supervisor instruction) — the hints
+                # block joins it instead of replacing it.
+                run.request.user_addendum = (
+                    f"{run.request.user_addendum}\n\n{data_hints_block(hints)}"
+                    if run.request.user_addendum
+                    else data_hints_block(hints))
         except Exception as exc:  # noqa: BLE001 — hints never veto a spawn
             logger.warning("spawn data hints failed for subagent %s: %s",
                            run.run_id, exc)
-        state_id: Optional[int] = None
-        try:
-            state_id = await PLAN_STORE.create_child_state(
-                thread_id, self._step_state_id,
-                _child_node_slug(run),
-                run.request.goal[:MAX_TITLE_LEN],
-                llm_context_id=context_id,
-                child_kind=(CHILD_KIND_FORK
-                            if run.request.inherit_transcript is not None
-                            else CHILD_KIND_SPAWN))
-            state_by_run[run.run_id] = state_id
-            context_by_run[run.run_id] = context_id
-            # The registry stamps back onto the RUN RECORD (2026-11-12):
-            # the failure-probe lane reads these to hand an investigator
-            # the failed node's exact references (state id + chain id).
-            run.state_id = state_id
-            run.llm_context_id = context_id
-        except Exception as exc:  # noqa: BLE001 — degrade, don't veto
-            logger.warning("child state create failed for subagent %s: %s",
-                           run.run_id, exc)
+        if not self._preregistered:
+            state_id = None
+            try:
+                state_id = await PLAN_STORE.create_child_state(
+                    thread_id, self._step_state_id,
+                    _child_node_slug(run),
+                    run.request.goal[:MAX_TITLE_LEN],
+                    llm_context_id=context_id,
+                    child_kind=(CHILD_KIND_FORK
+                                if run.request.inherit_transcript
+                                is not None
+                                else CHILD_KIND_SPAWN))
+                state_by_run[run.run_id] = state_id
+                context_by_run[run.run_id] = context_id
+                # The registry stamps back onto the RUN RECORD
+                # (2026-11-12): the failure-probe lane reads these to
+                # hand an investigator the failed node's exact
+                # references (state id + chain id).
+                run.state_id = state_id
+                run.llm_context_id = context_id
+            except Exception as exc:  # noqa: BLE001 — degrade, don't veto
+                logger.warning(
+                    "child state create failed for subagent %s: %s",
+                    run.run_id, exc)
+        # THE EXPLICIT SCOPE EXTENSION (core/authorization, 2026-11-13):
+        # a spawn carrying a study focus is the ONLY way a node's DB
+        # scope widens — the KG locates the focus's related tables, the
+        # harness grants the (chain, node) extension row (parent scope
+        # UNION the KG tables, extend never narrow), and the child's
+        # stamped context replaces the inherited one. Every other child
+        # inherits its parent's scope verbatim (no row, no work). The
+        # service is total (fail-soft to the parent scope), so this
+        # never vetoes a spawn; extension needs a parent context to
+        # stand on (plain non-thread usage stays ungated).
+        if (run.request.study_focus and state_id is not None
+                and self._authorization is not None):
+            merged = await AUTHORIZATION_SERVICE.extend_node(
+                thread_id, state_id, run.request.study_focus,
+                parent=self._authorization.permission)
+            if merged is not self._authorization.permission:
+                run.request.authorization = (
+                    AuthorizationContext.for_node(
+                        self._authorization.super_thread_id,
+                        state_id, merged))
         # THE ABANDONED PRE-FORK TAIL (2026-11-13): a drift fork that
         # cut an earlier checkpoint left the drifted segment behind —
         # materialize it as a kind-2 stub row under the same parent and
@@ -310,10 +374,17 @@ class SpawnHooks:
             spawn_tools = kit.builtin_tools()
             # Spawns do the investigation — the stats study tools ride
             # every child's conversation too, and so does the KG
-            # search kit (find the right tables by business meaning).
+            # search kit (find the tables by business meaning). The
+            # stats kit gates on the child's EFFECTIVE scope (its own
+            # extension when it earned one — core/authorization).
+            effective_auth = (run.request.authorization
+                              or self._authorization)
             spawn_tools.update(
                 StatsToolSet(
-                    descriptions=self._tool_prompts).builtin_tools())
+                    descriptions=self._tool_prompts,
+                    permission=(effective_auth.permission
+                                if effective_auth is not None
+                                else None)).builtin_tools())
             spawn_tools.update(
                 KgToolSet(
                     descriptions=self._tool_prompts,
@@ -339,8 +410,12 @@ class SpawnHooks:
                 # The child can spawn sub-sub agents: teach it, and hand
                 # it its OWN hooks so its spawns register as child
                 # states under its state row (parent context = its
-                # context) — the business context passes down with it.
-                child = self.child_hooks(state_id, context_id)
+                # context) — the business context passes down with it,
+                # and so does the child's EFFECTIVE scope (its own
+                # extension when it earned one — core/authorization).
+                child = self.child_hooks(
+                    state_id, context_id,
+                    authorization=run.request.authorization)
                 run.request.subagent_input_hook = child.input_hook
                 run.request.subagent_output_hook = child.output_hook
                 run.request.subagent_run_wrapper = child.run_wrapper

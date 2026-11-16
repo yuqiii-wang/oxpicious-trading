@@ -48,8 +48,10 @@ export type LabelDomain =
   | 'secret_sub_type'
   | 'db_instance'
   | 'db_replication_state'
+  | 'db_write_flag'
   | 'backup_mode'
   | 'backup_status'
+  | 'non_daily_state'
   | 'analysis_cache_kind'
   | 'portfolio_type'
   | 'portfolio_sub_type'
@@ -92,7 +94,12 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
     // macd (10, 2026-10-26): the classic MACD crossover family — the
     // typical-EMA study's product (classic 12/26/9 spans; ema12/ema26
     // precomputed in tech_stats since the same day)
-    macd: 10 },
+    macd: 10,
+    // crowdedness (11, 2026-11-16): the market crowdedness composite
+    // (analysis.market_crowdedness) as rule cells on the index itself —
+    // BUY below the pool's own bottom crowding tail (washout
+    // reversion), SELL above the top tail (exit timing)
+    crowdedness: 11 },
   // the family config grid (converted 2026-10-11): SERIES codes
   // (curves) 0.., THRESHOLD codes (thresholds/history)
   // (series + 1) * 100 + width ordinal; the SINGLE-WIDTH retest
@@ -468,6 +475,31 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
     // (exit timing)
     macd_cross_up: 6000,
     macd_cross_dn: 6001,
+    // the CROWDEDNESS family (block 6120+, 2026-11-16 — the v3
+    // recent-extreme inventory; the v2 long-percentile tail block
+    // 6100-6111 retired the same day): {hot set}_{axis}_{state} over
+    // the two hot-set bases x the two score axes x the two states —
+    // roll_* the daily-rolling hot set, year_* the this-year pinned
+    // hot set; _drain BUY = the crowd at its 60-row low while the
+    // index rose, _pilein SELL = the crowd at its 60-row high while
+    // the index fell (distribution churn in a decline)
+    crowd_roll_score_drain: 6120,
+    crowd_roll_score_pilein: 6121,
+    crowd_roll_ma5_drain: 6122,
+    crowd_roll_ma5_pilein: 6123,
+    crowd_year_score_drain: 6124,
+    crowd_year_score_pilein: 6125,
+    crowd_year_ma5_drain: 6126,
+    crowd_year_ma5_pilein: 6127,
+    // v4 additions (2026-11-16, the user-named turning dates): drain_floor
+    // BUY the crowd at its trailing-year bottom while the index ticks up;
+    // tech_washout BUY the hot set under water (the capitulation catch);
+    // tech_euphoria / _div SELL the blow-off stretch (+ the divergence)
+    crowd_roll_score_drain_floor: 6128,
+    crowd_year_score_drain_floor: 6129,
+    crowd_tech_washout: 6130,
+    crowd_tech_euphoria: 6131,
+    crowd_tech_euphoria_div: 6132,
   },
   weighting: { equal: 0, amt: 1 },
   rank_side: { HYPE: 0, DRAIN: 1 },
@@ -542,6 +574,9 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
     // web_search rows (the BigModel web_search endpoint) — the audit
     // itself records zhipu traffic as ext_llm_provider.
     zhipu: 15,
+    // E Fund fund-site family (downloads.etf.efunds.*): the efundcf.com.cn
+    // detail pages and the www/api.efunds.com.cn fundlist/assetinfo backends.
+    efunds: 16,
     other: 99,
   },
   // dummy = the offline test double (test/dummy_langgraph at the
@@ -575,11 +610,21 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
     stopped: 6,
     none: 99,
   },
+  // monitor.db_table_audit.write_flag + monitor.db_table_alert.severity —
+  // the per-table workload audit's write-heavy verdict ((ins+upd+del
+  // rows)/s over the sample window vs the fixed amber/red thresholds).
+  // Code order is semantic: best -> worst.
+  db_write_flag: { ok: 0, amber: 1, red: 2 },
   // maintenance.src_data_backup — the maintainer backup audit's robocopy
   // batch scope (mode) and outcome (status, from robocopy's exit bits:
   // 0-3 ok, 4-7 mismatches, 8+ failures)
   backup_mode: { full: 0, incremental: 1 },
   backup_status: { ok: 0, partial: 1, failed: 2 },
+  // monitor.non_daily_task_state.state — the identity-grounded
+  // completeness verdict of one non-daily orchestration task; the
+  // maintainer's Saturday backfill re-runs 'missing' weekly until loaded.
+  // Code order is semantic: unknown -> complete -> missing -> check errored.
+  non_daily_state: { unknown: 0, complete: 1, missing: 2, check_failed: 3 },
   // analysis_signals.analysis_cache.kind — the generic
   // intermediate-result cache's tenant (which analysis owns the row)
   analysis_cache_kind: { boost_derivation: 0 },
@@ -688,6 +733,14 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
     // skipped with the drift note; the canvas demotes it to the
     // right-side edge path beside the forked continuation.
     abandoned: 2,
+    // 3 resume (2026-11-15) = the SUPERVISOR FAILURE-FORK RECORD —
+    // a record row the repair lane writes under a failed step it
+    // handled (the fork action on the UI: the failed attempt as a RED
+    // DEAD-END BRANCH, settled failed): the retry writes it as the
+    // flip clears the parent's error, a no-action verdict beside the
+    // still-failed row; carries the prior attempt's error and the
+    // verdict note as its title; never routed.
+    resume: 3,
   },
   // text.search_lexicon_df.search_table — which searchable table a
   // high-DF lexeme row's document frequency counts (the >= 25%-DF set

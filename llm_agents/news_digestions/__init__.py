@@ -16,6 +16,9 @@ Package layout (small files, builds.text-style):
   * ``store`` — the work queue (articles missing a digestion row; title-
     only placeholders skipped unless asked) and the (news_id)-keyed
     upsert into text.news_digestions.
+  * ``fake_news`` — the fake-news detector slot (``FakeNewsDetector``),
+    running alongside the sentiment read on EVERY digested article and
+    writing ``is_fake_news`` (logic pending: always False for now).
   * ``cli``   — argparse CLI (run / list, date/industry/source windows,
     --force, --dry-run, --concurrency).
 
@@ -38,6 +41,9 @@ from llm_agents.news_digestions.agent import (
     DigestionError, build_digest_messages, digest_article,
     digest_system_prompt, parse_digest_json, truncate_content,
 )
+from llm_agents.news_digestions.fake_news import (
+    FakeNewsConfig, FakeNewsDetector,
+)
 from llm_agents.news_digestions.store import (
     DIGESTIONS_TABLE, count_pending, fetch_digestions,
     fetch_pending_articles, upsert_digestions,
@@ -48,6 +54,7 @@ __all__ = [
     "DigestionError",
     "digest_system_prompt", "build_digest_messages", "parse_digest_json",
     "truncate_content", "digest_article",
+    "FakeNewsConfig", "FakeNewsDetector",
     "DIGESTIONS_TABLE", "fetch_pending_articles", "upsert_digestions",
     "fetch_digestions", "count_pending",
     "main",

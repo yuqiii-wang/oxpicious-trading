@@ -35,6 +35,7 @@ from typing import Optional  # noqa: E402
 from _common.log_setup import setup_logging  # noqa: E402
 
 from llm_agents.news_digestions.agent import digest_article  # noqa: E402
+from llm_agents.news_digestions.fake_news import FakeNewsDetector  # noqa: E402
 from llm_agents.news_digestions.store import (  # noqa: E402
     count_pending, fetch_digestions, fetch_pending_articles,
     upsert_digestions,
@@ -123,22 +124,19 @@ async def _run(args) -> None:
                         provider.name, model, args.concurrency)
 
         sem = asyncio.Semaphore(max(1, args.concurrency))
+        # The fake-news pass rides EVERY digestion (either engine): merge
+        # its verdict into each row before the store upsert.
+        detector = FakeNewsDetector()
 
         async def run_one(article):
             async with sem:
                 if engine is not None:
-                    return await engine.digest_article(article)
-                return await digest_article(
-                    provider, article, model=model, lang=args.lang,
-                    max_content_chars=args.max_content_chars)
-        model = args.model or getattr(provider, "DEFAULT_MODEL", None)
-        if not model:
-            logger.error("    [FATAL] no chat model — pass --model")
-            sys.exit(2)
-        logger.info("    digesting with %s/%s (concurrency=%d) …",
-                    provider.name, model, args.concurrency)
-
-        sem = asyncio.Semaphore(max(1, args.concurrency))
+                    row = await engine.digest_article(article)
+                else:
+                    row = await digest_article(
+                        provider, article, model=model, lang=args.lang,
+                        max_content_chars=args.max_content_chars)
+                return await detector.annotate_row(row, article)
 
         ok = failed = 0
         for fut in asyncio.as_completed([run_one(a) for a in articles]):
@@ -172,10 +170,12 @@ async def _list(args) -> None:
                                       industry_id=args.industry)
         for r in rows:
             logger.info(
-                "#%s %s [%s/%s] sentiment=%s model=%s\n    %s\n    %s",
+                "#%s %s [%s/%s] sentiment=%s model=%s%s\n    %s\n    %s",
                 r["news_id"], r["date"], r["source"] or "-",
                 r["industry_id"] or "-", _fmt_sentiment(r["sentiment_level"]),
-                r["llm_model"] or "-", r["title"][:80],
+                r["llm_model"] or "-",
+                " [FAKE]" if r["is_fake_news"] else "",
+                r["title"][:80],
                 (r["summary"] or "")[:120])
         logger.info("%d row(s)", len(rows))
     finally:
@@ -192,7 +192,8 @@ async def main() -> None:
     ap = argparse.ArgumentParser(
         prog="python -m llm_agents.news_digestions",
         description="Per-article LLM digestion agent: summarize every "
-                    "text.news article and score its sentiment in [-5, 5] "
+                    "text.news article, score its sentiment in [-5, 5], and "
+                    "run the fake-news detector "
                     "-> text.news_digestions.")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

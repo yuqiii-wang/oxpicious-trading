@@ -17,19 +17,20 @@ Only the CURRENT trading day's PCF is available (no historical date parameter),
 so this script fetches the latest snapshot for every SSE-listed ETF, mirroring
 the SZSE counterpart (``download_szse_etf_composition.py``).
 
-Download behavior:
+Download behavior (quarterly cadence — registered in downloads_quarterly.json,
+one snapshot per ETF per calendar quarter):
   * Always downloads today's composition from SSE (no historical dates available).
-  * Skip logic: if an ETF already has a cached snapshot from the current month,
-    it will be skipped (use --no-skip-cached to force re-download).
+  * Skip logic: if an ETF already has a cached snapshot from the current
+    QUARTER, it will be skipped (use --no-skip-cached to force re-download).
 
-Month-start refresh:
-  On the 1st day of each month the cache is bypassed and every ETF is
-  re-downloaded. The XML/CSV is stamped with TODAY's date (not the xls's
-  TradingDay, which typically reflects the previous business day — e.g.
-  running on 2026-08-01 yields a file dated 20260801 even though the XML
-  reports 2026-07-31). This ensures a fresh monthly snapshot flows through
-  to prod under the new month's date. Use --force-month-start to trigger
-  this behavior on any day for testing.
+Quarter-start refresh:
+  On the 1st day of a quarter-start month (Jan/Apr/Jul/Oct) the cache is
+  bypassed and every ETF is re-downloaded. The XML/CSV is stamped with
+  TODAY's date (not the xls's TradingDay, which typically reflects the
+  previous business day — e.g. running on 2026-10-01 yields a file dated
+  20261001 even though the XML reports 2026-09-30). This ensures a fresh
+  quarterly snapshot flows through to prod under the new quarter's date.
+  Use --force-quarter-start to trigger this behavior on any day for testing.
 
 Anti-bot: ``safe_get(anti_bot=True)`` rotates the browser fingerprint
 (User-Agent / Sec-Ch-Ua / Sec-Fetch-* via ``merge_browser_profile``) on every
@@ -83,7 +84,7 @@ from downloads._common import (
     setup_logger,
     sleep_sec_for,
 )
-from downloads._common.monthly import is_month_start
+from downloads._common.monthly import in_same_quarter, is_quarter_start
 
 
 # ---------------------------------------------------------------------------
@@ -476,10 +477,10 @@ class SseEtfCompositionDownload(DownloadJob):
                         help="Skip ETFs whose latest snapshot is already cached (default: enabled)")
         parser.add_argument("--no-skip-cached", action="store_true", default=False,
                         help="Re-download even if a cached snapshot exists")
-        parser.add_argument("--force-month-start", action="store_true", default=False,
-                        help="Force month-start behavior: bypass cache and stamp files with "
+        parser.add_argument("--force-quarter-start", action="store_true", default=False,
+                        help="Force quarter-start behavior: bypass cache and stamp files with "
                              "today's date (overrides XML TradingDay). For testing the "
-                             "monthly refresh flow on any day.")
+                             "quarterly refresh flow on any day.")
         parser.add_argument("--convert-csv", action="store_true", default=True,
                         help="Aggregate per-file CSVs into combined + universe CSVs (default: enabled)")
         parser.add_argument("--no-convert-csv", action="store_true", default=False,
@@ -543,7 +544,7 @@ class SseEtfCompositionDownload(DownloadJob):
         proxy: AntiBotProxy,
         skip_cached: bool = True,
         sleep_sec: float = SLEEP_SEC,
-        month_start: bool = False,
+        quarter_start: bool = False,
         today_date: Optional[date] = None,
     ) -> Tuple[bool, str]:
         """Download one ETF's PCF XML, save raw + per-file CSV.
@@ -551,24 +552,21 @@ class SseEtfCompositionDownload(DownloadJob):
         Returns (success, status) where status ∈ {"downloaded", "cached", "empty",
         "failed", "blocked"}.
 
-        When *month_start* is True, the cache is bypassed and the output files are
+        When *quarter_start* is True, the cache is bypassed and the output files are
         stamped with *today_date* (overriding the XML's TradingDay) so a fresh
-        monthly snapshot flows to prod under the new month's date.
+        quarterly snapshot flows to prod under the new quarter's date.
         """
         code = etf["code"]
         etf_name = etf.get("etf_name", "")
         fund_type = etf.get("fund_type", "")
 
-        # Cache check (skipped during month-start refresh): skip if we already have
-        # a snapshot from the current month. This mirrors the SZSE hybrid schedule —
-        # one snapshot per ETF per month, with quarterly months (Jan/Apr/Jul/Oct)
-        # accumulating as history.
-        if skip_cached and not month_start:
+        # Cache check (skipped during quarter-start refresh): skip if we already have
+        # a snapshot from the current quarter — the quarterly schedule's one
+        # snapshot per ETF per quarter, accumulating as history.
+        if skip_cached and not quarter_start:
             latest_cached = _latest_cached_date_for_code(out_dir, code)
             today = date.today()
-            if (latest_cached is not None
-                    and latest_cached.year == today.year
-                    and latest_cached.month == today.month):
+            if latest_cached is not None and in_same_quarter(latest_cached, today):
                 # Backfill per-file CSV from XML if missing (legacy cache).
                 xml_path = out_dir / f"sse_etf_comp_{latest_cached.strftime('%Y%m%d')}_{code}.xml"
                 csv_path = out_dir / f"sse_etf_comp_{latest_cached.strftime('%Y%m%d')}_{code}.csv"
@@ -614,10 +612,10 @@ class SseEtfCompositionDownload(DownloadJob):
             logger.warning("[dl %s] invalid TradingDay '%s', skipping", code, trading_day)
             return False, "empty"
 
-        # On month-start refresh, stamp the output with today's date (overriding
+        # On quarter-start refresh, stamp the output with today's date (overriding
         # the XML's TradingDay, which is usually the previous business day) so a
-        # fresh monthly snapshot flows to prod under the new month's date.
-        if month_start and today_date is not None:
+        # fresh quarterly snapshot flows to prod under the new quarter's date.
+        if quarter_start and today_date is not None:
             trading_day = today_date.strftime("%Y%m%d")
             parsed["header"]["TradingDay"] = trading_day  # _pcf_to_combined_rows reads this
 
@@ -648,21 +646,22 @@ class SseEtfCompositionDownload(DownloadJob):
         max_etfs: Optional[int] = None,
         skip_cached: bool = True,
         convert_csv: bool = True,
-        force_month_start: bool = False,
+        force_quarter_start: bool = False,
     ) -> dict:
         out_dir = resolve_out_dir(str(Path(__file__).resolve()), "sse_etf_composition", out_root)
         today = date.today()
 
-        # Month-start trigger: on the 1st of each month (or when forced), bypass
-        # the cache and stamp output files with today's date so a fresh monthly
-        # snapshot flows to prod even if the XML still reports the previous biz day.
-        month_start = force_month_start or is_month_start(today)
-        if month_start:
+        # Quarter-start trigger: on the 1st of a quarter-start month (Jan/Apr/Jul/Oct,
+        # or when forced), bypass the cache and stamp output files with today's date
+        # so a fresh quarterly snapshot flows to prod even if the XML still reports
+        # the previous biz day.
+        quarter_start = force_quarter_start or is_quarter_start(today)
+        if quarter_start:
             skip_cached = False
             logger.info(
-                "Month-start refresh (today=%s, forced=%s): bypassing cache and "
+                "Quarter-start refresh (today=%s, forced=%s): bypassing cache and "
                 "stamping files with today's date (overrides XML TradingDay).",
-                today.isoformat(), force_month_start,
+                today.isoformat(), force_quarter_start,
             )
 
         session = build_default_session()
@@ -699,13 +698,13 @@ class SseEtfCompositionDownload(DownloadJob):
             etfs = etfs[:max_etfs]
 
         # --- Auto-cooldown: count how many ETFs actually need downloading ---
-        if month_start:
+        if quarter_start:
             need_download = len(etfs)
         elif skip_cached:
             need_download = 0
             for etf in etfs:
                 latest = _latest_cached_date_for_code(out_dir, etf["code"])
-                if latest is None or latest.year != today.year or latest.month != today.month:
+                if latest is None or not in_same_quarter(latest, today):
                     need_download += 1
         else:
             need_download = len(etfs)
@@ -746,7 +745,7 @@ class SseEtfCompositionDownload(DownloadJob):
                 _, status = self.download_composition(
                     session, etf, out_dir, proxy,
                     skip_cached=skip_cached, sleep_sec=auto_sleep,
-                    month_start=month_start, today_date=today,
+                    quarter_start=quarter_start, today_date=today,
                 )
                 if status == "downloaded":
                     downloaded += 1
@@ -791,7 +790,7 @@ class SseEtfCompositionDownload(DownloadJob):
             max_etfs=self.args.max_etfs,
             skip_cached=self.args.skip_cached and not self.args.no_skip_cached,
             convert_csv=self.args.convert_csv and not self.args.no_convert_csv,
-            force_month_start=self.args.force_month_start,
+            force_quarter_start=self.args.force_quarter_start,
         )
         logger.info(result)
 

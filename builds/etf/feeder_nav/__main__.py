@@ -1,24 +1,27 @@
-"""builds.etf.feeder_nav — Load huatai-pb.com close-only NAV series into
+"""builds.etf.feeder_nav — Load issuer-site close-only NAV series into
 stats.etf_identity + stats.etf_basic_stats, two universes:
 
   1. OTC ETF联接 feeder funds (codes the listed-ETF prefix families do
      NOT cover) — full series from the archives + accumulated daily trend
      snapshots; the ONLY quote source these funds have. Missing pairs ∪
      newest REFRESH_DAYS days upserted.
-  2. LISTED checkin ETFs (51x/56x/58x SSE + 159 SZSE prefixes — the
-     watchlist's listed members, discovered from the archive CSVs' file
-     names) — NAV-history BACKFILL for dates with NO row yet (the
-     exchange OHLCV starts 2026-07-31; the fund-site archives reach back
-     to each fund's inception). Strictly missing-only: real exchange
-     OHLC rows are NEVER overwritten, so no refresh window and no --force
-     purge applies.
+  2. LISTED ACTIVE ETFs of the two tracked issuers — the curated ACTIVE
+     ETF registry (database/sec_statics/active_funds/*.json, venue=etf —
+     the 主动管理型 + 指数增强型 ETFs of 华泰柏瑞 + 易方达; ONLY they load
+     fund-site history since 2026-11-14) — NAV-history BACKFILL for dates
+     with NO row yet (the exchange OHLCV starts 2026-07-31; the fund-site
+     archives reach back to each fund's inception). Strictly
+     missing-only: real exchange OHLC rows are NEVER overwritten, so no
+     refresh window and no --force purge applies. The registry filter is
+     by construction — a stale passive archive CSV on disk no longer
+     backfills.
 
 Codes are BARE 6-digit for BOTH universes (2026-09-30 convention — no
 exchange suffix anywhere). Listed-vs-OTC is discriminated by the code
 prefix on the CSV side and by etf_identity.exchange on the DB side
 (SS/SZ = listed, NULL = OTC feeder).
 
-The fund site publishes NO OHLC — only 单位净值 (close) per trade date —
+The fund sites publish NO OHLC — only 单位净值 (close) per trade date —
 so OHLC is SYNTHESIZED per the etf_basic_stats.is_ohl_estimated
 convention (same as the index build's close-only CSIndex history):
 open = previous close of the same code (NULL for the first row),
@@ -26,8 +29,10 @@ high = low = close, is_ohl_estimated = TRUE.
 Feeder rows carry exchange NULL; listed backfill rows carry their
 listing venue in etf_identity.exchange.
 
-Reads the huatai-pb NAV CSVs (downloads.etf.huatai_pb.*):
+Reads the issuer NAV CSVs (downloads.etf.huatai_pb.* + .archive /
+downloads.etf.efunds.archive):
   • full history:  temps/huatai_pb_nav/huatai_pb_nav_archive_<code>.csv
+    and temps/efunds_nav/efunds_nav_archive_<code>.csv
     (bare-code files; LEGACY files written before 2026-09-30 carry a
     suffixed code column — stripped on read)
   • daily increments: temps/huatai_pb_nav/huatai_pb_nav_trend_<date>.csv
@@ -80,7 +85,11 @@ import pandas as pd
 
 from _common.build_commons import bulk_upsert_async, TODAY_STR
 from _common.db_commons import analyze_tables_async, chunked_purge_async
-from builds._commons.paths import HUATAI_NAV_DIR
+from database.sec_statics.active_funds_store import (
+    active_etf_codes,
+    load_active_funds,
+)
+from builds._commons.paths import EFUNDS_NAV_DIR, HUATAI_NAV_DIR
 from builds._commons.row_emission import dates_as_date_list, records_from_frame
 from _common.log_setup import setup_logging
 
@@ -94,6 +103,21 @@ logger = setup_logging("feeder_nav")
 
 # paths.py carries os.path.join strings — glob needs a Path
 NAV_DIR = Path(HUATAI_NAV_DIR)
+EFUNDS_DIR = Path(EFUNDS_NAV_DIR)
+
+# Listed-archive sources: (dir, filename prefix) per issuer site — the
+# ACTIVE ETF NAV-history backfill reads BOTH families, restricted to the
+# curated active-ETF registry codes.
+LISTED_ARCHIVE_SOURCES: Tuple[Tuple[Path, str], ...] = (
+    (NAV_DIR, "huatai_pb_nav_archive_"),
+    (EFUNDS_DIR, "efunds_nav_archive_"),
+)
+
+# Registry code → canonical fund name — the listed phase's name source
+# (the huatai trend snapshot carries only huatai funds; the registry
+# names cover both issuers' active ETFs).
+ACTIVE_FUND_NAMES: Dict[str, str] = {
+    f.code: f.name for f in load_active_funds()}
 
 # Always re-upsert the newest NAV days even when present — the fund site
 # can correct recent values (same intent as builds.etf's recent re-scan).
@@ -185,28 +209,33 @@ def load_nav_frames(universe: Set[str]) -> pd.DataFrame:
 
 
 def load_listed_archive_frames(code_filter: Optional[str]) -> pd.DataFrame:
-    """Listed-ETF NAV archives: files whose FILE-NAME code is in the
-    listed-ETF prefix families (51x/56x/58x SSE + 159 SZSE) — the checkin
-    watchlist's listed members. Returns the full-history frame with BARE
-    codes (legacy suffixed code columns are stripped on read); OTC
-    (feeder) archives are the feeder path's.
+    """Listed active-ETF NAV archives from BOTH issuer sites (huatai_pb +
+    efunds): files whose FILE-NAME code is in the curated ACTIVE ETF
+    registry AND in a listed-ETF prefix family (51x/56x/58x/581 SSE +
+    158/159 SZSE). The registry filter is the load policy — only
+    actively-managed ETFs backfill fund-site history (2026-11-14), so a
+    stale passive archive CSV left on disk is ignored. Returns the
+    full-history frame with BARE codes (legacy suffixed code columns are
+    stripped on read); OTC (feeder) archives are the feeder path's.
     """
+    allowed = active_etf_codes()
     frames: List[pd.DataFrame] = []
-    for path in sorted(NAV_DIR.glob("huatai_pb_nav_archive_*.csv")):
-        code = path.stem.replace("huatai_pb_nav_archive_", "").split(".")[0]
-        if not is_listed_etf_code(code):
-            continue
-        if code_filter and code != code_filter:
-            continue
-        df = pd.read_csv(path, dtype={"code": str})
-        if df.empty:
-            continue
-        frames.append(pd.DataFrame({
-            "date": df["date"].astype(str),
-            "code": code,
-            "nav": pd.to_numeric(df["nav"], errors="coerce"),
-            "day_pct": pd.to_numeric(df["day_pct"], errors="coerce"),
-        }))
+    for src_dir, prefix in LISTED_ARCHIVE_SOURCES:
+        for path in sorted(src_dir.glob(f"{prefix}*.csv")):
+            code = path.stem.replace(prefix, "").split(".")[0]
+            if code not in allowed or not is_listed_etf_code(code):
+                continue
+            if code_filter and code != code_filter:
+                continue
+            df = pd.read_csv(path, dtype={"code": str})
+            if df.empty:
+                continue
+            frames.append(pd.DataFrame({
+                "date": df["date"].astype(str),
+                "code": code,
+                "nav": pd.to_numeric(df["nav"], errors="coerce"),
+                "day_pct": pd.to_numeric(df["day_pct"], errors="coerce"),
+            }))
     if not frames:
         return pd.DataFrame(columns=NAV_SRC_COLS)
     out = pd.concat(frames, ignore_index=True)
@@ -365,7 +394,11 @@ class FeederNavBuild(EtfBuild):
             # reach back to each fund's inception. Real exchange rows are
             # NEVER overwritten — no refresh window, no purge.
             if not listed.empty:
-                lrows = synthesize_basic_rows(listed, raw_names)
+                # Names: huatai trend snapshot first (freshest official),
+                # registry canonical names fill the rest (the efunds
+                # active ETFs are not in the huatai snapshot).
+                listed_names = {**ACTIVE_FUND_NAMES, **raw_names}
+                lrows = synthesize_basic_rows(listed, listed_names)
                 codes_l = sorted(lrows["code"].unique().tolist())
                 db_rows = await conn.fetch(
                     "SELECT date::text AS date, code "

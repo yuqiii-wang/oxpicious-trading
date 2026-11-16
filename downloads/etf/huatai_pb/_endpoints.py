@@ -69,11 +69,11 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import replace
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
+from database.sec_statics.active_funds_store import require_active_etf_funds
 from downloads._common import (
     AntiBotProxy,
     antibot_config_for,
@@ -98,49 +98,34 @@ SITE_ID = "9496d23c648f4a72a79150c3f2ac669b"
 # One page covers the full 成立以来 history (510880 has ~4.8k rows).
 NAV_PAGE_SPEC = "1-5000"
 
-# Curated watchlist — the "checkin" funds whose product pages are studied
-# (products/zhishu/<code>/index.html). Lives in the INDEPENDENT config file
-# ``downloads/etf/huatai_pb/config.json`` (checkin_funds array) — edit the
-# file, not this module. The per-fund downloads (archive / dividends /
-# composition) default to EXACTLY these codes; the daily trend downloader
+# Curated per-fund universe — the ACTIVE ETF registry (2026-11-14): only
+# the issuer's actively-managed ETFs (主动管理型 + 指数增强型) get per-fund
+# downloads (archive / dividends / composition + the intro CSV rows). The
+# source of truth is the hand-editable registry file
+# ``database/sec_statics/active_funds/pinebridge.json`` (venue=etf entries)
+# loaded via active_funds_store.require_active_etf_funds — edit the
+# registry file, not this module. A missing/empty registry raises (never
+# silently falls back to an all-funds crawl). The daily trend downloader
 # stays all-funds (products index page — one request for the whole family)
 # regardless of this list.
-_CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
+ACTIVE_FUNDS_OWNER_ID = "pinebridge"
 
-
-def _load_checkin_fund_codes() -> Tuple[str, ...]:
-    """Checkin codes from config.json — the config file is the single
-    source of truth, so a missing/malformed file raises (never silently
-    falls back to an empty or hardcoded universe)."""
-    try:
-        cfg = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
-        funds = cfg["checkin_funds"]
-        codes = tuple(
-            str(f["code"]).strip()
-            for f in funds
-            if str(f.get("code", "")).strip()
-        )
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        raise RuntimeError(
-            f"huatai_pb config invalid ({_CONFIG_PATH}): {exc}") from exc
-    if not codes:
-        raise RuntimeError(
-            f"huatai_pb config has no checkin_funds entries ({_CONFIG_PATH})")
-    return codes
-
-
-CHECKIN_FUND_CODES: Tuple[str, ...] = _load_checkin_fund_codes()
+ACTIVE_ETF_CODES: Tuple[str, ...] = tuple(
+    sorted(f.code for f in require_active_etf_funds(ACTIVE_FUNDS_OWNER_ID)))
 
 # Listed-ETF code prefixes (same families as the SSE/SZSE composition
 # downloaders). Used to filter FundArr to exchange-listed ETFs and to
 # suffix codes. The 561/562/563/589 blocks are DB-verified listed SSE ETF
 # prefixes (stats.etf_identity, exchange-built) missing from the original
-# exchange-downloader families.
+# exchange-downloader families; 581 is the SSE 主动管理型ETF block (first
+# batch listed 2026-10 — 581090 价值精选主动ETF华泰柏瑞), 158 the SZSE
+# twin range (158900+ — none of this issuer's funds yet, kept for
+# is_listed_etf_code parity).
 SSE_ETF_PREFIXES: Tuple[str, ...] = (
     "510", "511", "512", "513", "515", "516", "517", "518",
-    "560", "561", "562", "563", "588", "589",
+    "560", "561", "562", "563", "581", "588", "589",
 )
-SZSE_ETF_PREFIXES: Tuple[str, ...] = ("159",)
+SZSE_ETF_PREFIXES: Tuple[str, ...] = ("158", "159")
 
 # PCF tdbz (替代标志) numeric → SZSE/SSE-compatible Chinese label (same
 # vocabulary the szse_etf_comp/sse_etf_comp CSVs use for cash_sub_flag).

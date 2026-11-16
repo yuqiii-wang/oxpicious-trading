@@ -4,8 +4,8 @@
   "included_parallel_services": [],
   "excluded_parallel_services": [],
   "freq": "daily",
-  "schedule": "every A-share trading date from 19:00, after builds_daily.sh (analysis_daily.sh loop order, after market_crowdedness)",
+  "schedule": "every A-share trading date, after builds_daily in the 16:00 nightly chain (analysis_daily loop order, after market_crowdedness)",
   "notes": "Whole-market participation gauges, one row per trading day (analysis.market_participation): total SS+SZ proxy turnover from stats.exchange_trading_amt (each exchange proxied by ONE representative index — SS->000001, SZ->399001; NOT a true exchange-wide sum), its MA5/20/60 + vs-MA gaps + trailing-252 percentile; the RAW daily SSE share ss/(ss+sz) (the piece analysis.mov_ave_trading_amt stores only smoothed) + MA5/20/60 + vs-ma20 pp gap + trailing-20 OLS slope (pp/day); whole-universe advance/decline breadth from stats.stock_basic_stats pct_change signs (adv/dec/flat counts, A/D ratio, median/mean change, A/D MA5/20, trailing-252 percentile). Serves the Market Beta page's Market Participation panel (GET /api/analysis/market-beta/participation). Incremental (missing dates only); --force truncates and COPY-rebuilds.",
-  "source_ref": "scripts/analysis_daily.sh",
+  "source_ref": "scripts/orchestration/analysis_daily.json",
   "updated_at": "2026-11-08T00:00:00.000000+00:00"
 }

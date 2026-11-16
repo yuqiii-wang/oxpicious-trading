@@ -1,9 +1,10 @@
 /**
  * Orchestration tab — read-only display of the orchestration step
- * files (scripts/orchestration/, one JSON per tier script:
- * <tier>.json ↔ scripts/<tier>.sh; scripts/run_steps.sh executes each
- * file's steps one by one in key order) plus UI-triggered runs. Every
- * tier's steps consolidate into ONE flat table — rows in main_run.sh
+ * files (scripts/orchestration/, one JSON per tier; the monitor area's
+ * serial runner executes each file's steps one by one in key order —
+ * the maintainer's nightly_pipeline chain drives the tiers at
+ * 16:00 China time on trading days) plus UI-triggered runs. Every
+ * tier's steps consolidate into ONE flat table — rows in nightly-chain
  * tier run order, then step number — styled after the External Request
  * Config table: the shared ConfigServiceTable shell. The toolbar
  * filters by the step's JSON FILE (builds_daily.json, … — the tier
@@ -21,7 +22,7 @@
  * Services page, where Pipeline processes picks the run up via its
  * heartbeat). Spawns go through the monitor API: POST
  * /api/monitor/stream/run for a step, POST
- * /api/monitor/orchestration/run (run_steps.sh) for a tier.
+ * /api/monitor/orchestration/run (the tier runner) for a tier.
  *
  * Data: GET /api/config/orchestration (plain fetch — the shared client
  * cache must never serve a pre-save state on these pages). The step
@@ -61,6 +62,7 @@ interface StepRow {
   tier: string;
   step: number;
   args: string[];
+  srcHost: string | null;
   canBeParallel: boolean;
   note: string | null;
   file: string;
@@ -103,6 +105,7 @@ export default function OrchestrationPage() {
           tier: t.tier,
           step: s.step,
           args: s.args,
+          srcHost: s.srcHost,
           canBeParallel: s.canBeParallel,
           note: s.note,
           file: `${t.tier}.json`,
@@ -141,7 +144,7 @@ export default function OrchestrationPage() {
         <Typography variant="h6">Orchestration</Typography>
         <Typography variant="caption" color="text.secondary">
           {tiers != null
-            ? `${tiers.length} tiers · ${rows.length} steps in main_run.sh run order · source: scripts/orchestration/`
+            ? `${tiers.length} tiers · ${rows.length} steps in nightly-chain run order · source: scripts/orchestration/`
             : "loading…"}
         </Typography>
         <Box sx={{ flexGrow: 1 }} />
@@ -243,6 +246,19 @@ export default function OrchestrationPage() {
                       color={r.canBeParallel ? "warning" : "default"}
                       label={r.canBeParallel ? "parallel" : "serial"}
                     />
+                    {r.srcHost != null && (
+                      <Tooltip
+                        title={`diff-src-parallel host group ${r.srcHost}: consecutive steps with distinct hosts run in one concurrent wave`}
+                      >
+                        <Chip
+                          size="small"
+                          variant="outlined"
+                          color="info"
+                          label={`src ${r.srcHost}`}
+                          sx={{ ml: 0.5 }}
+                        />
+                      </Tooltip>
+                    )}
                   </TableCell>
                   <TableCell sx={{ maxWidth: 320 }}>
                     <Tooltip title={r.note ?? ""}>

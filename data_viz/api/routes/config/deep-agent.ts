@@ -56,6 +56,11 @@ export interface DeepAgentLimitsPayload {
   supervisorMaxNodeRetries: number;
   supervisorMaxRepairsPerRun: number;
   supervisorRetryThrottleSec: number;
+  /** The CAP-CLASS RETRY LANE (supervisor/repair.py, 2026-11-15): a
+   *  step-cap death with recorded real work re-runs once per run under
+   *  the hop's clamp + bump steps. */
+  supervisorCapRetriesPerRun: number;
+  supervisorCapRetryStepBump: number;
   notes: string | null;
   sourceRef: string | null;
   updatedAt: string;
@@ -95,6 +100,8 @@ function toLimitsPayload(e: DeepAgentLimitsEntry): DeepAgentLimitsPayload {
     supervisorMaxNodeRetries: e.supervisor_max_node_retries,
     supervisorMaxRepairsPerRun: e.supervisor_max_repairs_per_run,
     supervisorRetryThrottleSec: e.supervisor_retry_throttle_sec,
+    supervisorCapRetriesPerRun: e.supervisor_cap_retries_per_run,
+    supervisorCapRetryStepBump: e.supervisor_cap_retry_step_bump,
     notes: e.notes,
     sourceRef: e.source_ref,
     updatedAt: e.updated_at,
@@ -144,6 +151,8 @@ const LIMITS_PAYLOAD_FIELDS: Array<{
   { key: "supervisorMaxNodeRetries", snake: "supervisor_max_node_retries", min: 0, max: 3 },
   { key: "supervisorMaxRepairsPerRun", snake: "supervisor_max_repairs_per_run", min: 0, max: 6 },
   { key: "supervisorRetryThrottleSec", snake: "supervisor_retry_throttle_sec", min: 0, max: 300 },
+  { key: "supervisorCapRetriesPerRun", snake: "supervisor_cap_retries_per_run", min: 0, max: 4 },
+  { key: "supervisorCapRetryStepBump", snake: "supervisor_cap_retry_step_bump", min: 0, max: 64 },
 ];
 
 /** GET /api/config/deep-agent — the current run limits (defaults served

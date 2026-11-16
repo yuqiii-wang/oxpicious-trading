@@ -70,7 +70,7 @@ import {
   RSI_SHADE_BASE_OPACITY,
   RSI_WINDOWS,
 } from "./constants";
-import type { ChartOverlay, GapMarksState } from "./types";
+import type { ChartOverlay, ChartZoomRange, GapMarksState } from "./types";
 
 /** A span-overlay entry structurally identical to ShadeOverlay (the
  *  regime/trend builders' local type — kept explicit to match the arrays
@@ -546,6 +546,10 @@ export interface ComposeChartOptionArgs {
   rfEstimates: MovAveSpreadRoofFloorEstimateRow[] | null;
   /** The "rfaudit" extras group's rebound-audit rows — null while unloaded. */
   rfRebounds: MovAveSpreadRoofFloorRebound[] | null;
+  /** The panel's shared dataZoom window (percentages 0-100) — the ONE
+   *  synced viewport with the MA-Chain Alignment companion chart
+   *  (null = full range). */
+  zoom: ChartZoomRange | null;
 }
 
 /**
@@ -590,6 +594,7 @@ export function composeChartOption(args: ComposeChartOptionArgs): EChartsOption 
     ohlcRows,
     rfEstimates,
     rfRebounds,
+    zoom,
   } = args;
   if (loading || error || !selectedPair || selectedPair.rows.length === 0) {
     return null;
@@ -609,6 +614,7 @@ export function composeChartOption(args: ComposeChartOptionArgs): EChartsOption 
         regimeShades: [...regimeShades, ...ohlcGapShades, ...trendShades],
         ohlcGapRows,
         ohlcGapActive,
+        zoom,
       })
     : buildPairOption({
         pair: selectedPair,
@@ -645,5 +651,6 @@ export function composeChartOption(args: ComposeChartOptionArgs): EChartsOption 
         ohlcGapRows,
         ohlcGapActive,
         trendSpans,
+        zoom,
       });
 }

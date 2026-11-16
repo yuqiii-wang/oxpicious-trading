@@ -20,14 +20,26 @@
 import fs from "fs";
 import path from "path";
 
-const SQL_WRITES_DIR = path.resolve(
-  import.meta.dirname ?? __dirname,
-  "..",
-  "..",
-  "..",
-  "database",
-  "sql_writes",
-);
+// Walk up from this module until database/sql_writes exists — the same
+// parent-walk the sql-views loader (api/lib/sql-views.ts) uses. This
+// module has moved under api/ before; a fixed ".." count rots silently
+// (observed 2026-11-14: the move into services/infra left the DELETE
+// run purge resolving data_viz/database/… and 500ing every
+// summary-run delete).
+const SQL_WRITES_DIR = (() => {
+  const moduleDir = import.meta.dirname ?? __dirname;
+  let dir = moduleDir;
+  for (;;) {
+    const candidate = path.join(dir, "database", "sql_writes");
+    if (fs.existsSync(candidate)) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) {
+      throw new Error(
+        `database/sql_writes not found above ${moduleDir}`);
+    }
+    dir = parent;
+  }
+})();
 
 /** One dotted path segment of the sql_writes tree (app / layer /
  * table / action). Letters, digits and underscore only — a traversal

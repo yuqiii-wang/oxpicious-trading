@@ -1,83 +1,102 @@
 {
  "1": {
   "script": "downloads.stock.szse.trend",
+  "src_host": "szse",
   "can_be_parallel": false
  },
  "2": {
   "script": "downloads.etf.szse.trend",
+  "src_host": "szse",
   "can_be_parallel": false
  },
  "3": {
   "script": "downloads.index.szse.trend",
+  "src_host": "szse",
   "can_be_parallel": false
  },
  "4": {
   "script": "downloads.index.sse.trend",
+  "src_host": "sse",
   "can_be_parallel": false
  },
  "5": {
   "script": "downloads.stock.sse.trend",
+  "src_host": "sse",
   "can_be_parallel": false
  },
  "6": {
   "script": "downloads.stock.bse.price",
+  "src_host": "bse",
   "can_be_parallel": false
  },
  "7": {
   "script": "downloads.etf.sse.trend",
+  "src_host": "sse",
   "can_be_parallel": false
  },
  "8": {
   "script": "downloads.margin.szse",
+  "src_host": "szse",
   "can_be_parallel": false
  },
  "9": {
   "script": "downloads.margin.sse",
+  "src_host": "sse",
   "can_be_parallel": false
  },
  "10": {
   "script": "downloads.bond.shibor",
+  "src_host": "shibor",
   "can_be_parallel": false
  },
  "11": {
   "script": "downloads.bond.chinabond",
+  "src_host": "chinabond",
   "can_be_parallel": false
  },
  "12": {
   "script": "downloads.macro.ai_daily",
   "can_be_parallel": false,
-  "note": "runs BEFORE the news steps by design: the AI daily answers feed the embedded topic-search phase (per-topic Zhihu question-mode searches stored as temps/zhihu_news/search_*.json artifacts). Artifact-only (temps/ai_daily/*.json); builds.text loads them into text.news / llm.llm_qa"
+  "note": "runs BEFORE the news steps by design: the AI daily answers feed the embedded topic-search phase (per-topic Zhihu question-mode searches stored as temps/zhihu_news/search_*.json artifacts). Artifact-only (temps/ai_daily/*.json); builds.text loads them into text.news / llm.llm_qa. NO src_host on purpose: the ordering dependency keeps it a singleton (serial) wave"
  },
  "13": {
   "script": "downloads.macro.pboc.repo_news",
+  "src_host": "pboc",
   "can_be_parallel": false
  },
  "14": {
   "script": "downloads.options.sse.price",
+  "src_host": "sse",
   "can_be_parallel": false
  },
  "15": {
   "script": "downloads.options.sse.risk",
+  "src_host": "sse",
   "can_be_parallel": false
  },
  "16": {
   "script": "downloads.options.szse.trend",
+  "src_host": "szse",
   "can_be_parallel": false
  },
  "17": {
   "script": "downloads.options.cffex.trend",
+  "src_host": "cffex",
   "can_be_parallel": false
  },
  "18": {
   "script": "downloads.macro.pboc.lpr_news",
+  "src_host": "pboc",
   "can_be_parallel": false
  },
  "19": {
   "script": "downloads.macro.zhihu.news",
+  "src_host": "zhihu",
   "can_be_parallel": false
  },
  "20": {
   "script": "downloads.macro.gov.news",
+  "src_host": "gov",
   "can_be_parallel": false
  },
  "21": {
@@ -85,38 +104,62 @@
   "args": [
    "--options-eod"
   ],
+  "src_host": "sse",
   "can_be_parallel": false,
   "note": "post-close tstyle snapshot once (published ~16:29): gives the day's temps/sse_options_intraday CSV a >=15:00 sample so builds.options' finality gate accepts the date; idempotent upsert; kept serial — same module as the always-on stream poller"
  },
  "22": {
   "script": "downloads.index.csindex.quote",
-  "can_be_parallel": false
+  "args": [
+   "--refresh-history"
+  ],
+  "src_host": "csindex",
+  "can_be_parallel": false,
+  "note": "--refresh-history keeps the PE fetch (indexCsiDsPe) + {code}_history.csv merge in the nightly pass — without it stats.index_valuation.pe went NULL from 2026-10-27 (the skip-by-default gate landed in 35c7dcf); incremental gates keep the cost to missing dates only"
  },
  "23": {
   "script": "downloads.index.cnindex.archive",
+  "src_host": "cnindex",
   "can_be_parallel": false
  },
  "24": {
   "script": "downloads.index.bse.archive",
+  "src_host": "bse",
   "can_be_parallel": false
  },
  "25": {
   "script": "downloads.etf.huatai_pb.trend",
+  "src_host": "huatai",
   "can_be_parallel": false
  },
  "26": {
   "script": "downloads.futures.cffex.trend",
+  "src_host": "cffex",
   "can_be_parallel": false,
   "note": "current-month CFFEX daily futures/options CSVs into temps/cffex_trend (Playwright, anti-bot paced) — builds.futures globs archive + trend, builds.options.cffex reads the trend options files; keep before the builds tier"
  },
  "27": {
   "script": "downloads.futures.sgx_a50",
+  "src_host": "eastmoney",
   "can_be_parallel": false,
   "note": "SGX FTSE China A50 daily bars (Eastmoney klines, curl_cffi) — writes the shared futures tables directly (family CN%), self-contained; the CFFEX-format CSV drop is audit-only"
  },
  "28": {
   "script": "downloads.futures.hkex.msci_a50",
+  "src_host": "hkex",
   "can_be_parallel": false,
   "note": "HKEX MSCI China A 50 Connect daily bars per contract month (Daily Market Report zips mcaf/mcafa) — writes the shared futures tables directly (family MCA%); the same-day report publishes ~21:18 HKT and the AH file ~03:15, so the run refreshes the latest stored date to complete its volume"
+ },
+ "29": {
+  "script": "downloads.etf.efunds.trend",
+  "src_host": "efunds",
+  "can_be_parallel": false,
+  "note": "E Fund fund-site all-funds NAV snapshot — ONE fundlist.json GET per day (efunds family: composition and intro quarterly)"
+ },
+ "30": {
+  "script": "downloads.stock.sse.pe_latest",
+  "src_host": "sse",
+  "can_be_parallel": false,
+  "note": "latest-missing-date PE auto-load for SSE stocks: appends the latest biz date's 静态市盈率 row to temps/sse_archive/{code}_pe.csv; builds.stock's PE pass auto-loads the missing tail, keeping the estimation anchors fresh. Position within the tier is free (needs only the DB universe + calendar) — the archive crawl itself stays a manual/once backfill for gap anchors"
  }
 }

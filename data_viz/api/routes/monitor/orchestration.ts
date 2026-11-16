@@ -1,8 +1,9 @@
 /**
  * POST /orchestration/run — manual orchestration tier run via the server
  * cluster's monitor area (the serial step runner inside
- * server_cluster/monitor/orchestration.py — the server-side
- * run_steps.sh).
+ * server_cluster/monitor/orchestration.py — the tier executor the
+ * maintainer's nightly_pipeline chain also drives at 16:00 China time
+ * on trading days).
  * Full route docs: see index.ts.
  */
 

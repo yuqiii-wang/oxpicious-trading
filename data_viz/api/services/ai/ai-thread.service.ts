@@ -35,6 +35,7 @@
  * pattern). Write side: llm_agents/deep_agents/planning/store.py +
  * state_store.py.
  */
+import { HttpError } from "../../lib/http.js";
 import { labelDecodeSql } from "../infra/label-codes.js";
 import { querySqlView, sqlFrag } from "../../lib/sql-views.js";
 import type { QueryResultRow } from "pg";
@@ -193,6 +194,16 @@ export interface AgentThreadDetail {
   /** The chain's segments in order (single-element "single" when the
    *  run predates the three-graph refactor). */
   segments?: AgentThreadSegmentMeta[];
+  /** THE SERVER-COMPUTED LIVE FLAG (2026-11-13) — the same predicate
+   *  the client's threadIsActive derives (any state pending/in_progress
+   *  OR any runner-lane node item running), computed once HERE over the
+   *  MERGED chain. The client prefers it: a client-side derivation
+   *  could transiently read "settled" inside an inter-graph handoff
+   *  window (both ledgers closed between graphs) and stop the poll
+   *  loop forever; the flag rides the same fetch and — with the
+   *  runner's chain-orchestrator item (node:super) spanning the run —
+   *  never drops a live run. */
+  live?: boolean;
   states: AgentThreadStateRow[];
   contexts: AgentThreadContextRow[];
   node_states: AgentNodeStateRow[];
@@ -377,9 +388,15 @@ export async function getAgentThreadDetail(
     }
   }
   if (segments.length === 0) return null;
+  // THE SERVER-COMPUTED LIVE FLAG — the threadIsActive predicate over
+  // the MERGED chain (see the interface's live doc).
+  const live =
+    states.some((s) => s.status === "pending" || s.status === "in_progress") ||
+    node_states.some((s) => s.status === "running");
   return {
     thread_id: threadId,
     super_thread_id: members[0].thread_id,
+    live,
     segments,
     states,
     contexts,
@@ -438,4 +455,169 @@ export async function getAgentStateAgentSteps(
     if (known.length === 0) return null;
   }
   return { state_id: stateId, steps };
+}
+
+/** One runner-lane node's AGENT STEPS — the same four-type step list as
+ *  getAgentStateAgentSteps keyed by the NODE ITEM's chain instead of a
+ *  state id: the output node (and any runner-lane seat) has NO
+ *  deep_agent_states row, but its store item carries the conversation's
+ *  llm_context_id — its whole chain IS the node's conversation (no
+ *  window, no spawn rows). The SELECT lives in the sql view
+ *  data_viz/api/services/ai-thread/../server/node_agent_steps. null =
+ *  unknown node / no chain stamped on its item. */
+export async function getAgentNodeAgentSteps(
+  threadId: string,
+  nodeKey: string,
+): Promise<{ node: string; steps: AgentStepRow[] } | null> {
+  // nodeKey = the CANVAS node id — segment-prefixed for k>0
+  // ("s2:output"; the plan segment's nodes are bare). Every graph
+  // segment writes its own node item, so the prefix maps to the
+  // OWNING segment's thread (chain_members.sql = the same chain-order
+  // mapping fetch_chain_threads uses).
+  const match = /^(?:(s(\d+)):)?([a-z_][a-z0-9_:-]{0,80})$/.exec(nodeKey);
+  if (!THREAD_ID_RE.test(threadId) || match === null) {
+    return null;
+  }
+  const bareNode = match[3];
+  const segIdx = match[2] ? Number(match[2]) : 0;
+  const members = await querySqlView<
+    { thread_id: string } & QueryResultRow
+  >("llm_agents/deep_agents/server/chain_members", {
+    thread_id: threadId,
+  });
+  const owner = members[segIdx]?.thread_id;
+  if (owner === undefined) return null;
+  const steps = await querySqlView<AgentStepRow & QueryResultRow>(
+    "llm_agents/deep_agents/server/node_agent_steps",
+    { thread_id: owner, node: bareNode },
+  );
+  if (steps.length === 0) return null;
+  return { node: nodeKey, steps };
+}
+
+// ---------------------------------------------------------------------------
+// THE NODE ACTIONS — the Thread Graph's UI fork/spawn buttons (2026-11-15).
+// The deep-agents daemon owns the delegation machinery (SpawnHooks row
+// registration + the child DeepAgent run), so these FORWARD to it (the
+// same transport the summary bridge uses — the daemon is WSL-local) and
+// return the child's ids; the child then runs as a background task on
+// the daemon and the UI's thread-detail poll picks the new child row up
+// (the input hook ran synchronously before the response, so the canvas
+// shows the node immediately, status running).
+// ---------------------------------------------------------------------------
+
+/** The daemon's node-action response (mirrors NodeActionResult). */
+export interface NodeActionResult {
+  kind: "spawn" | "fork";
+  state_id: number | null;
+  context_id: string | null;
+  thread_id: string | null;
+  parent_state_id: number | null;
+  status: string;
+}
+
+const DEEP_AGENTS_HOST = "127.0.0.1";
+const DEEP_AGENTS_PORT = 8766;
+
+async function postNodeAction(
+  path: string,
+  body: Record<string, unknown>,
+): Promise<NodeActionResult> {
+  const res = await fetch(
+    `http://${DEEP_AGENTS_HOST}:${DEEP_AGENTS_PORT}${path}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30_000),
+    },
+  );
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const parsed = (await res.json()) as { detail?: string };
+      if (parsed?.detail) detail = parsed.detail;
+    } catch {
+      // keep the HTTP-status fallback
+    }
+    // The daemon's status CARRIES: 404 unknown state / 409 an active
+    // chain / 400 a bad fork request — the UI reads the detail text.
+    throw new HttpError(
+      res.status === 404 || res.status === 409 || res.status === 400
+        ? res.status
+        : 502,
+      "UPSTREAM_FAILED",
+      `deep-agents node action failed: ${detail}`,
+    );
+  }
+  return (await res.json()) as NodeActionResult;
+}
+
+/** POST one UI SPAWN action — a fresh-context child under the clicked
+ *  node's state (threadId may be any chain member id; the daemon
+ *  resolves the state's own thread). */
+export function runNodeSpawn(
+  threadId: string,
+  stateId: number,
+  goal: string,
+  maxSteps?: number,
+): Promise<NodeActionResult> {
+  return postNodeAction(
+    `/threads/${encodeURIComponent(threadId)}/states/${stateId}/spawn`,
+    maxSteps ? { goal, max_steps: maxSteps } : { goal },
+  );
+}
+
+/** POST one RUN-NODE SPAWN action — a fresh-context child hanging off
+ *  a runner-lane SEAT (the output node: no state row to parent from).
+ *  nodeKey = the canvas node id (s<k>:-prefixed for k>0 segments); the
+ *  daemon resolves the owning segment and parents the child under the
+ *  chain root's plan state row. Spawn ONLY on a state-less seat — fork
+ *  continues a recorded step conversation, which a graph-level seat
+ *  has none of. */
+export function runNodeSpawnOnNode(
+  threadId: string,
+  nodeKey: string,
+  goal: string,
+  maxSteps?: number,
+): Promise<NodeActionResult> {
+  return postNodeAction(
+    `/threads/${encodeURIComponent(threadId)}/nodes/${encodeURIComponent(nodeKey)}/spawn`,
+    maxSteps ? { goal, max_steps: maxSteps } : { goal },
+  );
+}
+
+/** POST one RUN-NODE FORK action — the continuation child hanging off
+ *  a runner-lane SEAT (the output node): the fork point request is
+ *  validated ON the seat's OWN chain (the daemon reads it off the node
+ *  item), the transcript reconstruction is the state-keyed fork's walk,
+ *  and the child parents under the chain root's plan state row. */
+export function runNodeForkOnNode(
+  threadId: string,
+  nodeKey: string,
+  goal: string,
+  requestId: string | number,
+  maxSteps?: number,
+): Promise<NodeActionResult> {
+  return postNodeAction(
+    `/threads/${encodeURIComponent(threadId)}/nodes/${encodeURIComponent(nodeKey)}/fork`,
+    maxSteps
+      ? { goal, request_id: Number(requestId), max_steps: maxSteps }
+      : { goal, request_id: Number(requestId) },
+  );
+}
+
+/** POST one UI FORK action — a continuation child from the clicked
+ *  agent step's recorded conversation (requestId = the inference row's
+ *  request id). */
+export function runNodeFork(
+  threadId: string,
+  stateId: number,
+  goal: string,
+  requestId: string | number,
+): Promise<NodeActionResult> {
+  return postNodeAction(
+    `/threads/${encodeURIComponent(threadId)}/states/${stateId}/fork`,
+    { goal, request_id: Number(requestId) },
+  );
 }

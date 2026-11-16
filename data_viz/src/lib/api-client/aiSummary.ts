@@ -317,6 +317,10 @@ export interface AiSummaryRun {
   steps_completed: number;
   steps_failed: number;
   steps_skipped: number;
+  /** THE SERVER-COMPUTED LIVE BADGE (2026-11-13) — true while any member
+   *  state is open OR the chain root's store namespace holds a running
+   *  node item (the chain-orchestrator node:super spans the run). */
+  is_live?: boolean;
   /** First state's created_at, Shanghai-local text. */
   first_at: string;
   last_at: string | null;

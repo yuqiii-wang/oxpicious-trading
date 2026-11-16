@@ -198,6 +198,15 @@ class RunLimits(BaseModel):
     supervisor_max_node_retries: int = 1
     supervisor_max_repairs_per_run: int = 2
     supervisor_retry_throttle_sec: float = 45.0
+    # THE CAP-CLASS RETRY LANE (2026-11-15, run d7b24a36): a step-cap
+    # death whose recorded usage shows real work (the error text's
+    # embedded counters, >= 5 tool calls — repair.CAP_RETRY_MIN_TOOL_
+    # CALLS) re-runs ONCE per run under a RAISED conversation budget:
+    # the hop's normal clamp + supervisor_cap_retry_step_bump steps
+    # (deliberately above max_steps_cap). 0 retries disables the lane;
+    # a 0 bump makes the verdict refuse (nothing to raise).
+    supervisor_cap_retries_per_run: int = 1
+    supervisor_cap_retry_step_bump: int = 16
 
     # The SYSTEM ONE DECISION LANE (decision/, 2026-11-11): typed
     # harness judgments answered by the resident host's jev models
@@ -332,6 +341,10 @@ class RunLimits(BaseModel):
                 num("supervisor_max_repairs_per_run", 2, 0, 6)),
             supervisor_retry_throttle_sec=num(
                 "supervisor_retry_throttle_sec", 45.0, 0.0, 300.0),
+            supervisor_cap_retries_per_run=int(
+                num("supervisor_cap_retries_per_run", 1, 0, 4)),
+            supervisor_cap_retry_step_bump=int(
+                num("supervisor_cap_retry_step_bump", 16, 0, 64)),
             jev_decisions=bool(doc.get("jev_decisions", True)),
             jev_min_confidence=num(
                 "jev_min_confidence", 0.6, 0.0, 1.0),

@@ -43,9 +43,6 @@
 --      levels — 05_commons, previews both about the MA-spread read).
 --    pe-guide ↔ dividends-guide: the two "baseline" valuation reads
 --      (05_commons; the ns-0 seed 11_pe_dividens groups the tables).
---    market-crowdedness-guide ↔ hot-stock-momentum-guide: both gauge
---      one-sided concentration (05_commons; ns-0 seed 13 groups the
---      crowdedness + hot-momentum tables).
 --    rf-break-signal-guide / hedge-pairs-guide ↔ signals-families-guide:
 --      all teach reading signal rule cells (06_signals; hedge-pairs is
 --      one of the signal families).
@@ -109,8 +106,6 @@ INSERT INTO llm.kg_entities (namespace, name, entity_type, tags, description) VA
      'How to read an industry''s market-beta attribution — its co-movement with the broad market vs its own idiosyncratic drift.'),
     (1, 'market-crowdedness-guide', 'skill', ARRAY['biz_guide', '拥挤', '过热', '抱团', 'market crowdedness', 'crowding', 'participation breadth', 'overheating'],
      'How to read the market-crowdedness lens — how one-sided market positioning has become.'),
-    (1, 'hot-stock-momentum-guide', 'skill', ARRAY['biz_guide', '龙头', '连板', '热门', 'hot stock', 'speculative leaders', 'theme rotation', 'turnover energy'],
-     'How to read the hot-stock momentum lens — where speculative trading energy concentrates and how it rotates.'),
     (1, 'margin-trends-guide', 'skill', ARRAY['biz_guide', '融资', '两融', '杠杆', 'margin financing', 'margin balance', 'leverage flow', 'exchange split'],
      'How to read margin financing — balance changes, index/industry participation and the exchange split.'),
     (1, 'futures-basis-guide', 'skill', ARRAY['biz_guide', '期货', '基差', '贴水', 'futures basis', 'premium discount', 'term structure', 'contract roll'],
@@ -159,7 +154,6 @@ FROM (VALUES
     ('general-plan',              'naive-verify-plan',             'similar_to',      'about_plan_shape'),
     ('ma-spread-guide',           'roof-floor-guide',              'similar_to',      'about_ma_spread_levels'),
     ('pe-guide',                  'dividends-guide',               'similar_to',      'about_valuation_baseline'),
-    ('market-crowdedness-guide',  'hot-stock-momentum-guide',      'similar_to',      'about_crowdedness'),
     ('rf-break-signal-guide',     'signals-families-guide',        'similar_to',      'about_signal_rule_cells'),
     ('hedge-pairs-guide',         'signals-families-guide',        'similar_to',      'about_signal_rule_cells'),
     ('futures-basis-guide',       'options-guide',                 'similar_to',      'about_derivatives'),

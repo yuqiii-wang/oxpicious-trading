@@ -47,6 +47,7 @@ export default function ResultPanel({
   labelsFocusSignal,
   onApplyLabelChange,
   graphThreadId,
+  resolvingPick,
   onSettled,
   graphSignal,
   onPlanTemplateSaved,
@@ -91,6 +92,10 @@ export default function ResultPanel({
     permanent: boolean,
   ) => void;
   graphThreadId: string | null;
+  /** The Summary History is still resolving which run to open (its
+   *  dates / day-rows fetch in flight) — the graph placeholder spins
+   *  instead of the "No run picked" text while nothing is picked. */
+  resolvingPick: boolean;
   onSettled: () => void;
   graphSignal: number;
   onPlanTemplateSaved: () => void;
@@ -319,6 +324,7 @@ export default function ResultPanel({
       ) : resultView === "langgraph" ? (
         <ThreadGraphView
           threadId={graphThreadId}
+          resolvingPick={resolvingPick}
           expectLive={generating}
           onSettled={onSettled}
           refreshSignal={graphSignal}

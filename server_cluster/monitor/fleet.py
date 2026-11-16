@@ -5,14 +5,16 @@ desired-running-but-down residents back up:
 
 * ``snapshot()`` — every jobs area's ``GET /processes`` (8769–8772) plus
   the llm/config servers' ``GET /health``, merged with the always-on
-  ``MONITORED_SERVICES`` heartbeat freshness (the standalone entries —
-  today the stream watchdog — exist only as heartbeat rows).
+  ``always_on_roster()`` heartbeat freshness (the completed 2026-11
+  resident migration: every always-on service — the watchdog included,
+  a monitor-area resident since then — has either an area supervisor
+  row or a heartbeat row; the roster is the union view).
 * ``ensure_up()`` — for every area resident whose state is ``down`` or
   ``backoff``: ``POST /processes/{service}/start`` (explicit operator
-  intent — bypasses the crash-loop backoff, same as the UI button). A
-  stale ``database.stream_watchdog`` heartbeat spawns the supervisor
-  through the monitor area's own registry (it is nobody's resident —
-  the WSL boot hook starts it, this is the recovery path).
+  intent — bypasses the crash-loop backoff, same as the UI button).
+  This area's OWN residents (the seven servers, the six infra daemons
+  and the stream watchdog itself — the mutual pair) flip through the
+  in-process supervisor.
 
 The daily 07:00 scheduler lived here (``scheduler.py``) and moved to
 the maintainer area (``maintainer/bring_up.py``, 2026-11) — its fire
@@ -35,21 +37,9 @@ from .data_definitions import (
     AreaFleet, AreaProcess, AlwaysOnService, EnsureUpAction,
     EnsureUpResponse, FleetResponse, HealthCheckItem, HealthCheckResponse,
 )
-from _common.service_heartbeat import MONITORED_SERVICES, STALE_AFTER_S
+from _common.service_heartbeat import STALE_AFTER_S, always_on_roster
 
 logger = logging.getLogger(__name__)
-
-# The standalone always-on service this area may spawn (the ensure-up
-# watchdog path — nobody's resident, so the fleet core reaches it
-# through the registry instead of an area's /processes).
-WATCHDOG_SERVICE = "database.stream_watchdog"
-
-# Registry tags for the spawns ensure-up may issue (the jobs surface's
-# tag-dedupe identity — a second spawn while the first warms up is
-# refused, never doubled).
-SCHEDULER_TAGS = {
-    WATCHDOG_SERVICE: "always-on:database.stream_watchdog",
-}
 
 # Job areas whose resident rows this server aggregates/controls (the
 # llm/config areas serve their own apps — no /processes surface).
@@ -75,9 +65,8 @@ class FleetOps:
     """The fleet aggregation + bring-back logic (the routers and the
     daily scheduler share ONE instance — app.state.fleet)."""
 
-    def __init__(self, config, registry, processes, supervisor) -> None:
+    def __init__(self, config, processes, supervisor) -> None:
         self._config = config
-        self._registry = registry
         self._processes = processes
         self._supervisor = supervisor
 
@@ -133,13 +122,15 @@ class FleetOps:
         return FleetResponse(areas=areas, always_on=self._always_on())
 
     def _always_on(self) -> list[AlwaysOnService]:
-        """The MONITORED_SERVICES entries' heartbeat freshness (the
-        database-facing liveness view the CLI check prints)."""
+        """The whole always-on roster's heartbeat freshness (the
+        watchdog's scan charges + every area's residents — after the
+        completed 2026-11 resident migration that union IS the fleet;
+        the database-facing liveness view the CLI check prints)."""
         import psycopg
 
         from _common.db_commons import get_db_connection
 
-        names = list(MONITORED_SERVICES)
+        names = always_on_roster()
         beats: dict[str, tuple[int, int]] = {}
         try:
             conn = get_db_connection()
@@ -170,9 +161,10 @@ class FleetOps:
 
     def ensure_up(self) -> EnsureUpResponse:
         """Bring the fleet up: start every down/backoff resident (the
-        jobs areas' via HTTP, this area's own via the supervisor), spawn
-        a stale stream watchdog. NEVER raises — one area's failure is
-        that area's error row."""
+        jobs areas' via HTTP, this area's own via the supervisor — the
+        seven servers, the six infra daemons AND the stream watchdog,
+        the mutual pair). NEVER raises — one area's failure is that
+        area's error row."""
         actions: list[EnsureUpAction] = []
 
         for name in _JOBS_AREAS:
@@ -194,8 +186,9 @@ class FleetOps:
                     service=svc, area=name, action="started",
                     ok=started, detail=None if started else str(start_body)))
 
-        # This area's OWN residents (the seven cluster servers since the
-        # 2026-11 migration): flip any down/backoff one back to running
+        # This area's OWN residents (the seven cluster servers, the six
+        # infra daemons and the stream watchdog itself since the 2026-11
+        # migration completed): flip any down/backoff one back to running
         # through the supervisor (explicit intent also clears its crash
         # backoff). No HTTP hop — the supervisor lives in-process.
         for row in self._supervisor.snapshot():
@@ -206,7 +199,6 @@ class FleetOps:
                 service=row.service, area=self._config.area,
                 action="started", ok=True))
 
-        actions.extend(self._ensure_watchdog())
         return EnsureUpResponse(
             actions=actions,
             brought_up=sum(1 for a in actions
@@ -224,39 +216,6 @@ class FleetOps:
         import asyncio
 
         return await asyncio.to_thread(self.ensure_up)
-
-    def _ensure_watchdog(self) -> list[EnsureUpAction]:
-        """The standalone always-on entries: a stale
-        ``database.stream_watchdog`` beat means the supervisor itself is
-        dead — spawn it through this area's registry (tag-deduped; a
-        second spawn while the first warms up is refused). The OTHER
-        always-on rows (db_health, the llm_agents daemons) are still the
-        watchdog's charges — starting them here would fight it, so their
-        staleness is reported, not acted on."""
-        rows = self._always_on()
-        actions: list[EnsureUpAction] = []
-        for row in rows:
-            if not row.stale:
-                actions.append(EnsureUpAction(
-                    service=row.service, area="monitor",
-                    action="already-up", ok=True))
-                continue
-            if row.service != WATCHDOG_SERVICE:
-                actions.append(EnsureUpAction(
-                    service=row.service, area="monitor", action="stale",
-                    ok=False,
-                    detail="stale heartbeat — supervised by the stream "
-                           "watchdog / WSL boot hook, not started here"))
-                continue
-            entry, already = self._registry.submit(
-                WATCHDOG_SERVICE, [], SCHEDULER_TAGS[WATCHDOG_SERVICE])
-            actions.append(EnsureUpAction(
-                service=WATCHDOG_SERVICE, area="monitor",
-                action="already-up" if already else "spawned",
-                ok=True,
-                detail=None if not already else "a spawn is already in "
-                "flight under the registry tag"))
-        return actions
 
 
 # ---------------------------------------------------------------------------

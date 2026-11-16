@@ -1,0 +1,9 @@
+{
+  "service": "builds.classification",
+  "check": "db_universe_coverage",
+  "params": {
+    "view": "server_cluster/monitor/non_daily/sec_classification_coverage"
+  },
+  "rerun_args": [],
+  "notes": "Classification coverage vs stock_identity latest date (new listings appear here until the Saturday backfill re-runs the once-build)."
+}

@@ -288,6 +288,20 @@ export const LIMIT_GROUPS: Array<{ title: string; fields: LimitFieldDef[] }> = [
         max: 300,
         help: "A retry on a rate-limit-class failure waits this long INSIDE the repair window before the hop re-runs — an immediate re-run would re-hit the hot account.",
       },
+      {
+        key: "supervisorCapRetriesPerRun",
+        label: "Cap retries / run",
+        min: 0,
+        max: 4,
+        help: "A step-cap death whose error text records real work (5+ tool calls) re-runs this many times per run under a RAISED step budget. 0 disables the lane.",
+      },
+      {
+        key: "supervisorCapRetryStepBump",
+        label: "Cap retry step bump",
+        min: 0,
+        max: 64,
+        help: "The extra conversation steps a cap retried under — the hop's normal clamp plus this (deliberately above the max-steps cap). 0 makes the verdict refuse.",
+      },
     ],
   },
 ];

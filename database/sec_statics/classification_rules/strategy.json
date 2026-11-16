@@ -518,6 +518,22 @@
       "keywords": [
         "亚太精选"
       ]
+    },
+    {
+      "sector_id": "ACTIVE",
+      "sector_label": "主动",
+      "industry_id": "ACTIVE_ENHANCED",
+      "industry_label": "指数增强",
+      "keywords": [],
+      "note": "EXPLICIT registry-driven tag — NOT auto-classified (empty keywords). Codes come from database/sec_statics/active_funds/*.json (venue=etf, style=enhanced_index), applied by ActiveFundClassifier in builds.classification. Active funds are actively managed, so their names carry no stable keyword (增强/主动 appear in many passive-adjacent names); the curated registry is the only correct source."
+    },
+    {
+      "sector_id": "ACTIVE",
+      "sector_label": "主动",
+      "industry_id": "ACTIVE_MGMT",
+      "industry_label": "主动管理",
+      "keywords": [],
+      "note": "EXPLICIT registry-driven tag — NOT auto-classified (empty keywords). Codes come from database/sec_statics/active_funds/*.json (venue=etf, style=active_mgmt), applied by ActiveFundClassifier in builds.classification (SSE 581xxx 主动管理型ETF first batch et al.)."
     }
   ]
 }

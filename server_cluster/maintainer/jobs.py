@@ -10,6 +10,7 @@ window go away whole; loose files at the root go by mtime.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import shutil
@@ -19,8 +20,11 @@ from pathlib import Path, PureWindowsPath
 
 from pydantic import BaseModel, Field
 
+from _common.db_commons import get_db_connection, get_db_connection_async
 from _common.labels import (BACKUP_MODE_LABEL, BACKUP_STATUS_CODE,
                             BACKUP_STATUS_LABEL)
+from _common.sql_writes import render_sql_write
+from database import db_table_audit_archive
 from server_cluster.maintainer.backup import (BackupAudit,
                                               BackupBatchRecord,
                                               DEFAULT_MT_THREADS,
@@ -40,6 +44,57 @@ class BackupFailedError(RuntimeError):
     """The mirror batch failed — raised AFTER its audit row is written,
     so the job result carries ``ok=False`` with the batch's own detail
     line and the audit trail still records what the pass managed."""
+
+
+class PassAuditRecord(BaseModel):
+    """One maintainer pass appended to ``monitor.service_audit`` — the
+    trail the Service Monitor UI expands (same table the watchdog
+    restarts write)."""
+
+    service: str
+    pid: int
+    started_at: datetime
+    ended_at: datetime
+    ok: bool
+    exit_reason: str
+
+
+class PassAudit:
+    """The ``monitor.service_audit`` face for a maintainer pass (the
+    bring-up and nightly-pipeline jobs share it). Sync face (the job's
+    thread), asyncpg under a short-lived ``asyncio.run`` loop — the
+    action file's ``$n`` placeholders speak the asyncpg wire form; an
+    audit loss is logged, never fatal."""
+
+    _INSERT_WRITE = "server_cluster/maintainer/audit/insert_pass"
+
+    def insert(self, record: PassAuditRecord) -> None:
+        asyncio.run(self._insert(record))
+
+    def record(self, service: str, started_at: datetime, ok: bool,
+               exit_reason: str) -> None:
+        """One best-effort pass row (the bring-up and nightly-pipeline
+        jobs share this) — an audit loss is logged, never fatal."""
+        try:
+            self.insert(PassAuditRecord(
+                service=service, pid=os.getpid(),
+                started_at=started_at,
+                ended_at=datetime.now(timezone.utc), ok=ok,
+                exit_reason=exit_reason))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("%s audit row failed: %s", service, exc)
+
+    @staticmethod
+    async def _insert(record: PassAuditRecord) -> None:
+        write = render_sql_write(
+            PassAudit._INSERT_WRITE, record.service, record.pid,
+            record.started_at, record.ended_at, record.ok,
+            record.exit_reason)
+        conn = await get_db_connection_async()
+        try:
+            await conn.execute(write.sql, *write.params)
+        finally:
+            await conn.close()
 
 
 class JobResult(BaseModel):
@@ -62,10 +117,14 @@ class MaintenanceJob(ABC):
     name: str = "job"
     description: str = ""
     scheduled: bool = True
-    """Whether the shared ``MaintenanceScheduler`` fires this job on the
-    daily maintenance pass; jobs with their own dedicated thread (the
-    07:00 fleet bring-up) set False — they stay listed on ``GET /jobs``
-    and run on demand, just not on the scheduler's pass."""
+    """Whether the shared ``MaintenanceScheduler`` fires this job on
+    schedule; jobs the scheduler never fires set False — they stay
+    listed on ``GET /jobs`` and run on demand only."""
+    fire_at: str | None = None
+    """The job's own fire time (``HH:MM`` China time). ``None`` joins the
+    shared ``MAINTAINER_FIRE_AT`` daily pass (03:30); a set time forms
+    its own fire group (the 07:00 fleet bring-up, the 16:00 nightly
+    pipeline chain)."""
 
     def __init__(self) -> None:
         self.last_result: JobResult | None = None
@@ -271,4 +330,35 @@ class StatsDbBackupJob(MaintenanceJob):
         if dest.anchor and dest.anchor[1:2] == ":":
             return Path(dest.anchor)
         return None
+
+
+class DbTableAuditArchiveJob(MaintenanceJob):
+    """Roll the per-table workload audit into its daily archive.
+
+    Thin scheduler face over database/db_table_audit_archive.refresh():
+    one record per (GMT day, table, instance) in
+    ``monitor.db_table_audit_archive``, rebuilt idempotently per stale
+    date (the current partial day refreshes every run; closed days are
+    no-ops). The audit is the source of truth — the archive is COMPUTED
+    and is the long-term retention (the audit keeps ~30d of per-pass
+    detail). A DB outage raises into the guarded ``run()`` → ``ok=False``
+    detail line, never a dead server; the next day's pass self-heals.
+    """
+
+    name = "db_table_audit_archive"
+    description = ("Aggregate monitor.db_table_audit into "
+                   "monitor.db_table_audit_archive — one record per (GMT "
+                   "day, table, instance): day sums of row/scan deltas, "
+                   "peak write/read rates, worst write_flag, end-of-day "
+                   "size snapshots. Stale-date rebuild, idempotent "
+                   "(database/db_table_audit_archive.py).")
+
+    def _run(self) -> tuple[list[str], str]:
+        conn = get_db_connection()
+        try:
+            dates, rows = db_table_audit_archive.refresh(conn)
+        finally:
+            conn.close()
+        return [], (f"rebuilt {dates} date(s), {rows} archive row(s) "
+                    "(monitor.db_table_audit_archive)")
 

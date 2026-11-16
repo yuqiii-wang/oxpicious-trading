@@ -2,10 +2,12 @@
 
 One request per fund fetches the complete NAV history since inception
 (510880: 4813 rows, 2006-11-17 → today — see ``_endpoints`` study notes for
-the getFundNetTableJson endpoint). Default universe: the curated checkin
-watchlist (CHECKIN_FUND_CODES in ``_endpoints``); the full feeder set was
-fetched once via ``feeder_codes_from_latest_trend`` (builds.etf.feeder_nav
-reads those CSVs + the all-funds daily trend snapshots). Output per fund:
+the getFundNetTableJson endpoint). Default universe: the curated ACTIVE
+ETF registry (ACTIVE_ETF_CODES in ``_endpoints`` — the issuer's
+actively-managed ETFs; only they load per-fund history since 2026-11-14);
+the full feeder set was fetched once via ``feeder_codes_from_latest_trend``
+(builds.etf.feeder_nav reads those CSVs + the all-funds daily trend
+snapshots). Output per fund:
 
   ``temps/huatai_pb_nav/raw/huatai_pb_nav_archive_<code>_<YYYYMMDD>.json``
       raw response archive (re-written on every successful download)
@@ -57,7 +59,7 @@ from downloads._common import (
     setup_logger,
 )
 from downloads.etf.huatai_pb._endpoints import (
-    CHECKIN_FUND_CODES,
+    ACTIVE_ETF_CODES,
     build_proxy,
     fetch_nav_rows,
     parse_comma_number,
@@ -102,8 +104,8 @@ def feeder_codes_from_latest_trend(out_dir) -> List[str]:
 
     The products-index snapshot covers every fund share class, so the
     联接 name match yields the full feeder universe (A/C/... classes).
-    NOT part of the default universe anymore (checkin codes only) — kept
-    for one-off re-fetches of the full feeder history:
+    NOT part of the default universe anymore (active-ETF registry codes
+    only) — kept for one-off re-fetches of the full feeder history:
     ``python -m downloads.etf.huatai_pb.archive --fund-codes <list>``.
     """
     files = sorted(out_dir.glob("huatai_pb_nav_trend_*.csv"))
@@ -128,8 +130,8 @@ class HuataiPbArchiveDownload(DownloadJob):
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--fund-codes", type=str, default=None,
-                        help="Comma-separated fund codes (default: the checkin "
-                             "watchlist — see _endpoints.CHECKIN_FUND_CODES)")
+                        help="Comma-separated fund codes (default: the curated "
+                             "active-ETF registry — see _endpoints.ACTIVE_ETF_CODES)")
         parser.add_argument("--out-root", type=str, default=None,
                         help="Alternative output root directory")
         parser.add_argument("--sleep-sec", type=float, default=None,
@@ -159,11 +161,11 @@ class HuataiPbArchiveDownload(DownloadJob):
         if fund_codes:
             codes = [c.strip() for c in fund_codes if c.strip()]
         else:
-            # Default universe: the curated checkin watchlist ONLY (the daily
-            # trend stays all-funds; builds.etf.feeder_nav's feeder history
-            # came from a one-off full-feeder fetch — see
+            # Default universe: the curated ACTIVE ETF registry ONLY (the
+            # daily trend stays all-funds; builds.etf.feeder_nav's feeder
+            # history came from a one-off full-feeder fetch — see
             # feeder_codes_from_latest_trend for re-running it).
-            codes = list(CHECKIN_FUND_CODES)
+            codes = list(ACTIVE_ETF_CODES)
 
         session = build_default_session()
         proxy = build_proxy(SERVICE, sleep_sec)

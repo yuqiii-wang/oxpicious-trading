@@ -56,6 +56,7 @@ import {
   shortLabel,
   type TrendSpansRecord,
 } from "./trendBands";
+import type { ChartZoomRange } from "../types";
 import type {
   DerivTrendSpec,
   MomentumTrendSpec,
@@ -227,6 +228,10 @@ export interface BuildPairOptionArgs {
    *  the rule cells) for the tooltip's per-date trend readout. Null
    *  while loading / on fetch failure — the tooltip row is omitted. */
   trendSpans?: TrendSpansRecord | null;
+  /** The panel's shared dataZoom window (percentages 0-100) — the ONE
+   *  synced viewport state with the MA-Chain Alignment companion chart
+   *  (null = full range). */
+  zoom?: ChartZoomRange | null;
 }
 
 export function buildPairOption({
@@ -256,6 +261,7 @@ export function buildPairOption({
   ohlcGapRows = null,
   ohlcGapActive = false,
   trendSpans = null,
+  zoom = null,
 }: BuildPairOptionArgs): EChartsOption {
   const c = axisColors(themeMode);
   const rows = pair.rows;
@@ -653,7 +659,7 @@ export function buildPairOption({
   // and the React-element tooltip formatter overrides the default content.
   return baseChartOption(themeMode, {
     grid,
-    dataZoom: commonDataZoom(),
+    dataZoom: commonDataZoom(undefined, zoom?.start, zoom?.end),
     tooltip: commonTooltip(themeMode, {
       axisPointer: { type: "line", snap: true },
       formatter: buildPairTooltipFormatter(tooltipContext),

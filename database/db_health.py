@@ -321,7 +321,9 @@ def main() -> int:
         run_pass(args.retain_days)
         return 0
 
-    register_service(SERVICE)  # heartbeat + audit row (monitor.*)
+    # Explicit scope: the service left MONITORED_SERVICES 2026-11 (a
+    # monitor-area resident now), so the registry no longer supplies it.
+    register_service(SERVICE, scope="database", sub_scope="stream")
     logger.info("db_health sampler started (interval %.0fs, retain %dd)",
                 args.interval, args.retain_days)
     while True:

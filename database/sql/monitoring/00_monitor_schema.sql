@@ -34,6 +34,26 @@
 --        replica Postgres pair (one row per instance per ~60s pass:
 --        reachability, latency, DB vitals, WAL shipping state, container
 --        CPU/mem), written by database/db_health.py.
+--    monitor.db_table_audit — append-only per-table workload samples
+--        (one row per (instance, table) per ~300s pass: read/write rates
+--        + delta counts from pg_stat_user_tables cumulative counters,
+--        live/dead + size snapshots, write_flag verdict), written by
+--        database/db_table_audit.py.
+--    monitor.db_table_audit_archive — COMPUTED daily rollup of the
+--        audit: one record per (GMT day, table, instance) — day sums of
+--        row/scan deltas, peak rates, worst write_flag, end-of-day
+--        size snapshots — rebuilt idempotently per date by
+--        database/db_table_audit_archive.py (daily on the maintainer
+--        03:30 pass; no purge — this table IS the retention).
+--    monitor.db_table_alert — append-only write-heavy alert trail: one
+--        row per db_table_audit.write_flag STATE TRANSITION (raise /
+--        downgrade / clear, severity + tripping rate + threshold),
+--        written by database/db_table_audit.py.
+--    monitor.sql_audit — one row per DISTINCT SQL statement executed on
+--        the cluster, keyed by sha256 of the normalized text
+--        (pg_stat_statements, delta-accumulated: calls / total / avg /
+--        max exec time / rows, first seen / last active), upserted by
+--        database/sql_audit.py.
 --    monitor.src_data_audit — per-security source-data coverage audit:
 --        one row per (sec_type, code) with n_days / first_date /
 --        last_date, upserted by builds.classification (index from
@@ -74,6 +94,12 @@
 --    database/monitoring.py --streams — exit-code alerts (default health
 --                                       check includes it)
 --    database/db_health.py            — the DB health sampler
+--    database/db_table_audit.py       — the per-table workload audit +
+--                                       write-heavy alert sampler
+--    database/db_table_audit_archive.py — the audit's daily rollup
+--                                       (maintainer 03:30 job + python -m)
+--    database/sql_audit.py            — the per-statement SQL audit
+--                                       sampler (pg_stat_statements)
 --    data_viz/api/routes/monitor.ts   — GET /api/monitor/stream status page
 --                                       + GET /api/monitor/src-data-audit
 --                                       (Source Data tab's audit table)

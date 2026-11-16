@@ -48,6 +48,20 @@ NODE_COMPACT = "compact"
 # view's display source). No LLM work.
 NODE_RESULT = "result"
 NODE_FINALIZE = "finalize"
+# THE CHAIN-ORCHESTRATOR item (2026-11-13): the SuperGraphRunner writes
+# node:super on the ROOT thread from run start to run end (llm=False —
+# no LLM work of its own). ONE continuously-running process signal
+# across the whole three-graph chain: the inter-graph handoff windows
+# (a graph's END before the next graph's first writer lands) leave the
+# states ledger transiently all-terminal, so a liveness read that
+# unions only states + per-node items could drop a live run there and
+# stop the UI's poll loop forever (the WS push channel is disabled —
+# the poll is the only refresh path). With this item open the union
+# never lies. Settled in the runner's finally — completed on the
+# normal path, failed on every unwind (the cancel/engine handlers'
+# settle_node_items pass flips it first; the explicit close is
+# idempotent over that).
+NODE_SUPER = "super"
 # A graph's FINAL OUTPUT NODE (2026-11-06 three-graph refactor): the
 # fixed-directive synthesis conversation every graph closes with — the
 # custom graph's seat persists the kind graph-output context (the

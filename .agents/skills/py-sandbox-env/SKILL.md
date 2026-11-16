@@ -58,17 +58,17 @@ Three layers, check in this order when sandbox tools error:
    `restart: unless-stopped` + image HEALTHCHECK
    (`database/docker-compose.yml` service `py-sandbox`).
 2. Middleware daemon: heartbeat row `llm_agents.sandbox` in
-   `monitor.service_heartbeat` (watchdog starts/restarts it like the
-   pollers); log `logs/<date>/llm_agents.sandbox.log`; spawn is
-   `python -m llm_agents.sandbox`. The middleware also self-heals a
-   stopped container (`docker start oxpicious-py-sandbox`) before
-   failing a tool call.
+   `monitor.service_heartbeat` (a monitor-area resident of the server
+   cluster — the monitor's supervisor starts/revives it; the completed
+   2026-11 resident migration); log `logs/<date>/llm_agents.sandbox.log`;
+   spawn is `python -m llm_agents.sandbox`. The middleware also
+   self-heals a stopped container (`docker start oxpicious-py-sandbox`)
+   before failing a tool call.
 3. From an agent's view: call the `sandbox_health` MCP tool — its
    `{"error": ...}` text names the layer that is down.
 
-Host WSL full restart: `bash main_run.sh` (or
-`scripts/stream_watchdog.sh` from an interactive shell) restarts the
-watchdog, which restarts the middleware.
+Host WSL full restart: `scripts/stream_watchdog.sh` from an interactive
+shell restarts the watchdog, which restarts the middleware.
 
 ## Changing the sandbox
 

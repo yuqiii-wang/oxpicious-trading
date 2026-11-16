@@ -187,7 +187,10 @@ export type ThreadNodeStatus =
 
 /** Which layer of the graph a canvas node sits on — endpoint (START/
  *  END), runner (the plan/finalize/result lane), output (a graph's
- *  FINAL OUTPUT NODE — the chain's handoff producer), step (a planned
+ *  FINAL OUTPUT NODE — the chain's handoff producer; a TERMINAL FORK
+ *  continuation (2026-11-16) wears the same kind — the fork rode the
+ *  seat's recorded conversation, so it renders as the seat's own node
+ *  type hanging off it), step (a planned
  *  research step that executed as its own node hop), spawn (a spawned
  *  subagent branch, drawn in a spawn column to the right of and below
  *  its parent), fork (2026-11-13: an INHERIT-context subagent branch —
@@ -209,6 +212,7 @@ export type ThreadGraphNodeKind =
   | "spawn"
   | "fork"
   | "abandoned"
+  | "resume"
   | "supervisor"
   | "caption"
   | "bend";
@@ -251,6 +255,10 @@ export interface ThreadGraphEdge {
    *  the three-graph chain (one graph's final output node → the next
    *  graph's entry; styled like a chain edge but DASHED, and spanning
    *  the wider X_CHAIN_GAP so the two graphs read as two graphs);
+   *  handoff_lead — a bent handoff's first legs (handoff-styled but
+   *  WITHOUT the target arrowhead — routed a row above the lane when a
+   *  terminal fork continuation sits on the lane row between the
+   *  terminal and the next entry, 2026-11-16);
    *  spawn — parent → spawn (the elbow's arrowed leg into the spawn);
    *  fork — parent → fork (the elbow's arrowed leg into a fork child,
    *  rendered THICKER than a spawn's — the inherit-context cue,
@@ -263,9 +271,11 @@ export interface ThreadGraphEdge {
    *  merge-back leg retracing the elbow); bare — a chain-styled leg
    *  WITHOUT the target arrowhead (the first leg of a bent path — a
    *  wave spawn/merge leg or a spawn spur's elbow — the corner gets no
-   *  arrow). Absent = chain. */
-  kind?: "chain" | "handoff" | "spawn" | "fork" | "fork_lead"
-    | "abandoned" | "merge" | "bare";
+   *  arrow); resume — parent → resume marker (the SUPERVISOR RESUME
+   *  fork action, 2026-11-15: dashed and fork-weighted, the retry
+   *  continuation cue). Absent = chain. */
+  kind?: "chain" | "handoff" | "handoff_lead" | "spawn" | "fork"
+    | "fork_lead" | "abandoned" | "merge" | "bare" | "resume";
 }
 
 /** One chain segment's view metadata — the caption band and the

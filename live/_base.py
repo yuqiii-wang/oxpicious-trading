@@ -7,7 +7,7 @@ points previously duplicated:
 
   - bootstrap: GPU-less (``pre_check(require_gpu=False)`` — the processes
     are asyncpg-only; the API-invoked spawns must not abort on the heavy
-    cudf pipelines' 36 GiB floor) with the lowered ``ANALYZE_MIN_SYS_GB``
+    cudf pipelines' 24 GiB floor) with the lowered ``ANALYZE_MIN_SYS_GB``
     floor, plus the standard cudf.pandas hook + UTF-8 stdout.
   - exit codes: the pipelines communicate API-facing outcomes (0 ok /
     2 usage / 404 nothing computable) through ``self.exit_code`` — the
@@ -38,9 +38,9 @@ from _common.sql_writes import render_sql_write
 
 __all__ = ["LivePipeline"]
 
-# The live processes peak well under 1 GiB RSS; the default 36 GiB floor
+# The live processes peak well under 1 GiB RSS; the default 24 GiB floor
 # guards the heavy cudf pipelines and would abort the API-invoked on-demand
-# spawns whenever the WSL VM reports < 36 GiB. setdefault: an explicit
+# spawns whenever the WSL VM reports < 24 GiB. setdefault: an explicit
 # ANALYZE_MIN_SYS_GB in the environment still wins.
 _LIVE_MIN_SYS_GB = "8"
 

@@ -29,6 +29,10 @@
       {
         "sector_id": "DEBT",
         "industry_id": "DEBT_POLICY"
+      },
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_GENERAL"
       }
     ],
     "is_industry_not_strategy": true,

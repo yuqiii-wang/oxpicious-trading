@@ -1,0 +1,14 @@
+{
+  "service": "downloads.etf.huatai_pb.intro",
+  "check": "snapshot_fresh",
+  "params": {
+    "dir": "temps/huatai_pb_intro",
+    "pattern": "huatai_pb_intro_*.csv",
+    "min_bytes": 256,
+    "max_age_days": 100
+  },
+  "rerun_args": [
+    "--force"
+  ],
+  "notes": "Fund intro snapshots (reference metadata, no DB consumer yet)."
+}

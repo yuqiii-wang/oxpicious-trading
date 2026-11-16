@@ -29,7 +29,7 @@ CREATE SCHEMA IF NOT EXISTS static;
 DROP TABLE IF EXISTS static.signal_rules_docs CASCADE;
 
 CREATE TABLE static.signal_rules_docs (
-    signal_type SMALLINT     NOT NULL,  -- label code (static.label_dim 'signal_type'): 0=mov_rsi 1=bollinger 2=ma_cross 3=options_wall 4=options_vix 5=momentum 6=rf_break 7=hedge_pairs 9=rebound 10=macd
+    signal_type SMALLINT     NOT NULL,  -- label code (static.label_dim 'signal_type'): 0=mov_rsi 1=bollinger 2=ma_cross 3=options_wall 4=options_vix 5=momentum 6=rf_break 7=hedge_pairs 9=rebound 10=macd 11=crowdedness
     document    JSONB        NOT NULL,  -- the family knowledge document (the seed files' JSONB, verbatim)
     updated_at  TIMESTAMP    NOT NULL,  -- the document's own content revision (hand-set in the seed files)
 
@@ -38,6 +38,6 @@ CREATE TABLE static.signal_rules_docs (
 
 COMMENT ON SCHEMA static IS 'Seeded reference data — static vocabularies and knowledge documents whose rows land ONLY via the SQL seed files under database/sql/static/ (never via a pipeline writer); re-apply a seed file to refresh its rows.';
 COMMENT ON TABLE  static.signal_rules_docs IS 'Signal-family knowledge documents — one JSONB per signal_type family, served by the rules API with every analysis_signals.signal_rules cell. Seeded (and re-seeded) from database/sql/static/signal_rules/ — the seed files are the source of record; never hand-UPDATE the rows.';
-COMMENT ON COLUMN static.signal_rules_docs.signal_type IS 'The family, as its static.label_dim (''signal_type'') SMALLINT code: 0=mov_rsi 1=bollinger 2=ma_cross 3=options_wall 4=options_vix 5=momentum 6=rf_break 7=hedge_pairs 9=rebound 10=macd.';
+COMMENT ON COLUMN static.signal_rules_docs.signal_type IS 'The family, as its static.label_dim (''signal_type'') SMALLINT code: 0=mov_rsi 1=bollinger 2=ma_cross 3=options_wall 4=options_vix 5=momentum 6=rf_break 7=hedge_pairs 9=rebound 10=macd 11=crowdedness.';
 COMMENT ON COLUMN static.signal_rules_docs.document IS 'The knowledge document: {sub_signals{<sub_type>: {meaning, trigger}}} — the only fields the rules panel renders (pruned 2026-10-27; the retired name/description/condition/sources/principles/action/params nothing read).';
 COMMENT ON COLUMN static.signal_rules_docs.updated_at IS 'The document content revision (hand-set in the seed files, NOT a write stamp — rows change only via the seed files).';

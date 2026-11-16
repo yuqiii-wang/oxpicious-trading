@@ -144,9 +144,10 @@
  * channel), ./useSummaryGeneration (the run lifecycle), ./helpers and
  * ./sections (ScopeNavSection / SummaryHistorySection / ResultPanel).
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Box } from "@mui/material";
 import type { AiSummaryScope } from "@/lib/api-client/aiSummary";
+import { useKgScopeTables } from "@/shared/components/kg-table-scope";
 import AnalysisItemsTree from "../AnalysisItemsTree";
 import GenerateQueryDialog from "../GenerateQueryDialog";
 import RunLimitsPanel from "../RunLimitsPanel";
@@ -190,6 +191,27 @@ export default function AnalysisSummaryPage() {
   // Knowledge Graph config page's dropdown renders), so the page
   // fetches nothing itself.
   const [forcedTables, setForcedTables] = useState<string[]>([]);
+
+  // The tick tree's DEFAULT = ALL tables: once the shared KG corpus
+  // lands, the seed fills the selection with every table (each tick is
+  // a summary section and a KG-scope member), so the out-of-box run
+  // covers the whole corpus instead of an empty tree whose Generate
+  // button refuses to fire. A user tick landing before the corpus load
+  // marks the pick touched and skips the seed — the user's edit wins
+  // over the default. The corpus hook is module-cached (ONE session
+  // fetch — the Scopes tree and the Generate dialog read the same
+  // list), so reading it here adds no request; a failed fetch lands
+  // fail-soft [] and the seed no-ops onto the already-empty state.
+  const { groups: kgScopeGroups, ready: kgScopeReady } = useKgScopeTables();
+  const tablesTouchedRef = useRef(false);
+  const handleForcedTablesChange = (next: string[]) => {
+    tablesTouchedRef.current = true;
+    setForcedTables(next);
+  };
+  useEffect(() => {
+    if (!kgScopeReady || tablesTouchedRef.current) return;
+    setForcedTables(kgScopeGroups.flatMap((g) => g.tables));
+  }, [kgScopeReady, kgScopeGroups]);
 
   // The scope subjects in the request's entry shape — one AiSummaryScope
   // per picked code (industry ids in industry mode), each carrying its
@@ -307,7 +329,7 @@ export default function AnalysisSummaryPage() {
           subjectSuggestions={scope.subjectSuggestions}
           subjectKind={itemKindFor(nav.secType)}
           forcedTables={forcedTables}
-          onChangeForcedTables={setForcedTables}
+          onChangeForcedTables={handleForcedTablesChange}
         />
         <SkillsPromptsPanel
           prompts={promptLabels.promptsEffective.filter(isSelectablePrompt)}
@@ -358,6 +380,7 @@ export default function AnalysisSummaryPage() {
             )
           }
           graphThreadId={history.liveThreadId ?? history.selectedThreadId}
+          resolvingPick={history.datesLoading || history.dayRunsLoading}
           onSettled={history.refreshHistory}
           graphSignal={history.graphSignal}
           onPlanTemplateSaved={planTemplates.refreshPlanTemplates}

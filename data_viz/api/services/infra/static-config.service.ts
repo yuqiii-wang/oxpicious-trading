@@ -24,7 +24,7 @@
  *     max_parallel is the concurrency CAP (read at registration by
  *     _common/service_heartbeat.py — keep the shape compatible); freq is
  *     the SUPPOSED-RUN cadence mirrored from scripts/*.sh (always |
- *     daily | monthly | semiannually | once | occasionally), shown on
+ *     daily | monthly | quarterly | semiannually | once | occasionally), shown on
  *     the Service Monitor page's Pipeline processes table. The two
  *     parallel-services lists gate CROSS-service parallelism (empty
  *     included = unrestricted; non-empty = whitelist; excluded = denylist;
@@ -154,8 +154,8 @@ export interface ServiceConfigEntry {
   max_parallel_runs: number | null;
   included_parallel_services: string[];
   excluded_parallel_services: string[];
-  /** always | daily | monthly | semiannually | once | occasionally
-   *  (default.json fallback: on_demand). */
+  /** always | daily | monthly | quarterly | semiannually | once |
+   *  occasionally (default.json fallback: on_demand). */
   freq: string;
   /** Human-readable timing detail (null on the fallback). */
   schedule: string | null;
@@ -638,6 +638,11 @@ export interface DeepAgentLimitsEntry {
   supervisor_max_node_retries: number;
   supervisor_max_repairs_per_run: number;
   supervisor_retry_throttle_sec: number;
+  /** The CAP-CLASS RETRY LANE (supervisor/repair.py, 2026-11-15): a
+   *  step-cap death with recorded real work re-runs once per run under
+   *  the hop's clamp + bump steps (deliberately above max_steps_cap). */
+  supervisor_cap_retries_per_run: number;
+  supervisor_cap_retry_step_bump: number;
   notes: string | null;
   source_ref: string | null;
   updated_at: string;
@@ -683,6 +688,8 @@ const DEEP_AGENT_LIMITS_FIELDS: Array<{
   { key: "supervisor_max_node_retries", default: 1, min: 0, max: 3 },
   { key: "supervisor_max_repairs_per_run", default: 2, min: 0, max: 6 },
   { key: "supervisor_retry_throttle_sec", default: 45, min: 0, max: 300 },
+  { key: "supervisor_cap_retries_per_run", default: 1, min: 0, max: 4 },
+  { key: "supervisor_cap_retry_step_bump", default: 16, min: 0, max: 64 },
 ];
 
 /** JSON doc → sanitized limits entry: every numeric field must be a

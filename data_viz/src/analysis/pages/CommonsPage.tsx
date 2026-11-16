@@ -63,14 +63,6 @@ export const COMMONS_ANALYSES: CommonsAnalysis[] = [
       "pool's hottest stocks (top 10% by trading amount, min 5; score = " +
       "level + flow change), with the day's hot names in the tooltip.",
   },
-  {
-    slug: "hot-stock-momentum",
-    title: "Hot Stock Momentum",
-    description:
-      "Per-security hot stock momentum curve over the classification nav " +
-      "(index / industry toggle). Pipeline placeholder — charts light up " +
-      "once analysis.hot_stock_momentum is populated.",
-  },
 ];
 
 export default function CommonsPage() {

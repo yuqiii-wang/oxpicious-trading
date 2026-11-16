@@ -37,6 +37,8 @@ from builds.classification.sector_industry.index.etf.unmatched import (
     fetch_unmatched_funds, classify_unmatched_funds)
 from builds.classification.sector_industry.index.etf.sec_info_fallback import (
     fetch_sec_info_names, reclassify_other_etfs)
+from builds.classification.sector_industry.index.etf.active import (
+    ActiveFundClassifier)
 from builds.classification.sector_industry.index.dummy import create_dummy_indices
 from builds.classification.sector_industry.index.stock.classify import classify_stocks
 
@@ -120,6 +122,15 @@ class SectorIndustryBuilder:
                 sec_info_names = await fetch_sec_info_names(
                     self.conn, others.reset_index(names="code"))
                 reclassify_other_etfs(etfs, sec_info_names, verbose)
+
+        # --- 2b.7. Overlay the curated ACTIVE funds (主动管理型 + 指数增强型) ---
+        # Registry-driven, not keyword-driven: every venue=etf entry of
+        # database/sec_statics/active_funds/*.json gets the strategy pair
+        # (ACTIVE, ACTIVE_ENHANCED|ACTIVE_MGMT) — funds too new for the
+        # CSV / v_etf_margin (SSE 581xxx first batch) are ADDED here.
+        # Runs BEFORE create_dummy_indices so added orphans receive a
+        # DUMMY_ACTIVE_* parent like every other parentless ETF.
+        ActiveFundClassifier().classify(etfs, verbose=verbose)
 
         # --- 2c. Create industry dummy indices for orphan ETFs ---
         # ETFs with no parent_index_code (not in CSV, or unmatched funds) get

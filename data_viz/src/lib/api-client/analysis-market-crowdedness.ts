@@ -16,6 +16,8 @@ import type {
   MarketCrowdednessSecType,
   MarketCrowdednessCodesResponse,
   MarketCrowdednessChartResponse,
+  MarketCrowdednessHotTechResponse,
+  MarketCrowdednessHotYearsResponse,
 } from "@shared/types";
 
 /** Themes tree (L1 sector → L2 industry → items) for SecClassificationNav
@@ -62,16 +64,50 @@ export function fetchMarketCrowdednessCodes(
   );
 }
 
-/** One security's daily crowdedness curve (empty rows until the pipeline
- *  is implemented). */
+/** One security's daily crowdedness curve — the rolling metric by
+ *  default; with hotYear (a calendar year, e.g. 2025) the YEAR-PINNED
+ *  variant instead (the hot basket frozen to that year's roster across
+ *  the whole history). */
 export function fetchMarketCrowdednessChart(
   code: string,
   secType: MarketCrowdednessSecType,
+  hotYear?: number | null,
 ): Promise<MarketCrowdednessChartResponse> {
   const params = new URLSearchParams();
   params.set("code", code);
   params.set("sec_type", secType);
+  if (hotYear != null) params.set("hot_year", String(hotYear));
   return fetchJson<MarketCrowdednessChartResponse>(
     `/api/analysis/market-crowdedness/chart?${params.toString()}`,
+  );
+}
+
+/** The year-pinned hot-set variants available for one security (years,
+ *  newest first) — the panel dropdown source. */
+export function fetchMarketCrowdednessHotYears(
+  code: string,
+  secType: MarketCrowdednessSecType,
+): Promise<MarketCrowdednessHotYearsResponse> {
+  const params = new URLSearchParams();
+  params.set("code", code);
+  params.set("sec_type", secType);
+  return fetchJson<MarketCrowdednessHotYearsResponse>(
+    `/api/analysis/market-crowdedness/hot-years?${params.toString()}`,
+  );
+}
+
+/** One security's daily hot-stock tech profile — the mean + median
+ *  over the day's rolling hot set of the eight technical metrics (each
+ *  also as its own-history percentile), from
+ *  analysis.market_crowdedness_hot_tech. Rolling only — no hot_year. */
+export function fetchMarketCrowdednessHotTech(
+  code: string,
+  secType: MarketCrowdednessSecType,
+): Promise<MarketCrowdednessHotTechResponse> {
+  const params = new URLSearchParams();
+  params.set("code", code);
+  params.set("sec_type", secType);
+  return fetchJson<MarketCrowdednessHotTechResponse>(
+    `/api/analysis/market-crowdedness/hot-tech?${params.toString()}`,
   );
 }

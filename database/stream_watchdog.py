@@ -1,7 +1,8 @@
 """stream_watchdog — keep the downloads intraday stream always running.
 
 The five ``downloads.stream.<exchange>.price`` pollers are nohup'd
-``while True`` processes (``scripts/stream_always.sh``) with no supervisor:
+``while True`` processes (formerly started by the retired
+``scripts/stream_always.sh``) with no supervisor:
 an unhandled exception outside a per-asset try/except, a WSL restart, a
 Windows-update reboot or an OOM kill silently ends a stream until someone
 notices missing intraday bars. This module is that supervisor — and a
@@ -9,12 +10,25 @@ service in its own right (it registers under
 ``_common.service_heartbeat.MONITORED_SERVICES`` like the pollers, so its
 own death is detectable by ``database/monitoring.py --streams``).
 
+2026-11 — THE RESIDENT MIGRATION COMPLETED AROUND IT: the pollers, the
+seven cluster servers, the six infra daemons and THIS WATCHDOG itself
+all moved into area servers' resident tables
+(server_cluster/_common/resident_supervisor.py — desired state, crash
+backoff, persisted manual stops, adoption, hung-runtime kills). The
+scan below now covers exactly ONE service — ``server_cluster.monitor``
+(the mutual pair: the monitor holds this watchdog's life as a resident
+— the WSL boot hook starts it, the monitor's supervisor ADOPTS the
+running instance and revives it when it dies; this watchdog keeps the
+monitor alive, the one charge a server cannot hold itself). The
+audit-orphan reconciliation pass is unchanged — every batch pipeline
+still depends on it.
+
 Loop (every ``--interval``, default 60s), for each service in
 ``MONITORED_SERVICES`` except itself:
 
   - no heartbeat row
-      → a process for the module already running (a pre-heartbeat build
-        started by stream_always.sh) is left alone with an ALERT — it must
+      → a process for the module already running (a pre-heartbeat
+        process, e.g. hand-started) is left alone with an ALERT — it must
         be restarted once to gain heartbeats; otherwise start it.
   - beat older than ``--stale-after`` (default 240s = 4 missed beats)
       → pid dead: mark the stop (if the process died WITHOUT an exit
@@ -49,7 +63,8 @@ Loop (every ``--interval``, default 60s), for each service in
     life's still-open audit row is closed with a ``watchdog restart: …``
     exit_reason (the trail the UI expands a stream row to), and the
     service is started detached with output appended to
-    ``logs/<date>/<module>.log`` (same convention as stream_always.sh).
+    ``logs/<date>/<module>.log`` (the fleet's one-date-one-file
+    convention).
     A burst guard (restart count over those merged rows) backs off when a
     service restarts repeatedly (crash loop) instead of hammering it
     every pass. A restarted service re-registers through
@@ -71,7 +86,7 @@ actionable here. Intraday data gaps are the daily builds' concern.
 
 Run:
 
-  bash scripts/stream_watchdog.sh        # idempotent starter (main_run.sh)
+  bash scripts/stream_watchdog.sh        # idempotent starter (WSL boot hook)
   python -u -m database.stream_watchdog  # direct, foreground
   python -m database.stream_watchdog --once        # single check pass
   python -m database.stream_watchdog --once --dry-run  # decisions only
@@ -111,7 +126,10 @@ logger = setup_logging("stream_watchdog")
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Services this watchdog supervises — everything in the registry except
-# itself (its own liveness is check_streams' job, not its own).
+# itself (its own liveness is check_streams' job, not its own). After the
+# completed 2026-11 resident migration this is exactly ONE service: the
+# monitor server (everything else lives in the area servers' resident
+# tables, and this watchdog is the monitor area's own resident).
 _SUPERVISED = tuple(s for s in MONITORED_SERVICES if s != WATCHDOG_SERVICE)
 
 # Kill+restart a service whose beat is stale while its pid is STILL alive:
@@ -280,8 +298,9 @@ def _reset_live_parallel(conn, service: str) -> None:
 def _find_running_module(module: str) -> int | None:
     """PID of a running ``python -m <module>`` process, if /proc is available.
 
-    Used to ADOPT pre-heartbeat pollers (started by the old
-    stream_always.sh): they are alive but unmonitored until restarted once.
+    Used to ADOPT pre-heartbeat pollers (hand-started, or leftovers
+    from the retired stream_always.sh era): they are alive but
+    unmonitored until restarted once.
     """
     proc = Path("/proc")
     if not proc.is_dir():

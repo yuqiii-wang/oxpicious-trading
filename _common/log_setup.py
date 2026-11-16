@@ -21,8 +21,9 @@ caller's name. The ``logs/`` directory is created on demand next to the
 repo root. Level is overridable with the ``LOG_LEVEL`` env var
 (DEBUG/INFO/...).
 
-Console captures point at the same file: the nohup/watchdog spawners
-(``scripts/stream_always.sh``, ``database/stream_watchdog._spawn``) append
+Console captures point at the same file: the nohup/spawner paths
+(``scripts/stream_watchdog.sh``,
+``server_cluster/_common/process_manager``'s ``_log_path_for``) append
 stdout/stderr to the same ``<service>.log``. When stdout already IS the
 service log (read from ``/proc/self/fd/1``), the file handler is SKIPPED —
 the redirect fd stays the file's single writer (two append handles on one

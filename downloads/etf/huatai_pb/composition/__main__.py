@@ -6,14 +6,18 @@ the full response contract). The endpoint serves the PCF of the EXACT
 trading day requested (empty ``dayInfo`` on non-trading days) with history
 back to inception, so this module both:
 
-  * latest-snapshot mode (registered monthly in downloads_monthly.sh —
-    mirrors the SSE/SZSE composition cadence; default universe = the
-    curated checkin watchlist, CHECKIN_FUND_CODES in ``_endpoints`` —
+  * latest-snapshot mode (registered quarterly in downloads_quarterly.json —
+    mirrors the SSE/SZSE composition cadence: one snapshot per fund per
+    calendar quarter, fetched on the first run of a quarter-start month
+    Jan/Apr/Jul/Oct; default universe = the
+    curated ACTIVE ETF registry, ACTIVE_ETF_CODES in ``_endpoints`` —
     PCF exists only for the LISTED members of the list, OTC codes
     simply yield no snapshot) — fetches the latest
     published PCF (today, falling back to the previous business day when
-    today's is not yet published), skipping any (date, code) snapshot
-    already cached on disk;
+    today's is not yet published), skipping funds whose latest cached
+    snapshot is already from the current quarter (any (date, code)
+    snapshot already cached on disk is likewise skipped);
+    use --force-quarter-start to bypass the quarter guard;
   * ``--backfill-start YYYY-MM-DD`` — walks every trading day from that
     date to today and fetches each missing snapshot (history archive).
 
@@ -57,14 +61,16 @@ Usage:
   python -m downloads.etf.huatai_pb.composition
   python -m downloads.etf.huatai_pb.composition --fund-codes 510880,512890
   python -m downloads.etf.huatai_pb.composition --backfill-start 2026-01-01
+  python -m downloads.etf.huatai_pb.composition --force-quarter-start
   python -m downloads.etf.huatai_pb.composition --sleep-sec 1.5
 """
 from __future__ import annotations
 
 import argparse
+import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -78,8 +84,9 @@ from downloads._common import (
     service_urls,
     setup_logger,
 )
+from downloads._common.monthly import in_same_quarter
 from downloads.etf.huatai_pb._endpoints import (
-    CHECKIN_FUND_CODES,
+    ACTIVE_ETF_CODES,
     TDBZ_LABEL_MAP,
     build_proxy,
     fetch_pcf_payload,
@@ -161,6 +168,22 @@ def _snapshot_csv_path(out_dir: Path, trade_ymd: str, code: str) -> Path:
     return out_dir / f"huatai_etf_comp_{trade_ymd}_{code}.csv"
 
 
+def _latest_cached_date_for_code(out_dir: Path, code: str) -> Optional[date]:
+    """The newest snapshot date cached for *code* (None when uncached) —
+    scans the per-file CSV names (``huatai_etf_comp_<YYYYMMDD>_<code>.csv``);
+    the quarter guard's skip input."""
+    latest: Optional[date] = None
+    if not out_dir.is_dir():
+        return None
+    for path in out_dir.glob(f"huatai_etf_comp_*_{code}.csv"):
+        m = re.match(r"huatai_etf_comp_(\d{8})_", path.name)
+        if m:
+            d = datetime.strptime(m.group(1), "%Y%m%d").date()
+            if latest is None or d > latest:
+                latest = d
+    return latest
+
+
 def _save_snapshot(
     out_dir: Path, payload: Dict[str, Any], code: str,
 ) -> Tuple[bool, str]:
@@ -196,8 +219,8 @@ class HuataiPbCompositionDownload(DownloadJob):
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--fund-codes", type=str, default=None,
-                        help="Comma-separated fund codes (default: the checkin "
-                             "watchlist — see _endpoints.CHECKIN_FUND_CODES)")
+                        help="Comma-separated fund codes (default: the curated "
+                             "active-ETF registry — see _endpoints.ACTIVE_ETF_CODES)")
         parser.add_argument("--out-root", type=str, default=None,
                         help="Alternative output root directory")
         parser.add_argument("--sleep-sec", type=float, default=None,
@@ -207,6 +230,10 @@ class HuataiPbCompositionDownload(DownloadJob):
                         metavar="YYYY-MM-DD",
                         help="Backfill trading days from this date to today "
                              "(skip snapshots already cached on disk).")
+        parser.add_argument("--force-quarter-start", action="store_true", default=False,
+                        help="Bypass the quarter guard: fetch the latest published "
+                             "PCF even when a current-quarter snapshot is already "
+                             "cached (quarterly refresh flow testing).")
 
     def apply_args(self) -> None:
         # Former --fund-codes comma split (post-parse derivation).
@@ -222,9 +249,10 @@ class HuataiPbCompositionDownload(DownloadJob):
         fund_codes: List[str] | None = None,
         sleep_sec: float | None = None,
         backfill_start: str | None = None,
+        force_quarter_start: bool = False,
     ) -> Dict[str, Any]:
         out_dir = resolve_out_dir("", "huatai_etf_composition", out_root)
-        codes = [c.strip() for c in (fund_codes or list(CHECKIN_FUND_CODES)) if c.strip()]
+        codes = [c.strip() for c in (fund_codes or list(ACTIVE_ETF_CODES)) if c.strip()]
         today = date.today()
 
         session = build_default_session()
@@ -260,10 +288,23 @@ class HuataiPbCompositionDownload(DownloadJob):
             logger.info("Done PCF backfill: %s", summary)
             return summary
 
-        # --- daily mode: latest published PCF per fund ---
+        # --- quarterly mode: latest published PCF per fund, once per quarter ---
+        # The quarterly cadence (registered in downloads_quarterly.json; the tier
+        # chain runs daily): the first run of a quarter-start month fetches one
+        # snapshot per fund; later runs in the same quarter skip via the quarter
+        # guard. --force-quarter-start bypasses it for a manual re-fetch.
         probe_days = business_days(today - timedelta(days=12), today)[:FALLBACK_DAYS + 1]
         for code in codes:
             got = False
+            if not force_quarter_start:
+                latest_cached = _latest_cached_date_for_code(out_dir, code)
+                if latest_cached is not None and in_same_quarter(latest_cached, today):
+                    stats.skipped_cached += 1
+                    logger.info(
+                        "[pcf %s] cached snapshot %s already covers the current "
+                        "quarter — skipping (use --force-quarter-start to re-fetch)",
+                        code, latest_cached.isoformat())
+                    continue
             for day in probe_days:
                 payload = fetch_pcf_payload(
                     session, proxy, code, day.isoformat(), service=SERVICE,
@@ -294,7 +335,7 @@ class HuataiPbCompositionDownload(DownloadJob):
                 stats.empty += 1
 
         summary = stats.to_dict(out_dir=str(out_dir), funds=len(codes))
-        logger.info("Done PCF daily: %s", summary)
+        logger.info("Done PCF quarterly: %s", summary)
         return summary
 
     def run(self) -> None:
@@ -303,6 +344,7 @@ class HuataiPbCompositionDownload(DownloadJob):
             fund_codes=self.args.fund_codes,
             sleep_sec=self.args.sleep_sec,
             backfill_start=self.args.backfill_start,
+            force_quarter_start=self.args.force_quarter_start,
         )
 
 

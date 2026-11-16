@@ -2,13 +2,17 @@
 # Always-on supervisor for the downloads intraday stream.
 #
 # Idempotent: starts `python -m database.stream_watchdog` only if no
-# watchdog process is already running. The watchdog restarts dead or
-# wedged downloads.stream.* pollers (see database/stream_watchdog.py);
-# scripts/stream_always.sh is the one-shot poller starter — its pgrep
-# guard makes a run over a healthy stream a no-op.
+# watchdog process is already running. Since the completed 2026-11
+# resident migration the watchdog's ONE scan charge is the monitor
+# server (every other always-on process — the pollers included — is an
+# area server's resident, and the watchdog itself is the monitor's
+# resident; see database/stream_watchdog.py). The monitor's supervisor
+# revives this watchdog when it dies; the pollers come up with the
+# fleet (POST /residents/ensure-up — the maintainer's daily 07:00 pass
+# or the UI's "Start stream always" button).
 #
-# Requires the conda env on PATH (run via main_run.sh / an activated
-# WSL shell), like scripts/stream_always.sh.
+# Requires the conda env on PATH (run via the WSL boot hook or an
+# activated WSL shell).
 if pgrep -f "python.* -m database\.stream_watchdog" > /dev/null 2>&1; then
   echo "stream_watchdog already running"
   exit 0

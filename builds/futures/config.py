@@ -45,6 +45,21 @@ PRODUCT_TYPES: dict[str, str] = {
 # Product codes (ordered)
 PRODUCT_CODES: tuple[str, ...] = ("IC", "IF", "IH", "IM", "T", "TF", "TL", "TS")
 
+# POSIX regex scoping THIS family's contract codes — the single source for
+# every "is this date already ingested?" check against the SHARED futures
+# tables (stats.futures_identity / stats.futures_basic_stats carry the
+# offshore China-A50 families too: CN = SGX, MCA = HKEX, written daily by
+# downloads/futures.sgx_a50 / downloads.futures.hkex.msci_a50). Without the
+# scope a date-level check sees a date populated by the offshore families
+# and silently skips this family's files for it — the 2026-08..2026-11
+# basis gap. Longest-first alternation keeps the T/TF/TL/TS prefixes
+# distinct. Users: builds.futures (incremental missing-date scan +
+# --force purge), downloads.futures.cffex.trend (latest-date + monthly gap
+# checks).
+CFFEX_CODE_SCOPE: str = "^(?:" + "|".join(
+    sorted(PRODUCT_CODES, key=len, reverse=True)
+) + ")[0-9]{4}$"
+
 # Product → (underlying_code, underlying_name) mapping
 # Index futures map to stock index codes (000300, 000905, 000016, 000852)
 # Bond futures use synthetic bond-code identifiers

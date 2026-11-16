@@ -5,5 +5,6 @@
   "4": { "script": "downloads.stock.sse.archive", "can_be_parallel": false },
   "5": { "script": "downloads.stock.bse.archive", "can_be_parallel": false },
   "6": { "script": "downloads.futures.cffex.archive", "can_be_parallel": false },
-  "7": { "script": "downloads.etf.huatai_pb.archive", "can_be_parallel": false }
+  "7": { "script": "downloads.etf.huatai_pb.archive", "can_be_parallel": false },
+  "8": { "script": "downloads.etf.efunds.archive", "can_be_parallel": false }
 }

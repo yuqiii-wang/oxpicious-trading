@@ -26,6 +26,7 @@ from langgraph.store.base import BaseStore
 from llm_agents._core.request_log import (
     bind_request_chain, end_request_chain,
 )
+from llm_agents.deep_agents.core.authorization import AuthorizationContext
 from llm_agents.deep_agents.core.loop import (
     DEFAULT_SYSTEM_PROMPT,
     AgentResult,
@@ -156,6 +157,7 @@ module docstring).
         output: GraphOutputSpec = CUSTOM_OUTPUT_SPEC,
         degraded_lane: bool = True,
         decision_engine: Optional[Any] = None,
+        authorization: Optional[AuthorizationContext] = None,
     ) -> None:
         self._provider = provider
         self._mcp = mcp
@@ -172,6 +174,13 @@ module docstring).
         # threaded from the orchestrator): the hops' repair-spawn gates
         # ask IT — None keeps the production wiring (the knob).
         self._decision_engine = decision_engine
+        # The run's THREAD TEMP-USER authorization context
+        # (core/authorization, 2026-11-13 — the orchestrator's run-start
+        # initialization): every hop's conversation (inline steps,
+        # delegated parents, review seats, the degraded lane) and every
+        # spawn hook carries it, so every agent SQL transaction falls
+        # under the scope. None = ungated (plain non-graph usage).
+        self._authorization = authorization
         # ONE sandbox session per RUN shared by every hop of every
         # graph (the sandbox mints a remote session on its first tool
         # call; without this cell each step would start an empty one
@@ -313,6 +322,10 @@ module docstring).
             decision_engine=(self._decision_engine
                              if self._decision_engine is not None
                              else JevDecisionEngine.active()),
+            # The run's THREAD authorization context (core/
+            # authorization, 2026-11-13): rides every **common
+            # DeepAgent construction — the loop's SQL gate reads it.
+            authorization=self._authorization,
         )
 
     def build_step_deps(
@@ -358,6 +371,9 @@ module docstring).
                 biz_context=biz_context,
                 agent_prompts=agent_prompts,
                 tool_prompts=dict(state.get("tool_prompts") or {}),
+                # The run's thread scope — the extension base a
+                # study-focused child widens (core/authorization).
+                authorization=self._authorization,
                 extra_builtin_tools={
                     **self._prompt_kit(state).builtin_tools(),
                     **self._ad_hoc_kit(state).builtin_tools()}),
@@ -379,7 +395,10 @@ module docstring).
                     descriptions=dict(state.get("tool_prompts") or {})
                 ).builtin_tools(),
                 **StatsToolSet(
-                    descriptions=dict(state.get("tool_prompts") or {})
+                    descriptions=dict(state.get("tool_prompts") or {}),
+                    permission=(self._authorization.permission
+                                if self._authorization is not None
+                                else None),
                 ).builtin_tools(),
                 **KgToolSet(
                     descriptions=dict(state.get("tool_prompts") or {}),

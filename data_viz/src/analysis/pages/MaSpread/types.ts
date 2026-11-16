@@ -59,6 +59,20 @@ export interface GapMarksState {
   flush: boolean;
 }
 
+/**
+ * The panel's ONE synced dataZoom window (percentages 0-100) — the main
+ * plot's slider drives it (either chart's pan/zoom feeds back) and both
+ * charts' option builders read it. Manual state sync, NOT echarts.connect:
+ * a connect group between the plot and the alignment companion chart
+ * re-broadcasts the hover's updateAxisPointer across charts and the
+ * forwarded pixel-form event lands in the tooltip sync's hideTip branch,
+ * killing the companion chart's own tooltip (2026-11-14 probes).
+ */
+export interface ChartZoomRange {
+  start: number;
+  end: number;
+}
+
 // Re-export the API types for convenience so callers can import everything
 // from a single entry point if desired.
 export type { MaSpreadSecType } from "@shared/types";

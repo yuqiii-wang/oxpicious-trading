@@ -52,9 +52,30 @@ Claude Code / DeepSeek Harness / WorkBuddy (design notes in
 `llm_agents/deep_agents/__init__.py`). Layers, strict direction:
 
 - `core/` — the runtime: one message list, one OpenAI-style tool-calling
-  loop per step (`core/loop.py::DeepAgent.run`), sibling tool calls via
+  loop per step (`core/loop/run.py::DeepAgent.run`), sibling tool calls via
   `asyncio.gather`, MCP client (`core/mcp.py`), docker py-sandbox client
   (`core/sandbox.py`), ZhiPu provider (`core/provider.py`, glm-5.3-flash).
+  2026-11-15 THE LOOP SUBPACKAGE SPLIT: the former flat `core/loop.py`
+  (1,936 lines) became the same-named SUBPACKAGE `core/loop/` — the
+  planning/ 2026-11-07 pattern, ZERO caller churn (the root `__init__`
+  re-exports `DEFAULT_SYSTEM_PROMPT` / `AgentResult` / `DeepAgent`, so
+  every prior import line resolves): `result.py` the payload;
+  `base.py` `DeepAgentBase` (ctor state + lifecycle, `_can_spawn`,
+  `_fork_inherited_context`); `run.py` `_RunLoop` (the loop, the answer
+  + output-validation gates, the handback / final-document reserves);
+  `tool_exec.py` `_ToolExecutor` (`_execute_call`, `_scope_check`,
+  `_tool_output_failed`, the preview seam); `breaker.py`
+  `_SandboxBreaker` (the write-run-fix breaker); `router.py`
+  `_JevRouter` (the System One router); `spawner.py` `_SubagentSpawner`
+  (delegation stays LOOP METHODS on the composed class — the
+  supervision state lives in the loop); the package `__init__` composes
+  `class DeepAgent(DeepAgentBase, _RunLoop, _ToolExecutor,
+  _SandboxBreaker, _JevRouter, _SubagentSpawner)`. Code moved verbatim;
+  A/B-verified by `temp_scripts/verify_core_loop_refactor.py` (36
+  class names + ctor signature identical), standing suites green.
+  NOTE for probes/stubs: `run_limits` is bound PER SUBMODULE now —
+  patch all six homes (the `_patch_loop_run_limits` helper in
+  `temp_scripts/test_jev_router.py`).
   2026-11-11: the WRITE-RUN-FIX LOOP BREAKER — `_note_sandbox_outcome`
   tracks consecutive failed sandbox-tool outcomes (a hard MCP/exception/
   cancel error, or a `sandbox_run` whose JSON reports non-zero
@@ -88,7 +109,8 @@ Claude Code / DeepSeek Harness / WorkBuddy (design notes in
   depth-cap and allow_subagents fallbacks); the nudge lane's scenarios
   run with the spawn disabled
   (`temp_scripts/test_sandbox_failure_nudge.py`, 13 checks).
-  2026-11-13 THE SYSTEM ONE ROUTER (`core/loop.py::_route_response` +
+  2026-11-13 THE SYSTEM ONE ROUTER (`core/loop/router.py::
+  _route_response` +
   the `route_spawn` / `route_join` / `failure_probe` templates in
   `langgraph/decision/`): after EVERY LLM response that proposes
   sandbox write/run/edit calls the injected jev engine routes the NEXT
@@ -130,7 +152,7 @@ Claude Code / DeepSeek Harness / WorkBuddy (design notes in
   `ReplySpec` names) — dead at HEAD before the router landed.
   2026-11-13 (b) THE TOOL-USAGE ROUND (mined from the same-day run
   4597f052's recorded traffic — 11 step-limit deaths on one study):
-  (1) THE DETERMINISTIC HANDBACK RESERVE (`core/loop.py`): scripting
+  (1) THE DETERMINISTIC HANDBACK RESERVE (`core/loop/run.py`): scripting
   forks died at the step cap AFTER their work was done — 2825/2889
   ticked their plan nodes completed, then the cap RuntimeError
   discarded the node and the parent re-spawned the same study (the jev
@@ -157,7 +179,7 @@ Claude Code / DeepSeek Harness / WorkBuddy (design notes in
   runner's literal truncation marker (the same round fixed
   `update_plan_step`'s rejection to teach the add_nodes-first remedy —
   fork 2825 spent ~12 steps discovering it). (4) THE REPEAT GUARD
-  (`core/loop.py`): the identical call, unchanged, right after a
+  (`core/loop/run.py`): the identical call, unchanged, right after a
   failed result gets `[Repeat guard]` stamped onto its result
   (per-fork failure walks: 2893's identical edit ×2, 2905's identical
   run ×2 with nothing changed between; the legit edit→rerun of the
@@ -184,6 +206,274 @@ Claude Code / DeepSeek Harness / WorkBuddy (design notes in
   → B patches/reruns/hands back → A's post-injection turn hands the
   evidence up via `repair-child-handup` → the parent folds via
   `repeat-step-fold-repair`).
+  2026-11-13 (c) THE SPAWN NODE'S CONTEXT EXPANSION = ITS AGENT STEPS
+  (UI; the harness handback stays answer-only): a first round derived a
+  bounded work digest (`HandbackExpansion` over the child's tool-call
+  log) into every handback surface — REVERTED the same day as the wrong
+  shape (a pure-text line-per-call digest loses the recorded steps and
+  duplicated what the chain already stores; the harness handback,
+  `finish_child_state` payload, `state_agent_steps.sql` and the TS
+  `AgentStep` types are back to their pre-round shapes). What LANDED:
+  the clicked spawn/fork node's CONTEXTS PANEL branch
+  (`ThreadGraph/ContextsPanel.tsx`) renders the node's OWN AGENT STEPS
+  — `TaskAgentSteps` keyed on the child's state id over its own chain
+  (inference rows with their request/response faces, decision rows,
+  nested spawn rows), mounted OPEN on mount via the new
+  `TaskAgentSteps(defaultOpen)` prop — instead of the pure-text
+  input/answer payload blocks (the input directive and the handback
+  remain visible inside the steps' first/last requests). The
+  agent-steps LIST's spawn/fork rows keep their prompt-in/answer-out
+  collapse + the nested "sub node #N agent steps" affordance
+  (unchanged). En route the E2E probe surfaced a REAL HEAD bug the
+  round closes: the router's spawn/fork/join lanes read `decision.ok`
+  unguarded after `_engine_read` — whose None (missing method / failed
+  read, e.g. a host-side ReadTimeout mid-walk) then crashed the whole
+  hop with `'NoneType' object has no attribute 'ok'`, defeating
+  `_engine_read`'s documented missing-method-safe contract; the three
+  reads now treat None as "no read available — continue the model's
+  own plan".
+  2026-11-13 (d) THE RUNNING/FINISHED PREDICATE — ONE derived contract
+  for "is this super thread still live?" (any open `deep_agent_states`
+  row OR any running runner-lane node item, chain-scoped by
+  `super_thread_id`), closing the four gaps the study measured:
+  (1) THE CHAIN-ORCHESTRATOR ITEM — `state_store.items.NODE_SUPER`
+  ("super"): the `SuperGraphRunner.run` writes `node:super` on the ROOT
+  thread (`llm=False`, begun right after the store mints) and settles
+  it in the `finally` (completed on the normal path — set after the
+  supervisor exit; failed with STOP_FAILURE on every unwind,
+  idempotent over the handlers' `settle_node_items` pass). This is the
+  one continuously-running process signal: the inter-graph handoff
+  windows (P→C, C→R — a graph's END before the next graph's first
+  writer) left both other ledgers transiently closed, so a liveness
+  read could drop a live chain there and (the WS push channel being
+  disabled) stop the UI's poll loop forever. The canvas draws only
+  known node names, so the extra item feeds `active`/mode without
+  layout impact.
+  (2) THE LATE-VERDICT GUARD — `RepairChannel.abandon(window_id)`
+  (resolve {} AND clear the registry; `await_verdicts` calls it on
+  grace timeout — the timed-out window used to STAY registered, so a
+  verdict landing after the fall-through still passed every gate and
+  its `reopen_state` could strand a pending row past the chain's
+  finalize, a zombie until the boot sweep) + `RepairWorker._
+  apply_verdicts` gates the reopen/ignore writes on `channel.is_open(
+  window_id)` (a None window id keeps the ungated legacy contract for
+  direct callers/tests; the review row + asked/handled marks land
+  either way). Grace 0 unchanged (repair-disabled means the lane never
+  waits, not that a decided verdict is vetoed).
+  (3) THE ITEMS-AWARE ORPHAN SWEEP — `list_unsettled_super_threads`
+  unions the states read with a running-node-item discovery
+  (`deep_agent_store_items` namespace[1]='deep_agent', 2 elements,
+  `value->>'status'='running'`, each item thread resolving to its
+  chain root through its rows' super stamp), and `server.py`'s
+  `_settle_orphan_chains` settles node items for the SID's own
+  namespace too — an ITEMS-ONLY orphan (state rows purged/never
+  written; observed live: a chain with zero state rows and a stuck
+  `node:supervisor` marker) resolved to an empty members list and its
+  item survived every sweep forever.
+  (4) THE SERVER-COMPUTED LIVE FLAGS — `getAgentThreadDetail` returns
+  `live` (the union predicate over the merged chain;
+  `threadIsActive` prefers it, the client derivation stays the
+  fallback) and `ai-summary/runs.sql` derives `is_live` per history
+  row (BOOL_OR over open states + an EXISTS on the ROOT namespace's
+  running items — where node:super spans the run; the strip's
+  `hasUnsettledSteps` prefers the flag over its count heuristic).
+  Verified: `temp_scripts/test_super_thread_liveness.py` (23 stub
+  checks — abandon semantics, the guard's refuse/legacy/live
+  scenarios, the super item lifecycle over the real store, the
+  discovery SQL live) + `temp_scripts/probe_dummy_super_item.py` (the
+  full three-graph chain on the in-process dummy with a mid-run
+  sampler: node:super observed running→completed, no running items
+  left, the discovery clean; chain purged); the standing suites
+  (test_supervisor_repair, test_dummy_langgraph 105 checks,
+  test_jev_router 40) stayed green; both flags verified in the live
+  API responses.
+  2026-11-15 (b) — RUN d7b24a36's OUTPUT FAILURE, CLOSED: the run's
+  final answer never landed — the full diagnosis (the DB study:
+  (1) the delegated spawn child died at the 32-step cap and the OLD
+  `format_subagent_result` text misreported it as a zero-work spawn,
+  defeating the supervisor's retry (`should_retry` could see neither
+  the cap signature nor real counters — the cap-class lane + the
+  status-aware failed-child text + `_stamp_child_usage` + the cap
+  RuntimeError's `(spent N …)` counters landed for exactly this);
+  (2) TWO review seats (risk_analysis / pessimistic_review) died on
+  the 16,384-token output ceiling with EMPTY content — a length-cut
+  reply whose tool-call JSON never closes arrives content='' AND
+  calls=[], and the loop's no-calls branch read that as a FINAL empty
+  answer, spent the ONE output-repair round, and shipped it as a
+  COMPLETED empty finding (zero note rows; the bridge then carried
+  two empty seat lines) — FIXED in `core/loop/run.py`: a
+  finish_reason=length no-content reply now CONTINUES with the resend
+  remedy (the cut-args teach), 2 consecutive cut-empties stand down
+  to the old ship-anyway; (3) the result graph's OUTPUT node then
+  burned all 32 steps hunting the lost reviews (its notes truncated
+  at 500 chars in the bridge, two seats noteless) through a sandbox
+  write-run-read digest loop and died at the cap mid-retrieval — the
+  output-seat's final-document reserve (node_role='output' nudge at
+  max_steps-1) covers the death-without-document half.
+  2026-11-15 (c) — THE UI NODE ACTIONS (the Thread Graph's fork/spawn
+  buttons): `POST /threads/:thread_id/states/:state_id/spawn`
+  ({goal, max_steps?, provider?}) mints a fresh-context child row
+  under ANY clicked state row (the SpawnHooks input_hook face —
+  child_kind 0, pass-down from the ROOT's kind-0 plan context payload
+  {args, goal, prompts_loaded, prompts_catalog} via SpawnPassDown.pack,
+  the plan/stats/kg kits, the child's own hooks) and runs the child
+  DeepAgent as a BACKGROUND task on the daemon (registry NODE_ACTIONS;
+  the row exists before the response — the canvas shows it instantly,
+  the UI polls); `POST …/fork` ({goal, request_id, …}) is the
+  inherit-context twin — the child CONTINUES the clicked agent step's
+  recorded conversation (child_kind 1, fork_<topic>, handback-reserve
+  contract on), the transcript reconstructed from the request chain's
+  message rows (sql view fork_transcript: the rows' as-sent messages
+  are chain-INCREMENTAL deltas; the server walks them — a
+  non-incremental row replaces — up to the fork point's NEXT message
+  row, i.e. including the fork point's reply + tool results; the
+  chain's last message row forks from just before its reply). The TS
+  bridge forwards (ai-thread.service.ts runNodeSpawn/runNodeFork, the
+  daemon's status CARRIES through HttpError 404/409/400); the UI:
+  TaskAgentSteps grows a SPAWN BAR above the first agent step +
+  a fork affordance on every inference row (stepRows.tsx RequestRow,
+  the inline composer opens beneath the forked row) + onActionDone →
+  the graph refresh; 409 when the chain is an ACTIVE run on the
+  daemon. THE STATE-LESS SEAT'S EXPANSION (the "missing expansion
+  agent steps" half): the output node (and any runner-lane seat) has
+  NO state row, so the state-keyed agent-steps endpoint could never
+  serve it — new sql views `node_agent_steps` (the node item's OWN
+  chain, no window, no spawn CTEs) + `chain_members` (the s<k>: canvas
+  prefix → segment thread map; every graph segment writes its own
+  node:output item) + service getAgentNodeAgentSteps + GET
+  /threads/:t/nodes/:node/agent-steps; ContextsPanel mounts a
+  READ-ONLY TaskAgentSteps (nodeKey variant) for runner-lane seats
+  with no state row. Verified: temp_scripts/
+  verify_node_action_views.py (the three views on the real run's
+  data) + probe_node_actions_live.py (daemon E2E, 11 checks — spawn
+  under a settled state, the child settled, its agent steps recorded,
+  fork from the child's first inference step, kind-1 row, canvas
+  join, purge) + probe_node_actions_bridge.py (the bridge transport,
+  8 checks incl. the 404/400 error paths); the standing suites stayed
+  green (test_handback_reserve 20, test_jev_router 40,
+  test_supervisor_repair, test_dummy_langgraph 133); the UI verified
+  live on run d7b24a36 (the spawn bar, the fork composer, the output
+  seat's 64 steps).
+  2026-11-15 (d) — THE RUN-NODE SPAWN (the failed-output-node
+  follow-up: the state-less seats carried NO actions — the user saw
+  neither fork nor spawn on run d7b24a36's failed output node): the
+  state-keyed routes cannot serve a runner-lane seat (no state row to
+  parent from), so the daemon grew `POST /threads/:t/nodes/:node/spawn`
+  — the canvas node key's `s<k>:` prefix resolves the OWNING segment
+  (chain order = PlanStore.fetch_chain_threads's), and the child
+  parents under the CHAIN ROOT's plan state row (the run's plan-level
+  spawn — the canvas draws it as a spawn spur off the plan node;
+  fallback first top-level row, last resort a NULL-parent top-level
+  row). SPAWN ONLY on a state-less seat — fork continues a recorded
+  step conversation, which a graph-level seat has none of (the
+  user's first read; REVERSED the same hour — "should show both fork
+  and spawn": the daemon grew `POST /threads/:t/nodes/:node/fork` too
+  (sql view `node_chain.sql` — the seat's OWN chain off its node item;
+  the fork point request is validated ON it, the transcript walk is
+  the state-keyed fork's, the child parents under the chain root's
+  plan row with the handback-reserve contract on; 400 a request off
+  the seat's chain). The spawn registration is the shared
+  `_register_and_run_spawn` helper; the bridge routes
+  `POST /api/ai/threads/:t/nodes/:node/spawn` through
+  runNodeSpawnOnNode (the daemon's status CARRIES — 404 a bad
+  segment/chain, 400 a bad node key, 409 an active chain); the UI's
+  nodeKey mounts carry BOTH (spawnEnabled = forkEnabled = stateId OR
+  nodeKey; the run-level captions name the plan-row parent). Verified:
+  temp_scripts/probe_run_node_spawn.py (10 checks — the s1:output
+  seat, the spawn child under the plan row, the fork child kind=1
+  under the plan row off the seat's first inference row, the 400
+  off-chain guard, canvas join, purge) + the bridge probes (spawn +
+  fork + the 404 error path carrying the daemon's status) + the UI
+  live on run d7b24a36's failed output node (the spawn bar, the fork
+  icons on the inference rows, the inline fork composer).
+  2026-11-15 (e) — THE PLAN-NODE FAN (the "not seen from UI a new node
+  forked" follow-up: the fork child LANDED (child row kind 1 under the
+  plan row, ran to completion) but the canvas never drew it — TWO
+  renderer gaps: (1) the fold-count refit keyed the plan parent as
+  `step-<id>` + the spur pass never covered the plan node (topLevel
+  excludes the plan row), and (2) the runner-kind label branch never
+  appended the fold cue (the plan node could never show ▸N even with a
+  count). Fixed in buildSegmentModel.ts: the refit keys the plan
+  parent under the plan node's canvas id ALONE (planNodeId — the
+  `${prefix}${parentId}` composition has no id to join for the plan
+  node), the spur pass runs addSpawns for the plan node after the
+  topLevel loop (fold-gated like any fan), and threadGraphOption.ts's
+  runner label branch appends foldCue (+ the fold rich style). The
+  user's fork child now draws as a fork spur under the plan node on
+  click (▸ 1 → ▾), selects with its own panel (fork_continue ·
+  completed · its agent steps + both action affordances).
+  2026-11-15 (f) — THE MAIN-LINE FORK TOPOLOGY ("forked node on the
+  main branch, failed node on side branch, driven from backend new
+  langgraph state"): the run-node fork RE-PARENTED — the continuation
+  lands as a TOP-LEVEL row (parent NULL, child_kind 1, ordinal after
+  the segment's last top-level row) on the OWNING segment's thread via
+  the new `PlanStore.create_toplevel_fork` (sql write
+  `insert_toplevel_fork.sql`), so the canvas's lane walk renders it IN
+  the lane (the drift-fork precedent: the forked chain IS the main
+  line); the pre-fork attempt materializes as the seat's kind-2
+  old-chain stub UNDER the fork row wearing the seat's OWN status/
+  error (node_chain.sql now returns seat_status/seat_error) — the
+  failed node on the side branch. The whole shape is derived from the
+  rows; nothing UI-side. Support: SpawnHooks grew the `preregistered`
+  lane (the caller pre-creates the row and stamps
+  run.state_id/llm_context_id; input_hook skips creation and mounts
+  kits/hints/system under the existing row), the run-node fork
+  endpoint rewrote to the new shape (the run-node SPAWN keeps the
+  plan-row spur — a delegation is side work, a fork is the
+  continuation), the canvas grew the old-chain spur pass for
+  top-level fork rows + the fork-styled incoming lane edge, and the
+  migrated #12618 (temp_scripts/migrate_12618_mainline_fork.py —
+  top-level ordinal 5 on the result thread, stub #12619 failed under
+  it, contexts/aux/store-items re-threaded) renders exactly so: the
+  result lane 12433→12434→12435→12436→12618→output with the red
+  old-chain node hanging off 12618. Verified: probe_run_node_spawn.py
+  11/11 (TOP-LEVEL fork row on the owning segment, stub mirrors the
+  seat's face, 400 off-chain guard) + the standing suites (40/40,
+  20/20, 133/133) + the live canvas on run d7b24a36.
+  2026-11-16 — THE TERMINAL FORK CONTINUATION (the d7b24a36 follow-up
+  "for fork should have edge from parent fork node not prev, and the
+  fork node same type as parent"): the (f) lane walk put the top-level
+  fork row BETWEEN the segment's last step and the terminal — its
+  incoming edge came from the previous lane node (the reviews' wave
+  merge) and it wore a STEP circle, both wrong for a fork that rides
+  the SEAT's recorded conversation. buildSegmentModel now splits
+  terminal fork rows out of the lane walk (laneSteps) and renders them
+  AFTER THE TERMINAL as CONTINUATIONS of the parent seat: the incoming
+  edge leaves the TERMINAL wearing the thick fork kind (the wave's
+  merge bends land back on the seat), and the node wears the
+  TERMINAL'S OWN KIND (an output diamond, id `fork-<state_id>`, label
+  "fork" + the goal) — END chains off the newest continuation (the
+  lane tip), the old-chain stub hangs off it, its children fan under
+  the fork- id, and a non-last segment's HANDOFF edge bends a row above
+  the lane (handoff_lead legs) when a continuation sits right of its
+  terminal. The drift-fork INLINE path (a step's kind-1 children) is
+  untouched. Verified: temp_scripts/study_d7b_terminal_fork.mts
+  expect=fixed on d7b24a36 (9 checks) + the second real top-level fork
+  (chain 347a22b7, a CUSTOM-segment fork — the bent handoff live) +
+  tsc clean + the live canvas (red output diamond → green fork diamond
+  → END, red old-chain stub below).
+  2026-11-16 (b) — THE FINAL-RESULT REFRESH ("since the forked node is
+  the final output, the result should also get refreshed"): a run-node
+  fork off the chain's LAST segment's OUTPUT seat continues THE FINAL
+  ANSWER's own conversation, so its COMPLETED answer now REPLACES the
+  run's final-result document — `record_final_result(replace=True)`
+  (planning/store/outputs.py) purges the thread's final-result rows
+  then inserts in ONE transaction (sql write
+  deep_agent_contexts/purge_final_result.sql; ONE live final-result row
+  per thread — the Result view and the seat's context read exactly
+  that row), driven by a completion wrapper in
+  `fork_thread_run_node` (`refresh_final` = bare_node "output" on the
+  LAST segment; fail-soft — the child row is already settled; a middle
+  seat's fork refreshes NOTHING, the result graph consumed the
+  pre-fork handoff). Run d7b24a36 backfilled once from fork #12618's
+  persisted answer (temp_scripts/backfill_d7b_final_result.py) with a
+  ⚠️ truncation note — the fork's subagent-result context caps at
+  _NOTE_MAX 500 chars and the full reply was never persisted (the
+  refresh lane itself records the UNTRUNCATED run.answer). Verified:
+  temp_scripts/probe_final_result_refresh.py (the dummy E2E — fork off
+  s2:output replaces the row, the custom segment's graph-output
+  untouched, purge) + probe_run_node_spawn.py 11/11 + the live Result
+  tab on d7b24a36 (the document + note render).
 - `tools/` — the TOOL LAYER (2026-11-02): every model-callable capability
   (beside the external MCP tools) as an OBJECT — a `Tool` subclass per
   tool (schema + `run` handler + its `llm.ai_prompts` row, prompt_type
@@ -1313,11 +1603,10 @@ construction — activating it flips every run; its api_url + the
 lmh-dummy api key now point at the host) builds `ZhipuChatProvider`
 against it. Contract asserts:
 `temp_scripts/test_dummy_langgraph.py` (unit + HTTP-sim + rate-limit
-classification + core-loop-over-fake-MCP); the host is ALWAYS-ON
-(`_common/service_heartbeat.py::MONITORED_SERVICES` — the stream
-watchdog spawns/keeps `python -m server_cluster.llm`
-live, `main()` registers the heartbeat, the app-factory form never
-does); integration:
+classification + core-loop-over-fake-MCP); the host is ALWAYS-ON (a
+monitor-area resident of the server cluster — the monitor's supervisor
+revives `python -m server_cluster.llm` when it dies, `main()` registers
+the heartbeat, the app-factory form never does); integration:
 `temp_scripts/probe_dummy_langgraph.py` (a full three-graph chain
 on the dummy, 10/10 distinct replies, chain purged after). LANGGRAPH
 AND AGENT TESTS RUN ON THE DUMMY — construct `DummyLanggraphProvider`
@@ -1701,6 +1990,321 @@ carries references; `final-result` links the artifact list.
   live ZhiPu provider must justify itself; the seeded always-present
   `llm/dummy` secret_config row stays INACTIVE (activating flips every
   run).
+- 2026-11-14 THE ``[this is test]`` SELF-TEST PREFIX — a run whose
+  MESSAGE INPUT (the goal POSTed to the daemon) starts with the
+  literal prefix `[this is test]` self-tests the whole chain from the
+  UI: `deep_agents/selftest.py::DummySelfTestRun` (detected in
+  `server.py::_run_one`, which hoisted the execute body into
+  `_run_chain`) bypasses the provider config — the offline in-process
+  dummy LLM + `FeatureToolSeam` + `RecordingDecisionEngine` (a REAL
+  engine with a read ledger) walk the canonical three-graph chain, and
+  the run's ANSWER is the auto-run assertion battery's rendered
+  PASS/FAIL report. The battery itself moved OUT of
+  `temp_scripts/probe_dummy_langgraph.py` into
+  `test/dummy_langgraph/assertions.py::SummaryChainAssert` (+
+  `SelfTestReport`/`AssertCheck`, `RecordingDecisionEngine`,
+  `SUMMARY_CHAIN_GOAL`) — ONE source of truth the standing probe and
+  the daemon's self-test both assert through; a `jev_reads=None`
+  (JEV_DECISIONS=0 daemon) SKIPS the jev checks, a mid-walk raise
+  settles as a FAIL report naming the error (200, never a 500), and
+  the walked chain stays in the history for the Thread Graph. The
+  goal text AFTER the prefix stays the run's goal (the base walk is
+  goal-agnostic); an empty remainder falls back to the canonical goal.
+  THE UI REACHES IT THROUGH THE BRIDGE: the summary flow's goal is
+  STATIC (`SUMMARY_GOAL` — the user's typed text rides
+  `data.question`), so `data_viz/api/services/ai/ai-summary.service.ts`
+  forwards a detected prefix on the QUESTION onto the goal
+  (`SELF_TEST_PREFIX` mirror + question strip) — typing
+  ``[this is test] …`` in the Ask AI question box returns the PASS
+  report through `POST /api/ai/summary` itself. E2E:
+  `temp_scripts/probe_selftest_prefix.py` (waits for the watchdog's
+  stale-process recycle by heartbeat fingerprint, then prefix+dummy /
+  prefix-only / no-prefix negative walks + the bridge walk, purged).
+- 2026-11-14 (b) THE PREFIX LANE STUDIES 沪深300, MARKET-WIDE: the
+  bridge forwards the prefix ALONE as the goal (the daemon's
+  empty-remainder fallback runs the canonical `SUMMARY_CHAIN_GOAL`
+  沪深300 study — the user's typed remainder still rides
+  `data.question`), and the self-test walk drops the caller's code
+  scope (`DummySelfTestRun.market_wide_data` over `req.data` in
+  `server._run_one` — no `deep_agent_identities` row, so the history
+  entry shows under EVERY Summary History subject pick through the
+  filter's no-identity fallback). En route fixed a pre-existing DELETE
+  breakage: `api/services/infra/sql-writes.service.ts` resolved
+  `database/sql_writes/` with a fixed three-`..` count that rotted
+  when the module moved into `services/infra/` (every
+  `DELETE /api/ai/summary-runs/:id` 500ed on a `data_viz/database/…`
+  ENOENT) — the loader now parent-walks like `api/lib/sql-views.ts`.
+  Probe walk 2 carries the decoy scope and asserts `scope_code` null
+  through the bridge's summary-runs read before its purge.
+- 2026-11-14 (c) THE SELF-TEST'S ROUTER WALKS — the `[this is test]`
+  report shows the fork / spawn / interference scenarios beside the
+  summary chain: the six scripted router walks moved OUT of
+  `temp_scripts/probe_dummy_langgraph_router.py` into the shared
+  runner `test/dummy_langgraph/router_walks.py::run_router_walk`
+  (ScriptedRouterEngine / ScriptedSandbox / YieldingProvider + the
+  GOAL_* constants + each walk's AssertCheck bodies, labels prefixed
+  `"<kind> walk: …"`; the probe is now a thin driver over it,
+  `purge=True` leave-no-trace). The self-test's `full_report`
+  (`selftest.py`, awaited by `server._run_chain` instead of the bare
+  `assert_outcome`) runs the canonical battery PLUS five walks
+  (spawn / fork / fork-drift / join / probe — `SELFTEST_WALK_KINDS`,
+  the background walk stays probe-only) with `purge=False`: each
+  walk's chain STAYS in the history (Summary History lists it, the
+  Thread Graph renders the `spawn_` / `fork_` child rows, the
+  abandoned-tail kind-2 stub, the failed child + the investigator) and
+  its checks extend the report; a walk that raises lands as its own
+  FAIL check, never a 500. The walk chain ids ride the response's NEW
+  `RunResponse.walk_chain_ids` (the bridge forwards the answer only,
+  so the prefix probe purges them from the answer's note lines too) —
+  `probe_selftest_prefix.py` asserts the report shows each walk's
+  section and purges every walk chain after its assertions.
+- 2026-11-14 (d) THE FORK-SUB WALK — the fork scenarios' SUB NODES
+  (the two-generation plan tree): `00_router_chain.feature` gained the
+  FORK-SUB walk (goal marker 再派子节点, plan `route-plan-fork-sub`)
+  where the fork child — depth 1 < `max_spawn_depth` 2, so it CARRIES
+  the spawn tool — spawns its OWN sub node (the model's
+  `spawn_subagent` args goal carries the grandchild-only marker
+  `[fork sub child]`), the grandchild (depth 2 = AT the cap: no spawn
+  tool, no router lanes, focused prompt) writes → runs → hands the
+  evidence back, the fork child folds it into ITS handback and the
+  parent folds the `[Fork sub node took over]` injection. The plan
+  tree holds TWO child generations — the fork child (child_kind 1,
+  `fork_` slug) under the routed step and the grandchild (child_kind
+  0, `spawn_` slug) under the fork child (`router_walks.py::
+  _grandchild_rows` reads the second level by parent_state_id — the
+  fork child's row is not a plan row so `_child_rows` cannot reach
+  it). MATCHING NOTE (the walk's one trap, learned from a 7×
+  spawn-loop probe run): spawn ARGUMENTS ride tool_calls, not message
+  content — the fork child's pre/post-spawn turns discriminate on the
+  grandchild's EVIDENCE tool result ("EVIDENCE
+  (rule=forksub-child-evidence)" present = fold turn), never on the
+  args text; and the budget-burned fork child legitimately draws
+  `route_join` no-reads (join-eligible scripting node, never a
+  verdict). The drift watch's fork gate gates on the grandchild's
+  `goal_head` fact (`_fork_on_sandbox_turn_except_sub`) as the
+  scripted belt. `SELFTEST_WALK_KINDS` runs it (six walks now), the
+  router probe drives all seven, and the prefix probe asserts the
+  `fork-sub walk:` section in the report.
+- 2026-11-14 (e) MUST TEST ALL SCENARIOS — the `[this is test]`
+  self-test runs EVERY shared walk: the five TOOL-USAGE walks
+  (`temp_scripts/probe_dummy_langgraph_tool_usage.py`'s reserve / cut
+  / repeat / repair / syntax — the breaker machinery: the handback
+  reserve before the step cap, the output-ceiling cut + the shorter
+  resend, the repeat guard + the patch, the fresh-context repair
+  spawn, the bare-SyntaxError repair spawn) moved into the shared
+  runner beside the seven router walks (`ROUTER_WALK_KINDS` = 12
+  kinds; the router probe drives all twelve, the tool-usage probe is
+  now a thin five-kind driver — its old imports of the rewritten
+  router probe's helpers broke when that probe became a driver, the
+  shared module is the fix). `full_report` runs the canonical battery
+  + all 12 walks and appends the COVERAGE GATE
+  (`router_walks.py::dataset_coverage_check`): the union of every
+  run's `scenarios_used` must cover EVERY `test/dummy_llm/features`
+  scenario tag — 94/106 walked, the other 12 are the documented
+  `ALTERNATIVE_FACES` (the unrecordable flake serves the walks assert
+  via `provider.n_flakes`; the flake error-class variants; the
+  verdict ask's ignore/no-action answers; the supervisor sweep ask;
+  the planner's ignore/no-action plan variants; the step catch-alls —
+  each named with WHERE it is exercised: the contract suite
+  `test_dummy_langgraph.py` (124 checks) or the supervisor probes).
+  A tag neither walked nor documented FAILS the report. The daemon
+  self-test now takes ~2-3 min per `[this is test]` (12 walks ≈ 12
+  chains kept in the history).
+- 2026-11-14 (f) THE RESUMPTION WALKS + THE DECISION BATTERY (user
+  round: the fork jev decisions and the exception-resumption variants
+  were missing from the report — "bring them all back, do not
+  aggressively delete old good test scenarios, but add more nodes"):
+  the four SUPERVISOR walks of
+  `temp_scripts/probe_dummy_langgraph_supervisor.py` moved into the
+  shared runner as `resume-ignore` / `resume-noaction` /
+  `resume-ratelimit` / `resume-fastpath` (IGNORE-STEP: the structural
+  KeyError flake → `supervisor-verdict-ignore` → the row settles
+  skipped wearing the note; NO-ACTION: the UndefinedTable flake →
+  `supervisor-verdict-noaction` → the row stays failed, the doomed
+  tail settles not-run, the final sweep's `supervisor-tail` ask
+  reviews it; RATE-LIMIT: the 1302 flake → `supervisor-verdict-retry`
+  → the throttled reopen resumes to completed — the walk wraps its run
+  in `fast_throttle_patch()` (the 45 s cooldown shrunk to 1 s on
+  supervisor.workers.run_limits, restored in finally; the daemon
+  shares the process with real runs so the patch lives only inside
+  the walk) and asserts the sleep; FASTPATH: the StubJevDecisionEngine
+  (router methods declined) decides the retry — ZERO generative asks,
+  the `[System One verdict]` review row persists; the walk's reads
+  key `template` not `method`). The supervisor probe is now a thin
+  driver (its imports of the rewritten router probe had broken).
+  ROUTER_WALK_KINDS = 16. THE DECISION BATTERY
+  (`router_walks.py::decision_checks(live_engine)`): every
+  `02_decisions.feature` scenario — the fork jev decisions
+  (route-fork / fork-point), the resume decisions, spawn-streak /
+  route-spawn / route-join / failure-probe — stub-checked (always,
+  `decision @<tag>: stub choice == …`) and live-checked through the
+  daemon's raw `JevDecisionEngine` (`DecisionChoiceChecker`; host
+  down → SKIPPED, a partial mismatch → FAIL); `selftest.build_decision_engine`
+  stashes the raw engine (`_live_engine`) beside the recorder.
+  `full_report` = canonical + 16 walks + decision battery + coverage
+  gate. ALTERNATIVE_FACES = 8 (the five unrecordable flake serves, the
+  two step catch-alls, and `supervisor-tail` — the sweep ask's
+  catch-all only serves a manifest carrying NONE of the verdict
+  needles; every walk's sweep manifest carries its own failure's
+  needle, and lane-handled failures dedupe out of the sweep entirely;
+  98/106 walked). KNOWN FLAKE (once
+  in many runs): a resume walk's step hop never starts (no LLM
+  traffic, the row settles "run ended before this step started") — an
+  in-process race of the dummy's microsecond turns with the repair
+  window's event hand-off; a re-run passes. EN ROUTE FIXED (the
+  structural kind): the daemon's heartbeat FINGERPRINT ROOTS grew to
+  `("llm_agents", "_common", "test")` (`_common/service_heartbeat.py::
+  FINGERPRINT_ROOTS`) — the self-test imports `test/dummy_langgraph`
+  at runtime, so a `test/` edit must recycle the daemon or its
+  in-process module cache keeps serving the old walk code (observed:
+  the ALTERNATIVE_FACES fix never landed until the roots covered it).
+- 2026-11-14 (g) THE SHOWCASE MAIN CHAIN + THE AUTO-EXPAND CANVAS
+  (user round: "from UI no forked/spawned nodes, check and bring them
+  back" — the two real causes found by opening the real canvas). (1)
+  THE CANVAS DEFAULT-FOLDED every spawn subtree (the ▸N cue nearly
+  invisible), so a freshly opened run showed no spawned nodes: the
+  fold registry (`data_viz/src/analysis/pages/Ai/ThreadGraph/
+  expandedNodesStore.ts`) now distinguishes NEVER-TOUCHED (no stored
+  entry → null) from USER-FOLDED (`[]` persists as an explicit entry —
+  the old store dropped empty arrays), and the view
+  (`ThreadGraph/index.tsx`) AUTO-EXPANDS a never-touched thread's
+  small spawn subtrees (≤ `AUTO_EXPAND_MAX_CHILDREN` 8 rendered child
+  rows, kind-2 stubs excluded; the expandable ids are exactly the
+  model's `childCountByNodeId` keys with a positive count), computing
+  `{effectiveExpanded, model}` in one memo; the FIRST parent click
+  flips the thread to its explicit registry (which persists verbatim
+  and freezes on reload), AUTO mode never persists. Fork children of
+  top-level steps already rendered inline (the 2026-11-13 drift-fork
+  flip). (2) THE MAIN CHAIN the UI opens after a `[this is test]` run
+  was the two-step canonical chain — no fork/spawn nodes in it (they
+  lived in the 16 separate walk chains): the MAIN chain is now the
+  SHOWCASE (`selftest.py`, goal suffixed 【全场景自检】 which keys the
+  plan face `plan-selftest-showcase` in the new
+  `test/dummy_llm/features/00_0_selftest_showcase_plan.feature` — that
+  file sorts BEFORE 00_router_chain so the plan wins whatever the
+  caller typed; the step_4 parent faces live in
+  `00_selftest_showcase.feature` which sorts AFTER it, because the
+  fork child's inherited conversation embeds the parent's [step_4] and
+  must match `@fork-child-subspawn` first): plan → trend → volume
+  (flake → supervisor verdict → resume, the existing faces) → step_3
+  脚本计算与证据整理 (00_router_chain's spawn faces reused via the
+  exact title) → step_4 继承分叉续算再派子节点 (fork child spawns its
+  own sub node; `@fork-child-sub*`/`@forksub-child-*` reused). The
+  engine is `router_walks.ShowcaseEngine` — route_spawn call-ordered
+  yes→no, route_fork on the sandbox-proposing turn, everything else
+  declined, `decide_resume`/`decide_kg_relevance` DELEGATED to the
+  recording real engine (the canonical battery's jev checks stay real
+  computations; `inner=None` = the fail-soft face) — and the chain
+  runs on `build_showcase_sandbox()`'s scripted sandbox (the
+  `sandbox=` seam threaded through `server._run_chain`). The
+  discriminator fact learned by dumping a real step conversation: the
+  `[Run goal]` block rides EVERY step conversation, so per-step
+  discriminators are the STEP TITLES (`[Your step] 3. [step_3] <title>`)
+  and the goal stays free of per-step markers; the findings bridge
+  carries earlier steps' title + finding TEXT but never the [step_N]
+  tags. `SummaryChainAssert` takes `plan_tag` (the showcase tag for
+  the self-test, `plan-proposal` default for the standing probe) +
+  `expected_flakes` (the canonical 1 vs the showcase's 3) + `extra`
+  checks (`router_walks.showcase_extra_checks`). 2026-11-14 (h) THE
+  SHOWCASE GREW TO SEVEN STEPS (user round: "need to see MORE forked
+  and spawned nodes and failed nodes"): + step_5 脚本子节点计算与失败
+  调查 — the FAILURE-INVESTIGATION scenario (its own spawn face; the
+  spawned `[failing child]` dies on the armed flake → FAILED child
+  row; the failure-probe lane (scripted `decide_failure_probe` yes)
+  spawns the investigator → `@showcase-step5-fold`) — reusing
+  `@script-child-flake` + `@probe-investigator`; + step_6 风险提示与
+  结论校验 — the FATAL step (UndefinedTable flake → jev resume read
+  scripted a CONFIDENT NO for UndefinedTable facts so the generative
+  ask serves `@supervisor-verdict-noaction` deterministically → the
+  row STAYS FAILED) + step_7 综合结论整理 — the SKIPPED doomed tail
+  ("not run — the main path failed"). The one trap: the parent's fold
+  turn (which embeds "Failure probe" via the injection and its own
+  `[step_5]`) used to be hijacked by `@probe-investigator` (its only
+  exclusion was `[step_3]`) — the face now excludes `[step_` generally
+  (a fresh-context investigator never carries a step tag; the probe
+  walk unchanged), and `showcase-step6-fail` joined
+  ALTERNATIVE_FACES (the unrecordable flake serve — its FAILED row is
+  the trace). The main-graph node census the UI now shows: plan, 7
+  steps (1 flaked→resumed, 1 failed, 1 skipped), 4 spawned children
+  (handoff child, failed child, investigator, fork child) + the fork
+  child's own sub node, the supervisor circle, 4 review seats.
+- 2026-11-15 THE SUPERVISOR RESUME AS A FORK ACTION ON THE UI (user
+  round: the resumption was invisible — the retry re-opens the row in
+  place and the canvas showed a plain green node): `reopen_state`
+  (`planning/store/states.py`) now reads the failed row BEFORE its
+  guarded flip and, on success, writes a child_kind 3 RECORD row under
+  the re-opened step — `agent_child_kind` code 3 `resume` (the label
+  seed in `database/sql/static/label_dim/07_text_llm.sql`, the DDL
+  comment, the KG domain seed, the Python/TS mirrors, applied to the
+  live DB by `temp_scripts/apply_resume_label.py`) — preserving the
+  failed attempt's error (which the flip clears) and carrying the
+  retry verdict's instruction as its title (`reopen_state` gained
+  `note=`; the RepairWorker passes `instruction[:160]` — every retry
+  path converges there, the generative verdicts, the code fallback
+  and the jev fast path all flow through it). Never routed (children
+  are not plan rows), settled completed, excluded from the
+  summary-run step counts (`runs.sql`/`run_dates.sql` FILTER on
+  `child_kind IS DISTINCT FROM 3`). The UI draws it as a RESUME SPUR:
+  node kind `resume` (graphModel types/footprints — 26px circle,
+  120px label), the spur pass's third branch (`resume-<state_id>` id,
+  ↺ prefix on the title label), the fork-weighted DASHED `resume`
+  edge (the resumption continues the failed attempt — not fresh
+  work), auto-expanded with every small subtree, clicked-node panel
+  paths (`spawnReviews`/`spawnState`) accept the `resume-` prefix so
+  the marker's preserved error surfaces on click. Probe asserts: the
+  resume-ratelimit/fastpath walks and the showcase check the marker
+  row (`_resume_markers` — title carries the verdict note, error the
+  prior attempt's 1302/timeout text); `_child_rows` EXCLUDES kind 3
+  (the markers are records, not spawned work — the walks'
+  `len(children) == 1` checks caught the marker the moment it
+  landed). One-time label apply + recycle verified end to end on the
+  UI.
+- 2026-11-15 (b) THE FAILURE FORK — RED DEAD-END + GREEN LANE (user
+  round: "step 6 is red; if failed, should fork — one red as a dead
+  end branch, another green"): the kind-3 record now SETTLES FAILED —
+  it IS the failed attempt (the red dead-end branch, ↺-labelled,
+  one dashed `resume` leg IN, no merge-back — the spur pass skips the
+  two-way pair for it), so a handled failure renders as TWO nodes:
+  the red branch (the failed attempt, error preserved) + the green
+  lane node (a retry's resumed completion). The title names the
+  disposition: `supervisor resume — <verdict note>` (written by
+  `reopen_state` as the flip clears the parent's error) and the NEW
+  `supervisor no-action` (written by the RepairWorker's pass-2
+  `ACTION_NONE` branch — gated on window_live, guarded on the row
+  still being failed — through the new
+  `PlanStore.record_failure_marker`; the row STAYS failed, the true
+  failure, with the fork recording it beside it). `insert_resume_marker.sql`
+  settles failed; the label/DDL/TS comments document the failure-fork
+  semantics; `_resume_markers` asserts updated (status failed) + the
+  noaction walk and the showcase assert both fork records (step_2's
+  resume fork + step_6's no-action fork). The walk-side
+  `_child_rows` already excludes kind 3 (records, not work).
+- 2026-11-15 (c) MAIN PATH ALL GREEN — THE HANDLED-FAILURE FACE +
+  THE EMPTY-REGISTRY BUG (user round: "set the failed node in side
+  branch while main path should be all green"): (1) the lane builder
+  (`buildSegmentModel.ts`) renders a FAILED top-level step that
+  carries a kind-3 failure-fork marker with the HANDLED face — the
+  lane node GREEN (the run's story continued past the handled
+  failure), the failure itself on the RED side branch (the marker)
+  and in the clicked node's panel (which reads the row's TRUE status
+  + the preserved error); unhandled failures (no marker) stay red on
+  the lane. The showcase main path now reads plan → 7 steps (all
+  green; step_7 not-run gray) → output, with the red failure forks
+  hanging off step_2 (resume) and step_6 (no-action). (2) THE BUG the
+  round caught live: the fold registry held an EXPLICIT `[]` entry for
+  the thread, blocking the auto-expand forever — the persist effect's
+  stale state closure (the restore's `setAutoExpand(true)` lands a
+  commit later) under StrictMode's double-invoke slipped the
+  first-run skip and wrote an empty registry over the armed auto
+  default. Fixed twice over: `loadExpandedNodes` reads an EMPTY entry
+  as never-touched (only a NON-empty entry is an explicit registry —
+  the all-folded state no longer survives a reload), and the persist
+  effect reads the mode through `autoExpandRef` (set synchronously by
+  the restore effect, never the lagging closure).
+  Offline smoke:
+  the showcase chain PASSes 38 checks (real kg-gate reads + real
+  resume read + the flake/verdict/resume intact); all standing suites
+  stayed green.
 
 ## Keeping this skill current
 

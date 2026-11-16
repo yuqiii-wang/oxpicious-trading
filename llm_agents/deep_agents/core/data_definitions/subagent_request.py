@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import (
     Any, Awaitable, Callable, Dict, List, Literal, Optional,
 )
+from llm_agents.deep_agents.core.authorization import AuthorizationContext
 from llm_agents.deep_agents.core.tools import BuiltinTool
 
 
@@ -82,6 +83,19 @@ class SubagentRequest:
     # scripting handoff, the repair spawn, the failure probe); the
     # model-called spawn tool carries no role (the default '').
     role: str = ""
+    # THE EXPLICIT SCOPE EXTENSION TRIGGER (core/authorization,
+    # 2026-11-13): a non-empty study focus names the domain this child
+    # is DELIBERATELY delegated to study wider than its parent — the
+    # spawn input hook KG-locates the related tables and grants the
+    # child a (chain, node) extension row (parent scope UNION the
+    # KG tables, extend never narrow). None/'' (the default) = the
+    # child INHERITS its parent's authorization scope verbatim.
+    study_focus: Optional[str] = None
+    # The child's RESOLVED authorization context — stamped by the spawn
+    # input hook AFTER the extension row lands (an extension) or left
+    # None (inherit: the child constructor falls back to the parent's
+    # context, so un-extended children share it by construction).
+    authorization: Optional["AuthorizationContext"] = None
     # THE FORK INHERITANCE (2026-11-13): the parent's TRANSCRIPT the
     # child continues from — None (the default) keeps the spawn
     # semantics (fresh 2-message context, never the parent transcript).

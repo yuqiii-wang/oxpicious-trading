@@ -111,6 +111,13 @@
 --      over the pillars defined on the date (the turnover pillars are
 --      required; comovement / valuation drop out — with their weights —
 --      on dates where the raw pillar is undefined).
+--    crowdedness_score_ma5(t) = the 5-pool-date-ROW moving average of
+--    the score per pool (min 1 row) — the ONLINE smoothing layer: the
+--    raw score's day-over-day movement is dominated by single-day
+--    pillar noise (the 2026-11-14 fluctuation study), so the ma5 curve
+--    is the online read and the raw score stays as evidence. The same
+--    ma5 rides every year-pinned variant (within the variant's own
+--    series — see market_crowdedness_year.sql).
 --    All *_pct columns and the score are 0..1, higher = more crowded.
 --    Rows exist only where the value is defined (active pool ≥ 10 —
 --    below it the floored hot set would cover half the pool or more;
@@ -131,6 +138,7 @@ CREATE TABLE IF NOT EXISTS analysis.market_crowdedness (
     date              DATE          NOT NULL,
 
     crowdedness_score NUMERIC(10,4) NOT NULL,  -- renormalized weight blend of the four *_pct pillars (percentiles vs the pool's own 250-day history)
+    crowdedness_score_ma5 NUMERIC(10,4) NOT NULL,  -- 5-pool-date-ROW moving average of crowdedness_score (the online smoothing layer; partial mean over the first 4 rows)
     concentration     NUMERIC(10,4) NOT NULL,  -- RAW level pillar: the STABLE hot set's (top 10% by 60-active-day mean amount) share of the day's pool amount
     flow_change       NUMERIC(10,4) NOT NULL,  -- RAW flow pillar: the stable hot set's share of the pool's gross amount increase
     comovement        NUMERIC(10,4),           -- RAW co-movement pillar: mean corr120(hot stock return, LOO pool return), -1..1; NULL when no hot member has a defined correlation
@@ -162,6 +170,7 @@ COMMENT ON COLUMN analysis.market_crowdedness.sec_type          IS 'Security typ
 COMMENT ON COLUMN analysis.market_crowdedness.code              IS 'Security code (bare index code e.g. 000001; sec_type=3: industry_id e.g. BANKS).';
 COMMENT ON COLUMN analysis.market_crowdedness.date              IS 'Trading date.';
 COMMENT ON COLUMN analysis.market_crowdedness.crowdedness_score IS 'Market crowdedness (0..1, higher = more crowded): renormalized weight blend 0.30*concentration_pct + 0.30*flow_pct + 0.25*comovement_pct + 0.15*valuation_pct over the pillars defined on the date (turnover pillars required). Each *_pct is the pillar''s percentile vs the pool''s own trailing-250-pool-date-row history (>= 60 non-NULL obs). Blended from UNROUNDED percentiles, stored rounded to 4dp. Rows exist only where the value is defined — NULL / uncomputable days have NO row.';
+COMMENT ON COLUMN analysis.market_crowdedness.crowdedness_score_ma5 IS 'The ONLINE smoothing layer (added 2026-11-14): 5-pool-date-ROW moving average of crowdedness_score per pool (min 1 row — partial mean over the series head). The raw score''s day-over-day movement is dominated by single-day pillar noise; the ma5 curve is the online read (the raw score stays as evidence). Same definition on every year-pinned variant (within the variant''s own series).';
 COMMENT ON COLUMN analysis.market_crowdedness.concentration     IS 'RAW level pillar (0..1): the STABLE hot set''s share of the pool''s 5-ACTIVE-DAY MEAN trading amount — hot set = top 10% of the active pool by the 60-active-day MEAN amount (min 5 names, >= 20 active days to rank; the day-amount ranking churned 17-29% of names daily vs 1-2% here, study 2026-11-01). The ma5 basis cuts score noise 43% (smoothing study 2026-11-01).';
 COMMENT ON COLUMN analysis.market_crowdedness.flow_change       IS 'RAW flow pillar (0..1): the stable hot set''s share of the pool''s GROSS increase of the 5-active-day MEAN amount (Δma5 = ma5(t) − ma5(previous traded day), positive part only) — sustained multi-day inflow, not one-day spikes. No row when the pool''s gross increase is zero.';
 COMMENT ON COLUMN analysis.market_crowdedness.comovement        IS 'RAW co-movement pillar (−1..1, higher = the hot names move more in lockstep with the pool): mean over the hot set of the trailing-120-active-day Pearson correlation between the stock''s daily return (pct_change/100, falling back to close/prev_close − 1 where the source leaves pct_change NULL — the SSE archive) and the pool''s leave-one-out equal-weight return of the day''s active members (>= 30 joint-valid obs, positive variance). NULL when no hot member has a defined correlation. Added in v2 (2026-10-31).';

@@ -1,0 +1,11 @@
+{
+  "service": "downloads.stock.sse.pe_latest",
+  "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
+  "freq": "daily",
+  "schedule": "every A-share trading date, in the 16:00 nightly chain after downloads.stock.sse.trend, before builds_daily",
+  "notes": "Latest-missing-date PE auto-load for SSE stocks: appends the latest biz date's 静态市盈率 row to temps/sse_archive/{code}_pe.csv (builds.stock auto-loads the missing tail). Keeps the stock-PE estimation anchors fresh WITHOUT scheduling the downloads.stock.sse.archive crawl (which stays a manual/once backfill for gap anchors).",
+  "source_ref": "scripts/orchestration/downloads_daily.json",
+  "updated_at": "2026-11-16T02:20:00.000000+00:00"
+}

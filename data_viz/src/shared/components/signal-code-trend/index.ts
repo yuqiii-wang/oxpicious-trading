@@ -4,9 +4,14 @@
  * markers), the RULES + HISTORY panels of the signals era
  * (SignalRulesPanel / SignalHistoryPanel), and the shared
  * signal-record tables that read alongside them. Single import source.
+ * The crowdedness family's pick renders SignalCrowdednessChart instead
+ * of the plain OHLC code trend (the family plots its crowdedness
+ * trigger source).
  */
 export { default as SignalCodeTrendChart } from "./SignalCodeTrendChart";
 export type { SignalCodeTrendChartProps } from "./SignalCodeTrendChart";
+export { default as SignalCrowdednessChart } from "./SignalCrowdednessChart";
+export type { SignalCrowdednessChartProps } from "./SignalCrowdednessChart";
 export { default as SignalHistoryPanel } from "./SignalHistoryPanel";
 export type { SignalHistoryPanelProps } from "./SignalHistoryPanel";
 export { default as SignalRulesPanel } from "./SignalRulesPanel";

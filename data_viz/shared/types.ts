@@ -2198,6 +2198,11 @@ export interface MarketCrowdednessChartRow {
   /** valuation vs the pool's own trailing-250-day history (percentile,
    *  0..1) — a score input; NULL where valuation is NULL. */
   valuation_pct: number | null;
+  /** 5-pool-date-ROW moving average of crowdedness_score — the ONLINE
+   *  smoothing layer (raw day-over-day movement is dominated by
+   *  single-day pillar noise); on a pinned variant it rolls within the
+   *  variant's own series. */
+  crowdedness_score_ma5: number | null;
   /** Comma-joined display names of the date's hot set (top 10% of the
    *  active pool by 60-active-day MEAN amount, min 5 names) — tooltip
    *  evidence. */
@@ -2222,58 +2227,132 @@ export interface MarketCrowdednessCodesResponse {
   codes: MarketCrowdednessCodeRow[];
 }
 
-// ----------------------------------------------------------------------------
-//  Analysis Commons — Hot Stock Momentum (analysis.hot_stock_momentum)
-//    Per-(code, sec_type, date) hot-stock momentum curve for indices and
-//    composite industries, built by analysis.hot_stock_momentum
-//    (database/sql/analysis/30_hot_stock_momentum.sql). IMPLEMENTATION
-//    PLACEHOLDER (2026-10-31): the pipeline run() is empty — the
-//    momentum column is NULL in every chart row until it lands. The
-//    nav/codes universe is the FULL classification
-//    (stats.sec_classification type='index' + stats.industry_identity
-//    entities), deliberately NOT restricted to codes with rows, so the
-//    page is browsable meanwhile. Chart rows are driven by the stats
-//    close source (one row per close day) so the chart always plots the
-//    code's close + trading amount; momentum is LEFT JOINed live.
-// ----------------------------------------------------------------------------
-/** The sec_types the Hot Stock Momentum page exposes and the pipeline is
- *  scoped to (no etf/stock — the page toggle lists only these two). */
-export type HotStockMomentumSecType = "index" | "industry";
+/** Response for GET /api/analysis/market-crowdedness/hot-years — the
+ *  year-pinned hot-set variants available for one code (calendar
+ *  years, newest first). Picking one re-fetches the chart with
+ *  hot_year set, swapping the metric to the pinned variant (the hot
+ *  basket frozen to that year's roster, applied across the whole
+ *  history). */
+export interface MarketCrowdednessHotYearsResponse {
+  code: string;
+  years: number[];
+}
 
-/** One daily chart row: stats close + trading amount with the metric
- *  LEFT JOINed (NULL until the pipeline lands). */
-export interface HotStockMomentumChartRow {
+// ----------------------------------------------------------------------------
+//  Market Crowdedness hot-tech stats — GET /api/analysis/market-
+//  crowdedness/hot-tech. The hot stocks' typical technical profile from
+//  analysis.market_crowdedness_hot_tech: per (code, sec_type, date) the
+//  equal-weight mean + median over the day's ROLLING hot set (top 10%
+//  of the active pool by 60-active-day mean amount, min 5) of eight
+//  per-stock metrics, each aggregate also read as a percentile vs the
+//  pool's own trailing-250-day history (>= 60 obs). Driven by the stats
+//  close source (one row per close day) so the chart always plots the
+//  close; the stats are LEFT JOINed live.
+// ----------------------------------------------------------------------------
+
+/** The eight hot-tech metrics (the stat-switcher button keys). All are
+ *  decimal fractions except macd_hist (price units) and rsi14 (0..100). */
+export type MarketCrowdednessHotTechMetric =
+  | "ma5_ratio"
+  | "px_vs_ma20"
+  | "px_vs_ma60"
+  | "macd_hist"
+  | "rsi14"
+  | "roc20"
+  | "amt_vs_ma20"
+  | "ret";
+
+/** One daily hot-tech chart row: stats close with the hot-tech
+ *  aggregates LEFT JOINed (NULL on dates with no defined hot-tech row —
+ *  pre-gate days, out-of-scope codes; *_pct additionally NULL during
+ *  the pool's percentile warm-up). */
+export interface MarketCrowdednessHotTechRow {
   /** Trading date (YYYY-MM-DD). */
   date: string;
   /** Close price read live from stats (index_basic_stats.close /
    *  industry_basic_stats.mean_close, pool-'all' slice). */
   close: number | null;
-  /** Trading amount in yuan, read live from stats
-   *  (index_basic_stats.trading_amount /
-   *  industry_basic_stats.total_trading_amount). NULL when the source
-   *  has no amount on the date. */
-  trading_amount: number | null;
-  /** Hot-stock momentum level — NULL on every row until
-   *  analysis.hot_stock_momentum is populated. */
-  momentum: number | null;
+  /** The day's hot-set size = the members the aggregates cover (top
+   *  max(ceil(0.1*active_n), 5) of the active pool by 60-active-day
+   *  mean amount). NULL on dates with no hot-tech row. */
+  hot_n: number | null;
+  /** Mean over the hot set of the precomputed ma5_ratio
+   *  (stats.stock_tech_stats: close/ma5 - 1; 0 = at MA5). */
+  mean_ma5_ratio: number | null;
+  /** mean_ma5_ratio vs the pool's own trailing-250-day history
+   *  (percentile, 0..1). */
+  mean_ma5_ratio_pct: number | null;
+  /** Median over the hot set of ma5_ratio. */
+  median_ma5_ratio: number | null;
+  /** median_ma5_ratio vs the pool's own trailing-250-day history. */
+  median_ma5_ratio_pct: number | null;
+  /** Mean over the hot set of close/ma20 - 1. */
+  mean_px_vs_ma20: number | null;
+  /** mean_px_vs_ma20 vs the pool's own trailing-250-day history. */
+  mean_px_vs_ma20_pct: number | null;
+  /** Median over the hot set of px_vs_ma20. */
+  median_px_vs_ma20: number | null;
+  /** median_px_vs_ma20 vs the pool's own trailing-250-day history. */
+  median_px_vs_ma20_pct: number | null;
+  /** Mean over the hot set of close/ma60 - 1. */
+  mean_px_vs_ma60: number | null;
+  /** mean_px_vs_ma60 vs the pool's own trailing-250-day history. */
+  mean_px_vs_ma60_pct: number | null;
+  /** Median over the hot set of px_vs_ma60. */
+  median_px_vs_ma60: number | null;
+  /** median_px_vs_ma60 vs the pool's own trailing-250-day history. */
+  median_px_vs_ma60_pct: number | null;
+  /** Mean over the hot set of the precomputed MACD histogram (price
+   *  units; sign = momentum direction). */
+  mean_macd_hist: number | null;
+  /** mean_macd_hist vs the pool's own trailing-250-day history. */
+  mean_macd_hist_pct: number | null;
+  /** Median over the hot set of macd_hist. */
+  median_macd_hist: number | null;
+  /** median_macd_hist vs the pool's own trailing-250-day history. */
+  median_macd_hist_pct: number | null;
+  /** Mean over the hot set of RSI(14), SMA-smoothed (Cutler form,
+   *  0..100; the GPU-native rolling-mean formulation, not Wilder's). */
+  mean_rsi14: number | null;
+  /** mean_rsi14 vs the pool's own trailing-250-day history. */
+  mean_rsi14_pct: number | null;
+  /** Median over the hot set of rsi14. */
+  median_rsi14: number | null;
+  /** median_rsi14 vs the pool's own trailing-250-day history. */
+  median_rsi14_pct: number | null;
+  /** Mean over the hot set of the 20-active-row rate of change
+   *  (close/close[-20] - 1). */
+  mean_roc20: number | null;
+  /** mean_roc20 vs the pool's own trailing-250-day history. */
+  mean_roc20_pct: number | null;
+  /** Median over the hot set of roc20. */
+  median_roc20: number | null;
+  /** median_roc20 vs the pool's own trailing-250-day history. */
+  median_roc20_pct: number | null;
+  /** Mean over the hot set of amount/MA20(amount) - 1 — the per-stock
+   *  放量/缩量 gauge (positive = participation above its own MA20). */
+  mean_amt_vs_ma20: number | null;
+  /** mean_amt_vs_ma20 vs the pool's own trailing-250-day history. */
+  mean_amt_vs_ma20_pct: number | null;
+  /** Median over the hot set of amt_vs_ma20. */
+  median_amt_vs_ma20: number | null;
+  /** median_amt_vs_ma20 vs the pool's own trailing-250-day history. */
+  median_amt_vs_ma20_pct: number | null;
+  /** Mean over the hot set of the day's return (decimal). */
+  mean_ret: number | null;
+  /** mean_ret vs the pool's own trailing-250-day history. */
+  mean_ret_pct: number | null;
+  /** Median over the hot set of the day's return. */
+  median_ret: number | null;
+  /** median_ret vs the pool's own trailing-250-day history. */
+  median_ret_pct: number | null;
 }
 
-/** Response for GET /api/analysis/hot-stock-momentum/chart. */
-export interface HotStockMomentumChartResponse {
+/** Response for GET /api/analysis/market-crowdedness/hot-tech. */
+export interface MarketCrowdednessHotTechResponse {
   code: string;
   name: string;
-  rows: HotStockMomentumChartRow[];
-}
-
-/** One row of the Hot Stock Momentum codes list (full universe). */
-export interface HotStockMomentumCodeRow {
-  code: string;
-  name: string;
-}
-
-/** Response for GET /api/analysis/hot-stock-momentum/codes. */
-export interface HotStockMomentumCodesResponse {
-  codes: HotStockMomentumCodeRow[];
+  rows: MarketCrowdednessHotTechRow[];
 }
 
 // ----------------------------------------------------------------------------

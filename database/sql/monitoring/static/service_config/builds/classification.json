@@ -6,6 +6,6 @@
   "freq": "once",
   "schedule": "one-time setup/backfill; no recurring schedule (re-run on demand)",
   "notes": null,
-  "source_ref": "scripts/builds_once.sh",
+  "source_ref": "scripts/orchestration/builds_once.json",
   "updated_at": "2026-10-10T06:29:48.410435+00:00"
 }

@@ -72,7 +72,9 @@ _WARN_EVERY_S = 1800.0     # rate-limit audit warnings to one line / 30 min
 # hostname suffix -> ext_http_source label, FIRST match wins (order
 # matters: pbc.gov.cn must beat the generic gov.cn suffix). Mirrors the
 # hosts actually used by the downloads tree (audited 2026-10-08; sina.cn
-# added 2026-10-17 for the szse streamer's Sina minute source).
+# added 2026-10-17 for the szse streamer's Sina minute source; efunds
+# added 2026-11-14 for the downloads.etf.efunds family — efundcf.com.cn
+# detail pages over the www/api.efunds.com.cn backends).
 _HOST_SUFFIXES: tuple[tuple[str, str], ...] = (
     ("pbc.gov.cn", "pboc"),
     ("gov.cn", "gov"),
@@ -85,6 +87,8 @@ _HOST_SUFFIXES: tuple[tuple[str, str], ...] = (
     ("chinabond.com.cn", "chinabond"),
     ("shibor.sh.cn", "shibor"),
     ("huatai-pb.com", "huatai"),
+    ("efundcf.com.cn", "efunds"),
+    ("efunds.com.cn", "efunds"),
     ("eastmoney.com", "eastmoney"),
     ("cninfo.com.cn", "cninfo"),
     ("zhihu.com", "zhihu"),

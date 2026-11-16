@@ -27,20 +27,22 @@ Weights are computed as: weight_pct = ltgb / sum(ltgb for nrzsjs=1 stocks)
 Output CSV schema (matches what build_szse_sse_etf_and_margin.py expects):
   snapshot_date, index_code, index_name, stock_code, stock_name, weight_pct
 
-Month-start refresh:
-  On the 1st day of each month the cache is bypassed and every index is
-  re-downloaded. The CSV is stamped with TODAY's date (not the API's
-  snapshot_date, which typically reflects the previous business day — e.g.
-  running on 2026-08-01 yields a CSV dated 20260801 even though the API
-  reports 2026-07-31). This ensures a fresh monthly snapshot flows through
-  to prod (stats.sec_composition) under the new month's date. Use
-  --force-month-start to trigger this behavior on any day for testing.
+Quarter-start refresh (quarterly cadence since 2026-11 — the
+downloads_quarterly tier):
+  On the 1st day of a quarter-start month (Jan/Apr/Jul/Oct) the cache is
+  bypassed and every index is re-downloaded. The CSV is stamped with
+  TODAY's date (not the API's snapshot_date, which typically reflects the
+  previous business day — e.g. running on 2026-10-01 yields a CSV dated
+  20261001 even though the API reports 2026-09-30). This ensures a fresh
+  quarterly snapshot flows through to prod (stats.sec_composition) under
+  the new quarter's date. Use --force-quarter-start to trigger this
+  behavior on any day for testing.
 
 Usage:
   python download_szse_index_composition.py
   python download_szse_index_composition.py --index-codes 399001,399006
   python download_szse_index_composition.py --skip-cached
-  python download_szse_index_composition.py --force-month-start
+  python download_szse_index_composition.py --force-quarter-start
   python download_szse_index_composition.py --out-root /tmp/szse_comp
 
 Code motion only (2026-11-07): the former ``__main__`` body is the
@@ -82,7 +84,7 @@ from downloads._common import (
     service_urls,
     sleep_sec_for,
 )
-from downloads._common.monthly import is_month_start
+from downloads._common.monthly import is_quarter_start
 
 logger = setup_logger("szse_index_composition")
 
@@ -255,10 +257,10 @@ class SzseIndexCompositionDownload(DownloadJob):
             help="Re-download even if a cached CSV exists",
         )
         parser.add_argument(
-            "--force-month-start", action="store_true", default=False,
-            help="Force month-start behavior: bypass cache and stamp CSVs with "
+            "--force-quarter-start", action="store_true", default=False,
+            help="Force quarter-start behavior: bypass cache and stamp CSVs with "
                  "today's date (overrides API snapshot_date). For testing the "
-                 "monthly refresh flow on any day.",
+                 "quarterly refresh flow on any day.",
         )
         parser.add_argument(
             "--sleep-sec", type=float, default=None,
@@ -540,7 +542,7 @@ class SzseIndexCompositionDownload(DownloadJob):
         out_root: Optional[str] = None,
         skip_cached: bool = True,
         sleep_sec: Optional[float] = None,
-        force_month_start: bool = False,
+        force_quarter_start: bool = False,
     ) -> dict:
         """Download SZSE index composition data for the given index codes.
 
@@ -549,7 +551,7 @@ class SzseIndexCompositionDownload(DownloadJob):
             out_root: alternative output root directory
             skip_cached: skip indices that already have a cached CSV
             sleep_sec: sleep between downloads
-            force_month_start: force month-start behavior (bypass cache + stamp
+            force_quarter_start: force quarter-start behavior (bypass cache + stamp
                 CSVs with today's date) regardless of the actual calendar day.
 
         Returns:
@@ -566,17 +568,18 @@ class SzseIndexCompositionDownload(DownloadJob):
             logger.warning("No index codes to download")
             return {"out_dir": str(out_dir), "downloaded": 0, "skipped_cached": 0, "failed": 0}
 
-        # Month-start trigger: on the 1st of each month (or when forced), bypass
-        # the cache and stamp CSVs with today's date so a fresh monthly snapshot
-        # flows to prod even if the API still reports the previous biz day.
+        # Quarter-start trigger: on the 1st of a quarter-start month
+        # (Jan/Apr/Jul/Oct, or when forced), bypass the cache and stamp CSVs
+        # with today's date so a fresh quarterly snapshot flows to prod even
+        # if the API still reports the previous biz day.
         today = date.today()
-        month_start = force_month_start or is_month_start(today)
-        if month_start:
+        quarter_start = force_quarter_start or is_quarter_start(today)
+        if quarter_start:
             skip_cached = False
             logger.info(
-                "Month-start refresh (today=%s, forced=%s): bypassing cache and "
+                "Quarter-start refresh (today=%s, forced=%s): bypassing cache and "
                 "stamping CSVs with today's date (overrides API snapshot_date).",
-                today.isoformat(), force_month_start,
+                today.isoformat(), force_quarter_start,
             )
 
         logger.info(
@@ -606,9 +609,9 @@ class SzseIndexCompositionDownload(DownloadJob):
                 name = _get_szse_index_name(code)
                 logger.info("== Index %s (%s) ==", code, name)
 
-                # Check cache (skipped during month-start refresh — every index is
-                # re-downloaded so the new month's snapshot is created in prod).
-                if not month_start:
+                # Check cache (skipped during quarter-start refresh — every index
+                # is re-downloaded so the new quarter's snapshot is created in prod).
+                if not quarter_start:
                     csv_files = sorted(out_dir.glob(f"{code}_closeweight_*.csv"))
                     if skip_cached and csv_files:
                         latest_csv = csv_files[-1]
@@ -641,12 +644,13 @@ class SzseIndexCompositionDownload(DownloadJob):
                     })
                     continue
 
-                # Save to CSV. On month-start refresh, stamp the CSV with today's
-                # date (overriding the API's snapshot_date, which is usually the
-                # previous business day) so a fresh monthly snapshot flows to
-                # prod (stats.sec_composition) under the new month's date.
+                # Save to CSV. On quarter-start refresh, stamp the CSV with
+                # today's date (overriding the API's snapshot_date, which is
+                # usually the previous business day) so a fresh quarterly
+                # snapshot flows to prod (stats.sec_composition) under the new
+                # quarter's date.
                 out_dir.mkdir(parents=True, exist_ok=True)
-                override_date = today.isoformat() if month_start else None
+                override_date = today.isoformat() if quarter_start else None
                 csv_path = self.save_to_csv(result, out_dir, override_date=override_date)
 
                 stats.downloaded += 1
@@ -658,7 +662,7 @@ class SzseIndexCompositionDownload(DownloadJob):
                     "file": str(csv_path),
                     "n_constituents": len(result["constituents"]),
                     "snapshot_date": override_date or result["snapshot_date"],
-                    "month_start": month_start,
+                    "quarter_start": quarter_start,
                 })
 
                 proxy.sleep(sleep_sec)
@@ -687,7 +691,7 @@ class SzseIndexCompositionDownload(DownloadJob):
             out_root=self.args.out_root,
             skip_cached=not self.args.no_skip_cached,
             sleep_sec=self.args.sleep_sec,
-            force_month_start=self.args.force_month_start,
+            force_quarter_start=self.args.force_quarter_start,
         )
         logger.info(result)
 

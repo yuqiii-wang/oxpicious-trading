@@ -1,0 +1,10 @@
+{
+  "service": "downloads.futures.cffex.archive",
+  "check": "months_present",
+  "params": {
+    "dir": "temps/cffex_archive",
+    "start": "2020-01"
+  },
+  "rerun_args": [],
+  "notes": "Expected month dirs 2020-01..last completed month; the module re-downloads incomplete months on a plain rerun (--force would rmtree + refetch ALL months)."
+}

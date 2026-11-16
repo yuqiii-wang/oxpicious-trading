@@ -4,8 +4,8 @@
   "included_parallel_services": [],
   "excluded_parallel_services": [],
   "freq": "daily",
-  "schedule": "every A-share trading date from 19:00, after downloads_daily.sh (builds_daily.sh loop order)",
+  "schedule": "every A-share trading date, after downloads_daily in the 16:00 nightly chain (builds_daily loop order)",
   "notes": "--force truncates etf_identity CASCADE — builds.etf.feeder_nav must reload the feeder rows right after; refreshes the ETF board-tag mixes.",
-  "source_ref": "scripts/builds_daily.sh",
+  "source_ref": "scripts/orchestration/builds_daily.json",
   "updated_at": "2026-10-10T06:29:48.410435+00:00"
 }

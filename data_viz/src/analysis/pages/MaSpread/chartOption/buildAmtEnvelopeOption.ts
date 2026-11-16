@@ -36,6 +36,7 @@ import type {
   MovAveSpreadOhlcGapDay,
 } from "@shared/types";
 import type { OhlcMode } from "@/lib/ohlc";
+import type { ChartZoomRange } from "../types";
 import type {
   LongBandStreak,
 } from "@/shared/charts/streakBands";
@@ -111,6 +112,10 @@ export interface BuildAmtEnvelopeOptionArgs {
   ohlcGapRows?: MovAveSpreadOhlcGapDay[] | null;
   /** A Top-10% OHLC Days toggle is on. */
   ohlcGapActive?: boolean;
+  /** The panel's shared dataZoom window (percentages 0-100) — the ONE
+   *  synced viewport state with the MA-Chain Alignment companion chart
+   *  (null = full range). */
+  zoom?: ChartZoomRange | null;
 }
 
 /** Build the ECharts option for the Amt Envelope chart. */
@@ -128,6 +133,7 @@ export function buildAmtEnvelopeOption({
   regimeShades = null,
   ohlcGapRows = null,
   ohlcGapActive = false,
+  zoom = null,
 }: BuildAmtEnvelopeOptionArgs): EChartsOption {
   const c = axisColors(themeMode);
   const rows = pair.rows;
@@ -396,7 +402,7 @@ export function buildAmtEnvelopeOption({
   // and the React-element tooltip formatter overrides the default content.
   return baseChartOption(themeMode, {
     grid,
-    dataZoom: commonDataZoom(),
+    dataZoom: commonDataZoom(undefined, zoom?.start, zoom?.end),
     tooltip: commonTooltip(themeMode, {
       axisPointer: { type: "line", snap: true },
       formatter,

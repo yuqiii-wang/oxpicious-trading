@@ -116,13 +116,20 @@ class PlannedStep(BaseModel):
     any earlier step's findings, so consecutive parallel/delegated steps
     may execute as ONE concurrent wave (the runner's spawn-wave lane). A
     delegated step is parallel by construction; the flag is how an
-    INLINE step joins a wave."""
+    INLINE step joins a wave.
+
+    ``study_focus`` (core/authorization, 2026-11-13) is a DELEGATE-only
+    field: the EXPLICIT DB-scope extension the plan grants this spawn —
+    the spawn hook KG-locates the focus's related tables and widens the
+    child's table scope by exactly those (extend, never narrow). None
+    (the default) = the child inherits the run's thread scope verbatim."""
 
     node: str
     title: str
     notes: Optional[Union[str, Dict[str, Any]]] = None
     delegate: Optional[str] = None
     parallel: bool = False
+    study_focus: Optional[str] = None
 
 
 class StateRow(BaseModel):
@@ -198,13 +205,17 @@ def _normalize_notes(
         notes: Optional[Union[str, Dict[str, Any]]],
         delegate: Optional[str] = None,
         parallel: bool = False,
+        study_focus: Optional[str] = None,
 ) -> Optional[str]:
     """The JSONB text for a step's notes (str -> {"note": str}); a
-    delegation goal rides along as {"delegate_goal": ...} and the
-    independence mark as {"parallel": true} so the step's input context
-    carries what the planner wrote. The note text is capped (_NOTES_MAX
-    — context hygiene: the entry keeps the important data, bounded)."""
-    if notes is None and delegate is None and not parallel:
+    delegation goal rides along as {"delegate_goal": ...}, the
+    independence mark as {"parallel": true} and the delegate-only
+    DB-scope extension as {"study_focus": ...} (core/authorization) so
+    the step's input context carries what the planner wrote. The note
+    text is capped (_NOTES_MAX — context hygiene: the entry keeps the
+    important data, bounded)."""
+    if notes is None and delegate is None and not parallel \
+            and not study_focus:
         return None
     payload: Dict[str, Any] = {}
     if notes is not None:
@@ -214,6 +225,8 @@ def _normalize_notes(
         payload["delegate_goal"] = delegate
     if parallel:
         payload["parallel"] = True
+    if delegate and study_focus:
+        payload["study_focus"] = study_focus
     return json.dumps(payload, ensure_ascii=False)
 
 

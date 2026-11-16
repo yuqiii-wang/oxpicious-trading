@@ -101,7 +101,7 @@ export const REQUIRED_TEXT: FieldRule = {
 /** One or more relative file paths, ';'-separated (the source_ref
  *  contract on both config trees). */
 export const REL_PATH_LIST: FieldRule = {
-  hint: "relative file path(s), ';'-separated, e.g. scripts/builds_daily.sh",
+  hint: "relative file path(s), ';'-separated, e.g. scripts/orchestration/builds_daily.json",
   error: (t) => {
     if (t.trim() === "") return "is required (relative file path(s), ';'-separated)";
     const absolute = t

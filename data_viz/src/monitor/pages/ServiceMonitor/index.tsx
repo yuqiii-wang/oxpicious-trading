@@ -1,8 +1,9 @@
 /**
  * Service Monitor page — liveness of the repo's resident processes (the
- * always-on services the stream watchdog supervises: the five
- * downloads.stream.* pollers, the db_health sampler, the llm_agents
- * daemons + the stream_watchdog supervisor), grouped by scope
+ * always-on fleet of the completed 2026-11 resident migration: the five
+ * downloads.stream.* pollers under the downloader server, the eight
+ * cluster servers + the six infra daemons + the stream_watchdog
+ * supervisor under the monitor server), grouped by scope
  * (downloads / database / ...) and sub_scope, PLUS the last-known state
  * of every OTHER registered pipeline process (batch
  * builds / downloads / analyses / llm runs — "Pipeline processes").
@@ -23,28 +24,24 @@
  * GET /api/monitor/stream (read replica). Auto-refreshes every 30s while
  * beat ages tick every 1s (client-side).
  * The header refresh button FORCE-TRIGGERS the point-in-time health
- * check (POST /api/monitor/health-check → python -m database.monitoring:
- * replica sync + replay backlog + slot WAL retention + pg_wal dir size
- * vs max_wal_size + this page's stream liveness) and shows its [ok] /
- * [ALERT] verdict lines inline. Next to it, the "Start stream always"
- * button brings the always-on stream up (POST /api/monitor/stream-always):
- * it spawns a HIDDEN keeper session through the API server's shared WSL
- * runner (no cmd window — same spawn as every other API-triggered
- * python run), which runs the idempotent watchdog starter first (heals
- * leaked live_parallel slots from pid liveness, covers db_health), then
- * scripts/stream_always.sh — nohup each poller, sleep 1 apart — and
- * parks. The parked session is what keeps the services alive (a WSL
- * session's nohup'd children die with its wsl.exe client), so the
- * stream lives with the API server: an API restart takes it down and
- * the button is the recovery (deduped by process-id-tag while the
- * keeper lives). Redundant starts self-exit past their max_parallel
- * caps; first beats land within ~60s on the table's own refresh cadence.
+ * check (POST /api/monitor/health-check → the monitor area's
+ * database.monitoring probes: replica sync + replay backlog + slot WAL
+ * retention + pg_wal dir size vs max_wal_size + this page's stream
+ * liveness) and shows its [ok] / [ALERT] verdict lines inline. Next to
+ * it, the "Start stream always" button brings the always-on fleet up
+ * (POST /api/monitor/stream-always → the monitor area's idempotent
+ * POST /residents/ensure-up): every area supervisor starts its
+ * desired-running-but-down residents (bypassing crash-loop backoff —
+ * the monitor's own residents, the watchdog included, through its
+ * in-process supervisor; the other areas' over HTTP). Redundant starts
+ * self-exit past their max_parallel caps; first beats land within ~60s
+ * on the table's own refresh cadence.
  * Status: "live" while the heartbeat is fresher than staleAfterS (240s);
- * "stale" past that (dead or wedged — the watchdog restarts it);
- * "stopped" when the process recorded its exit (see the chip tooltip for
- * the reason); "down" when it has never beaten. Scope / sub-scope
- * dropdowns filter every table; the sub-scope items are always those
- * under the selected scope (disabled under "All scopes").
+ * "stale" past that (dead or wedged — the service's area supervisor
+ * restarts it); "stopped" when the process recorded its exit (see the
+ * chip tooltip for the reason); "down" when it has never beaten. Scope /
+ * sub-scope dropdowns filter every table; the sub-scope items are always
+ * those under the selected scope (disabled under "All scopes").
  * Batch processes show their LAST RUN: "running" while beating, "stopped"
  * after a recorded exit, "stale" when the beat went quiet without a
  * record (died silently — the watchdog's orphan pass then marks it
@@ -60,7 +57,8 @@
  * freq for the schedule / notes / config source). Full history also lists
  * the never-run services with "—" cells. A row whose Last beat is older
  * than the freq's supposed window (daily 24h / monthly 30d /
- * semiannually 183d — the endpoint carries it as freqPeriodMs; windowless
+ * quarterly 92d / semiannually 183d — the endpoint carries it as
+ * freqPeriodMs; windowless
  * freqs like always / on_demand / once never lapse) ambers that cell
  * (hover for the overdue detail).
  *
@@ -68,7 +66,8 @@
  * run; the confirm dialog is RunServiceDialog): a confirm dialog previews
  * the freq auto-skip guard — the service_config freq vs the last
  * successful exit in monitor.service_audit (daily = 24h, monthly = 30d,
- * semiannually = 183d, once = any success; always / occasionally /
+ * quarterly = 92d, semiannually = 183d, once = any success; always /
+ * occasionally /
  * on_demand never auto-skip). A force-less run inside the period is
  * AUTO-SKIPPED; the dialog's Force-rerun switch (off by default) bypasses
  * the guard. The spawn is fire-and-forget (python -m <service> under the
@@ -511,12 +510,13 @@ export default function ServiceMonitorPage() {
         </Tooltip>
         <Tooltip
           title={
-            "Start all always-on resident processes — spawns a hidden keeper " +
-            "session via the API's WSL runner (no cmd window): idempotent " +
-            "watchdog starter first (heals leaked parallel slots, covers " +
-            "db_health), then scripts/stream_always.sh (nohup each " +
-            "poller, 1s apart). Redundant starts self-exit past their " +
-            "max_parallel caps."
+            "Start all always-on resident processes — the monitor area's " +
+            "idempotent ensure-up pass: every area supervisor starts its " +
+            "desired-running-but-down residents (bypassing crash-loop " +
+            "backoff; the monitor's own residents — the cluster servers, " +
+            "the infra daemons, the stream watchdog — through its " +
+            "in-process supervisor, the other areas' over HTTP). " +
+            "Redundant starts self-exit past their max_parallel caps."
           }
           arrow
         >

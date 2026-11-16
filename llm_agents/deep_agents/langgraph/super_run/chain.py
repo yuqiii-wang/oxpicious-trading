@@ -16,6 +16,10 @@ from typing import Any, Dict, List, Optional
 from langgraph.store.base import BaseStore
 
 from llm_agents.deep_agents import events
+from llm_agents.deep_agents.core.authorization import (
+    AUTHORIZATION_SERVICE, DEFAULT_STANDING_SCHEMAS, AuthorizationContext,
+    TablePermission,
+)
 from llm_agents.deep_agents.core.mcp import McpToolClient
 from llm_agents.deep_agents.langgraph.decision.engine import (
     JevDecisionEngine,
@@ -29,7 +33,7 @@ from llm_agents.deep_agents.langgraph.runner import (
 )
 from llm_agents.deep_agents.langgraph.prompts import finding_line
 from llm_agents.deep_agents.langgraph.state_store import (
-    NODE_PLAN, NODE_SUPERVISOR, DeepAgentStore, NodeRunWriter,
+    NODE_PLAN, NODE_SUPER, NODE_SUPERVISOR, DeepAgentStore, NodeRunWriter,
     settle_node_items,
 )
 from llm_agents.deep_agents.agents import PlanAgent, SupervisorAgent
@@ -145,6 +149,25 @@ class SuperGraphRunner:
                 await PLAN_STORE.record_thread_identity(thread_id, identity)
             except Exception as exc:  # noqa: BLE001 — bookkeeping
                 logger.warning("thread identity persist failed: %s", exc)
+        # THE THREAD TEMP USER (core/authorization, 2026-11-13): mint the
+        # run's DB-table authorization grant from the request's init
+        # scope (the UI's ticked tables / forced schemas; the standing
+        # schema allowlist when the run carries no picks) — the
+        # ``(chain, NULL)`` row every un-extended node falls back to,
+        # and the context every graph's conversations gate their SQL
+        # against. Fail-soft to the standing schemas: the run proceeds
+        # gated on the derived scope even when the audit row's write
+        # failed.
+        authorization: Optional[AuthorizationContext] = None
+        try:
+            authorization = await AUTHORIZATION_SERVICE.initialize_run(
+                self.super_thread_id, self._data)
+        except Exception as exc:  # noqa: BLE001 — total service, belt+braces
+            logger.warning("authorization init failed (the standing "
+                           "schemas gate the run): %s", exc)
+            authorization = AuthorizationContext.for_thread(
+                self.super_thread_id,
+                TablePermission(schemas=DEFAULT_STANDING_SCHEMAS))
         system = self._system
         if system is None:
             try:
@@ -183,6 +206,38 @@ class SuperGraphRunner:
         # The run's TOTAL wall-clock anchor — ONE budget across all
         # three graphs (each graph's step lane checks it every hop).
         run_started = time.monotonic()
+        # THE CHAIN-ORCHESTRATOR ITEM (node:super on the root thread,
+        # 2026-11-13): ONE continuously-running process signal across
+        # the whole P→C→R chain. The inter-graph handoff windows (a
+        # graph's END before the next graph's first writer lands — the
+        # custom thread's mint, the result seats' materialization)
+        # leave the states ledger transiently all-terminal with no
+        # per-node item open, so a liveness read could drop a live run
+        # there and (the WS push channel being disabled) stop the UI's
+        # poll loop forever. With this item open from run start to run
+        # end the running/finished predicate (any open state row OR any
+        # running node item) never lies. Closed in the finally — every
+        # exit path lands there; on an unwind the handlers'
+        # settle_node_items pass flips it failed first and this
+        # explicit close is idempotent over that.
+        super_writer = NodeRunWriter(
+            store, thread_id, NODE_SUPER, model=self._model, llm=False)
+        try:
+            await super_writer.begin(None)
+        except asyncio.CancelledError:
+            # The one-await window before the try below — the finally
+            # was never entered, so the item would sit "running" until
+            # the boot sweep. Close it here (idempotent over a begin
+            # that half-landed) and let the cancellation propagate.
+            try:
+                await super_writer.finish(
+                    "failed", error="cancelled before run start")
+            except Exception:  # noqa: BLE001 — best-effort
+                pass
+            raise
+        # Set after the supervisor exit — the last orchestration step;
+        # every unwind leaves it False (the close then lands failed).
+        run_ok = False
         try:
             supervisor_agent = SupervisorAgent(
                 # THE SUPERVISOR IS BOUND TO THE SUPER THREAD ID — never
@@ -207,9 +262,21 @@ class SuperGraphRunner:
             supervisor_task = asyncio.create_task(
                 supervisor_agent.session(
                     self._provider, store, goal=self._goal, channel=repair,
-                    sweep_writer_factory=lambda: NodeRunWriter(
+                    # THE SWEEP'S WRITER FACTORY carries the session's
+                    # ``WriterFactory`` contract — ONE bool arg
+                    # (``Callable[[bool], NodeRunWriter]``): the
+                    # SweepWorker mints the watching marker with
+                    # ``writer_factory(False)`` (no contexts) and the
+                    # sweep's intervention writer with
+                    # ``writer_factory(True)``. The 0-arg lambda this
+                    # replaced raised TypeError on EVERY sweep dispatch
+                    # — silently (the picker suppresses) — so the final
+                    # sweep never opened its marker, never asked, never
+                    # persisted its review (the 2026-11-13 supervisor
+                    # probe's no-action walk found it).
+                    sweep_writer_factory=lambda llm=True: NodeRunWriter(
                         store, self.super_thread_id, NODE_SUPERVISOR,
-                        model=self._model),
+                        model=self._model, llm=llm),
                     model=self._model,
                     super_thread_id=self.super_thread_id))
 
@@ -245,7 +312,8 @@ class SuperGraphRunner:
                 self._provider, self._mcp, run_ctx, store=store,
                 repair=repair, sandbox_cell=sandbox_cell,
                 output=CUSTOM_OUTPUT_SPEC, degraded_lane=True,
-                decision_engine=self._decision_engine)
+                decision_engine=self._decision_engine,
+                authorization=authorization)
             graph_config: Dict[str, Any] = {
                 "recursion_limit": run_limits().recursion_limit}
             if custom_thread_id:
@@ -274,7 +342,8 @@ class SuperGraphRunner:
                 plan_result=plan_result, values_c=values,
                 system=system, agent_prompts=agent_prompts,
                 tool_prompts=tool_prompts,
-                run_started=run_started)
+                run_started=run_started,
+                authorization=authorization)
 
             # -- THE SUPERVISOR SESSION'S EXIT (the final sweep) --------
             try:
@@ -297,6 +366,11 @@ class SuperGraphRunner:
                 supervisor_task.cancel()
                 with _suppress_cancel():
                     await supervisor_task
+            # Every graph ran and the sweep settled — the orchestration
+            # is done (a run_ctx.error execute failure still counts: its
+            # chain settled through finalize; the error propagates to
+            # the caller AFTER the finally).
+            run_ok = True
         except asyncio.CancelledError:
             # The stop path (the server's /stop cancels the run task):
             # the graphs' finalize never runs — the caller's stop
@@ -344,6 +418,17 @@ class SuperGraphRunner:
                 # on the normal path — nothing is running after the sweep).
                 with _suppress_cancel():
                     await self._settle_chain_items(store)
+            # THE CHAIN-ORCHESTRATOR ITEM's close — completed on the
+            # normal path, failed on every unwind (STOP_FAILURE is the
+            # unwind handlers' own failure text; a put replaces the
+            # item value, so this is idempotent over the handlers'
+            # settle_node_items pass). Fail-soft: the store write must
+            # never shadow the run's own outcome.
+            with _suppress_cancel():
+                await super_writer.finish(
+                    "completed" if run_ok else "failed",
+                    error=None if run_ok else STOP_FAILURE,
+                    n_states=len(self._chain_threads))
             # The run is over (every exit path lands here) — its frames
             # stop; the chain stamp registration goes with it.
             events.drop_chain(list(self._chain_threads))
@@ -430,6 +515,7 @@ class SuperGraphRunner:
         agent_prompts: Dict[str, str],
         tool_prompts: Dict[str, str],
         run_started: float,
+        authorization: Optional[AuthorizationContext] = None,
     ) -> Dict[str, Any]:
         """GRAPH 3 — the RESULT graph (thread R), ALWAYS run after the
         execution lane (the custom graph on a full chain, the degraded
@@ -490,7 +576,8 @@ class SuperGraphRunner:
             self._provider, self._mcp, run_ctx, store=store,
             repair=repair, sandbox_cell=sandbox_cell,
             output=RESULT_OUTPUT_SPEC, seats=seat_rows,
-            decision_engine=self._decision_engine)
+            decision_engine=self._decision_engine,
+            authorization=authorization)
         config = {
             "recursion_limit": run_limits().recursion_limit,
             "configurable": {"thread_id": result_thread_id},

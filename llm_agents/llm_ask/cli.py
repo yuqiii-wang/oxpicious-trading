@@ -22,8 +22,8 @@ from __future__ import annotations
 
 # resource pre-check -- exit early when sys/GPU memory is insufficient.
 # This agent is network-only (one JSON POST, no pandas/cudf), so it needs
-# neither the 24 GiB VRAM nor the 36 GiB RAM the data pipelines demand --
-# and every data_viz AI Ask spawns it, so the default gate (36 GiB) would
+# neither the 16 GiB VRAM nor the 24 GiB RAM the data pipelines demand --
+# and every data_viz AI Ask spawns it, so the default gate (24 GiB) would
 # block all UI asks on hosts whose WSL VM is smaller than that.
 from _common.pre_check import pre_check
 

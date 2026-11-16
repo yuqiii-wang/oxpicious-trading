@@ -16,10 +16,32 @@
 SELECT COALESCE(s.super_thread_id, s.thread_id)     AS thread_id,
        ((s.created_at AT TIME ZONE 'GMT')::date)::text  AS run_date,
        MIN(p.payload ->> 'goal')                    AS goal,
-       COUNT(*)::int                                AS steps_total,
-       COUNT(*) FILTER (WHERE s.status = 'completed')::int AS steps_completed,
-       COUNT(*) FILTER (WHERE s.status = 'failed')::int    AS steps_failed,
-       COUNT(*) FILTER (WHERE s.status = 'skipped')::int   AS steps_skipped,
+       COUNT(*) FILTER (WHERE s.child_kind IS DISTINCT FROM 3)::int                          AS steps_total,
+       COUNT(*) FILTER (WHERE s.status = 'completed'
+       AND s.child_kind IS DISTINCT FROM 3)::int AS steps_completed,
+       COUNT(*) FILTER (WHERE s.status = 'failed'
+       AND s.child_kind IS DISTINCT FROM 3)::int    AS steps_failed,
+       COUNT(*) FILTER (WHERE s.status = 'skipped'
+       AND s.child_kind IS DISTINCT FROM 3)::int   AS steps_skipped,
+       -- THE LIVE BADGE (2026-11-13): the run is STILL RUNNING while any
+       -- member state is open OR the chain ROOT's store namespace holds a
+       -- running node item — the root namespace is where the
+       -- chain-orchestrator item (node:super) spans the whole P→C→R run,
+       -- so this one EXISTS is the chain-wide process signal (the same
+       -- union predicate the Thread Graph's poll loop reads; the strip
+       -- can badge unfinished runs, a crashed daemon's settle lands at
+       -- its next boot).
+       BOOL_OR(s.status IN ('pending', 'in_progress')
+               OR EXISTS (
+                 SELECT 1
+                   FROM llm.deep_agent_store_items it
+                  WHERE it.namespace
+                        = ARRAY['deep_agent',
+                                COALESCE(s.super_thread_id, s.thread_id)
+                               ]::text[]
+                    AND it.key LIKE 'node:%'
+                    AND it.value ->> 'status' = 'running'
+               ))::boolean                              AS is_live,
        (MIN(s.created_at) AT TIME ZONE 'Asia/Shanghai')::text AS first_at,
        (MAX(s.finished_at) AT TIME ZONE 'Asia/Shanghai')::text AS last_at,
        i.code                                       AS scope_code,

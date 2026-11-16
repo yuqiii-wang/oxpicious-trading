@@ -63,9 +63,9 @@ from __future__ import annotations
 # check is skipped so the 5-min UI-keeper run is never killed by heavy
 # GPU-resident jobs holding the card (which silently starved the Market
 # Movements page of live tick rows). The system-RAM floor is likewise
-# lowered (default 36 GiB guards the heavy cudf pipelines; this process
+# lowered (default 24 GiB guards the heavy cudf pipelines; this process
 # peaks at ~0.5 GiB RSS) — without this, the API-invoked on-demand
-# compute spawns would abort whenever the WSL VM reports < 36 GiB.
+# compute spawns would abort whenever the WSL VM reports < 24 GiB.
 # setdefault: an explicit ANALYZE_MIN_SYS_GB in the environment still wins.
 import os as _os
 

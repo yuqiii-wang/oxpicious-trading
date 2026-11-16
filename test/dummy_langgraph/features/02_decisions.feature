@@ -206,6 +206,17 @@ Feature: decisions — System One choice expectations per decision input
     When the node_spawn template asks whether to spawn
     Then the choice is "no" with confidence at least 0.5
 
+  @spawn-streak-at-threshold
+  Scenario: a mechanical grouping-error streak exactly at the threshold still reads no
+    Given the spawn facts
+    """
+    {"syntax_streak": 2, "threshold": 2, "spawns_used": 0,
+     "max_spawns": 1, "script_path": "scripts/ma_child.py",
+     "fail_lines": "psycopg.errors.GroupingError: column \"r.date\" must appear in the GROUP BY clause\npsycopg.errors.GroupingError: column \"r.date\" must appear in the GROUP BY clause"}
+    """
+    When the node_spawn template asks whether to spawn
+    Then the choice is "no" with confidence at least 0.4
+
   @spawn-streak-clear
   Scenario: no failure streak means no repair spawn
     Given the spawn facts

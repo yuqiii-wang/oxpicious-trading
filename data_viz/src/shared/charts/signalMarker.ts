@@ -167,6 +167,11 @@ export interface SignalEventSeriesOpts {
   selectedKey?: string | null;
   /** Scatter z (the hedge-pair curves ride 6, the options charts 5). */
   z?: number;
+  /** Axis indices the scatter series bind to (both default 0 — the
+   *  multi-axis charts whose host curve is NOT on axis 0 pass theirs
+   *  here; the crowdedness curve chart's markers ride its OFFSET
+   *  crowdedness axis). */
+  axisIndices?: { xAxisIndex?: number; yAxisIndex?: number };
 }
 
 /** THE global action-marker scatter layer for a signal-history event
@@ -241,6 +246,8 @@ export function signalEventScatterSeries(
       symbolOffset: cls.spec.symbolOffset,
       itemStyle: { color: cls.spec.itemStyle.color },
       z,
+      xAxisIndex: opts?.axisIndices?.xAxisIndex,
+      yAxisIndex: opts?.axisIndices?.yAxisIndex,
       tooltip: { show: false },
     });
   }

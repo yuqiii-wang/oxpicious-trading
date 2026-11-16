@@ -85,6 +85,11 @@ class OrchestrationStep(BaseModel):
     num: str
     script: str
     args: list[str] = Field(default_factory=list)
+    src_host: str | None = Field(default=None, description=(
+        "Query-destination host group (downloads tiers' diff-src-"
+        "parallel): consecutive steps with DISTINCT hosts share one "
+        "concurrent wave; None runs the step alone, fully serial.")
+    )
     can_be_parallel: bool = False
     note: str | None = None
 
@@ -118,3 +123,90 @@ class OrchestrationRunStatus(BaseModel):
     file: str
     state: str = Field(description="running | done | failed")
     steps: list[OrchestrationStepStatus]
+
+
+class OrchestrationInFlightRun(BaseModel):
+    tag: str
+    file: str
+
+
+class OrchestrationInFlightResponse(BaseModel):
+    runs: list[OrchestrationInFlightRun] = Field(
+        default_factory=list, description="Every tier run currently in "
+        "flight (the maintainer's nightly chain adopts these instead of "
+        "racing a manual / UI-triggered run).")
+
+
+class NonDailyTaskRow(BaseModel):
+    """One non-daily task of the GET /non-daily inventory — the tier
+    step (orchestration), its check config (non_daily_checks tree), and
+    its current state row (monitor.non_daily_task_state) merged."""
+
+    service: str
+    tier: str
+    step: str
+    script: str
+    args: list[str] = Field(default_factory=list)
+    check: str | None = Field(default=None, description="The configured "
+                             "check kind; None = schedule-only monitoring.")
+    rerun_args: list[str] = Field(default_factory=list)
+    rerun_eligible: bool = Field(description="Whether the weekend "
+                                 "backfill may re-run this task.")
+    state: str = Field(default="unknown", description="unknown | "
+                       "complete | missing | check_failed (from the "
+                       "label domain non_daily_state).")
+    state_code: int = 0
+    missing_count: int = 0
+    missing_detail: dict | None = None
+    attempts: int = 0
+    last_check_at: str | None = None
+    last_rerun_at: str | None = None
+    next_check_at: str | None = None
+
+
+class NonDailyInventoryResponse(BaseModel):
+    """GET /non-daily — every non-daily tier's tasks with their check
+    configs and current completeness state."""
+
+    tasks: list[NonDailyTaskRow]
+
+
+class NonDailyEvaluateResponse(BaseModel):
+    """POST /non-daily/evaluate — one check pass over the configured
+    tasks; the per-task verdicts land in monitor.non_daily_task_state."""
+
+    evaluated: int
+    complete: int
+    missing: int
+    check_failed: int
+
+
+class NonDailyBackfillRequest(BaseModel):
+    """POST /non-daily/backfill — the weekend re-run drive's body."""
+
+    dry_run: bool = Field(default=False, description="Report the due "
+                          "re-runs without submitting them.")
+
+
+class NonDailyBackfillRerun(BaseModel):
+    """One task the backfill drove (or, on dry_run, would drive)."""
+
+    service: str
+    tier: str
+    module: str
+    args: list[str] = Field(default_factory=list)
+    dry_run: bool = False
+    submitted: bool = False
+    exit_code: int | None = None
+    state_after: str | None = Field(default=None, description="The "
+                                    "post-rerun re-check verdict.")
+
+
+class NonDailyBackfillResponse(BaseModel):
+    """POST /non-daily/backfill — the drive's summary."""
+
+    evaluated: int
+    missing: int
+    due: list[str] = Field(default_factory=list)
+    reruns: list[NonDailyBackfillRerun] = Field(default_factory=list)
+    detail: str = ""

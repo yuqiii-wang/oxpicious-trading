@@ -125,6 +125,50 @@ def is_rate_limited(error_text: str) -> bool:
     return any(p.search(text) for p in _RATE_LIMITED_PATTERNS)
 
 
+# THE CAP-CLASS LANE (2026-11-15, run d7b24a36): a step-cap death is
+# still never a PLAIN retry (the same conversation re-runs under the
+# same budget and hits the same wall — the reason `step limit` sits in
+# _NON_TRANSIENT_PATTERNS), but a cap death whose recorded usage shows
+# REAL WORK can be retried ONCE with a RAISED step budget: the lane
+# re-opens the node and its fresh conversation (and its delegated
+# spawn children) run under base + supervisor_cap_retry_step_bump
+# steps. The evidence channel is the error TEXT itself — the loop's
+# cap raise embeds `(spent N step(s), M tool call(s))` and a failed
+# child's result format carries the same counters — so this gate stays
+# pure (no store reads), the same "code filters first" discipline.
+_STEP_CAP_PATTERN = re.compile(r"hit the \d+-step limit|step limit|step-limit")
+# The other never-retryable classes outrank the cap lane: a balance
+# death or a user stop that happens to mention a step limit is not a
+# budget problem.
+_CAP_EXCLUDE_PATTERN = re.compile(r"API error 1113|stopped by user")
+# The usage counters, as embedded by both carriers (the failed-child
+# result format and the cap RuntimeError's `(spent N ...)` clause).
+_CAP_USAGE_PATTERN = re.compile(r"(\d+) step\(s\), (\d+) tool call\(s\)")
+# A cap death with fewer executed tool calls than this is a degenerate
+# loop (repeated empty replies), not a budget-starved analysis — it
+# stays no-action.
+CAP_RETRY_MIN_TOOL_CALLS = 5
+
+
+def is_step_cap(error_text: str) -> bool:
+    """Code classifier: is this failure a conversation step-cap death
+    (the retryable-with-raised-budget class)?"""
+    text = error_text or ""
+    if _CAP_EXCLUDE_PATTERN.search(text):
+        return False
+    return bool(_STEP_CAP_PATTERN.search(text))
+
+
+def cap_usage(error_text: str) -> Optional[Tuple[int, int]]:
+    """The (steps, tool_calls) the failed conversation actually spent,
+    parsed from the error text's embedded counters — None when the
+    text carries none (a legacy/counter-less failure is never eligible)."""
+    match = _CAP_USAGE_PATTERN.search(error_text or "")
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
 _ACTION_LINE = re.compile(
     r"(?:^|\n|\s)Action:\s*(retry-step|ignore-step|no-action)\b",
     re.IGNORECASE)
@@ -142,15 +186,49 @@ def should_retry(channel: "RepairChannel", state_id: int,
                  error_text: str, action: str) -> bool:
     """The STRUCTURAL policy gate — the agent's verdict is advisory
     until this passes: the action must be ``retry-step``, the error
-    class transient, the node's retry budget and the run's repair
-    budget unspent. Bounded, code-enforced (never prompt-enforced)."""
-    if action != ACTION_RETRY or not is_transient(error_text):
+    class transient (the plain lane) or a step-cap death whose recorded
+    usage shows real work (the raised-budget lane, run d7b24a36), and
+    the node's retry budget, the run's repair budget and the cap lane's
+    own per-run budget unspent. Bounded, code-enforced (never
+    prompt-enforced)."""
+    if action != ACTION_RETRY:
         return False
     limits = run_limits()
+    if not is_transient(error_text):
+        if not is_step_cap(error_text):
+            return False
+        usage = cap_usage(error_text)
+        if usage is None or usage[1] < CAP_RETRY_MIN_TOOL_CALLS:
+            return False  # a counter-less / degenerate cap death stands
+        if (channel.cap_retries_used
+                >= limits.supervisor_cap_retries_per_run):
+            return False
     return (channel.attempts.get(state_id, 0)
             < limits.supervisor_max_node_retries
             and channel.repairs_used
             < limits.supervisor_max_repairs_per_run)
+
+
+def cap_retry_step_budget(error_text: str,
+                          base_max_steps: int) -> Optional[int]:
+    """The RAISED conversation budget an eligible cap-class retry
+    re-runs under — the hop's normal clamp +
+    ``supervisor_cap_retry_step_bump`` (deliberately ABOVE
+    ``max_steps_cap``: that excess is the lane's whole point). None
+    when the failure is not an eligible cap death — the same
+    predicate ``should_retry`` gates on, so the lane's budget and the
+    gate's verdict can never disagree. The lanes call this when
+    writing a retry verdict's resume entry (the raised budget rides
+    the entry's ``step_budget`` value, str-encoded, checkpoint-safe)."""
+    if not is_step_cap(error_text):
+        return None
+    usage = cap_usage(error_text)
+    if usage is None or usage[1] < CAP_RETRY_MIN_TOOL_CALLS:
+        return None
+    bump = run_limits().supervisor_cap_retry_step_bump
+    if bump <= 0:
+        return None
+    return int(base_max_steps) + int(bump)
 
 
 class RepairChannel:
@@ -175,6 +253,11 @@ class RepairChannel:
         # second failure fast-paths no-action through the askable
         # filter once the retry budget is spent either way)
         self.repairs_used: int = 0           # re-opens applied this run
+        # The CAP-CLASS lane's own per-run budget (2026-11-15, run
+        # d7b24a36): re-opens of step-cap deaths applied with a RAISED
+        # step budget — bounded separately from the transient lane so a
+        # run of budget-starved spawns cannot retry-storm.
+        self.cap_retries_used: int = 0
 
     # ---- lane side (the contract the lanes call — unchanged) --------
     async def signal_failures(
@@ -204,7 +287,18 @@ class RepairChannel:
         out, or the channel closed — the lane then falls through to
         its normal failure semantics. The window's future is shielded:
         a lane-side timeout never cancels the resolution the worker
-        may still land (the DB writes stand either way, as before)."""
+        may still land (the DB writes stand either way, as before).
+        THE TIMEOUT ABANDON (2026-11-13): on a timeout the window is
+        ABANDONED (resolved {} AND cleared from the registry) — the
+        timed-out window used to stay registered, so a verdict landing
+        after the fall-through still passed every gate and its
+        ``reopen_state`` could strand a pending row past the chain's
+        finalize (a zombie nothing re-runs, live until the boot sweep).
+        A late worker now lands its review row but ``is_open`` refuses
+        its row-mutating writes; grace 0 keeps the old semantics (the
+        window stays open and a landed verdict still applies — repair
+        "disabled" there means the lane never waits, not that a decided
+        verdict is vetoed)."""
         window = self._window
         if window is None or grace_sec <= 0 or self.queue.closed:
             return {}
@@ -212,7 +306,17 @@ class RepairChannel:
             return dict(await asyncio.wait_for(
                 asyncio.shield(window.future), timeout=grace_sec) or {})
         except asyncio.TimeoutError:
+            self.abandon(window.id)
             return {}
+        except asyncio.CancelledError:
+            # The LANE task itself is being cancelled (a user stop, a
+            # runner unwind) — abandon the window exactly like a
+            # timeout so the registry does not keep a stale entry whose
+            # pending_ids would exclude its sids from the belt scan;
+            # the workers' late-verdict guard then refuses a late
+            # worker's row writes the same way.
+            self.abandon(window.id)
+            raise
 
     # ---- worker side -------------------------------------------------
     def resolve_window(self, window_id: str,
@@ -226,6 +330,22 @@ class RepairChannel:
             return False
         self._window = None
         window.resolve(verdicts)
+        return True
+
+    def abandon(self, window_id: str) -> bool:
+        """Release ONE window as TIMED OUT — resolve {} AND clear the
+        registry. The mirror of ``resolve_window`` for the lane-side
+        grace expiry: the lane wait has already fallen through, and the
+        clear is what lets ``is_open`` (the workers' late-verdict guard)
+        distinguish a live window's decision from one that must not
+        touch the rows anymore. False when the id does not match (a
+        concurrent worker resolution may have closed it first — its
+        writes stand, they were decided while live)."""
+        window = self._window
+        if window is None or window.id != window_id:
+            return False
+        self._window = None
+        window.resolve({})
         return True
 
     def is_open(self, window_id: Optional[str]) -> bool:

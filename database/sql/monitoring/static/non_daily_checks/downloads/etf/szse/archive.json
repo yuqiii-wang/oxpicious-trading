@@ -1,0 +1,12 @@
+{
+  "service": "downloads.etf.szse.archive",
+  "check": "snapshot_fresh",
+  "params": {
+    "dir": "temps/szse_etf_reports",
+    "pattern": "**/*.pdf",
+    "min_bytes": 1,
+    "max_age_days": 100
+  },
+  "rerun_args": [],
+  "notes": "Semiannual ETF report PDFs (the reports-mode step's own mtime guard re-fetches stale ETFs; no force flag exists)."
+}

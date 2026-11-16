@@ -45,6 +45,12 @@ HUATAI_COMP_DIR    = os.path.join(PROJECT_ROOT, "temps", "huatai_etf_composition
 # (huatai_pb_nav_trend_<date>.csv); consumed by builds.etf.feeder_nav
 # (downloads.etf.huatai_pb.archive/trend)
 HUATAI_NAV_DIR     = os.path.join(PROJECT_ROOT, "temps", "huatai_pb_nav")
+# E Fund fund-site NAV CSVs — full-history archives for the curated
+# active-ETF registry (efunds_nav_archive_<code>.csv,
+# downloads.etf.efunds.archive) + daily all-funds snapshots
+# (efunds_nav_trend_<date>.csv, downloads.etf.efunds.trend); the
+# archives are consumed by builds.etf.feeder_nav's listed backfill
+EFUNDS_NAV_DIR     = os.path.join(PROJECT_ROOT, "temps", "efunds_nav")
 
 # Index composition CSVs
 INDEX_COMP_DIR      = os.path.join(PROJECT_ROOT, "temps", "csi_index_composition")

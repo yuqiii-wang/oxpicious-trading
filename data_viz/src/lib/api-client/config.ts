@@ -33,8 +33,8 @@ export interface ServiceConfigEntry {
   maxParallelRuns: number | null;
   includedParallelServices: string[];
   excludedParallelServices: string[];
-  /** always | daily | monthly | semiannually | once | occasionally |
-   *  on_demand (the default.json fallback's value). */
+  /** always | daily | monthly | quarterly | semiannually | once |
+   *  occasionally | on_demand (the default.json fallback's value). */
   freq: string;
   schedule: string | null;
   notes: string | null;
@@ -210,13 +210,16 @@ export function saveSecStaticsFile(
 //  Orchestration steps (scripts/orchestration/ tree — read-only)
 // ---------------------------------------------------------------------------
 
-/** One orchestration step: the runner executes a tier's steps one by
- *  one in step-number order (strictly serial — canBeParallel is false
- *  for every step today). */
+/** One orchestration step: the runner executes a tier's steps in
+ *  step-number order — download tiers in diff-src-parallel waves
+ *  (consecutive steps with distinct srcHost run concurrently; null =
+ *  fully serial). canBeParallel is the legacy flag, false for every
+ *  step today. */
 export interface OrchestrationStep {
   step: number;
   script: string;
   args: string[];
+  srcHost: string | null;
   canBeParallel: boolean;
   note: string | null;
 }
@@ -315,6 +318,10 @@ export interface DeepAgentLimits {
   supervisorMaxNodeRetries: number;
   supervisorMaxRepairsPerRun: number;
   supervisorRetryThrottleSec: number;
+  /** The cap-class retry lane (a step-cap death with recorded real
+   *  work re-runs once per run under clamp + bump steps). */
+  supervisorCapRetriesPerRun: number;
+  supervisorCapRetryStepBump: number;
   notes: string | null;
   sourceRef: string | null;
   updatedAt: string;

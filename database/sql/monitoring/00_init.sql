@@ -9,9 +9,14 @@
 
 -- tables (FK order)
 \ir db_health.sql
+\ir db_table_alert.sql
+\ir db_table_audit.sql
+\ir db_table_audit_archive.sql
 \ir external_resource_audit.sql
 \ir external_resource_stats.sql
+\ir non_daily_task_state.sql
 \ir service_audit.sql
 \ir service_heartbeat.sql
+\ir sql_audit.sql
 \ir src_data_audit.sql
 

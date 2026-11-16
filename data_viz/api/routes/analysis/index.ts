@@ -27,7 +27,6 @@ import industryCorrRouter from "./industry-corr.js";
 import industryAttributionRouter from "./industry-attribution.js";
 import valuationRouter from "./valuation.js";
 import crowdednessRouter from "./crowdedness.js";
-import hotStockRouter from "./hot-stock.js";
 import marginTrendsRouter from "./margin-trends.js";
 
 const router = Router();
@@ -40,7 +39,6 @@ router.use(industryCorrRouter);
 router.use(industryAttributionRouter);
 router.use(valuationRouter);
 router.use(crowdednessRouter);
-router.use(hotStockRouter);
 router.use(marginTrendsRouter);
 
 // Re-exported for parity with the old routes/analysis.ts module surface.

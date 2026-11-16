@@ -204,6 +204,13 @@ SIGNAL_TYPE_CODE: dict[str, int] = {
     # crossover (the classic MACD signal): cross-up BUY / cross-down
     # SELL (exit timing — the equity asymmetry).
     "macd": 10,
+    # crowdedness (2026-11-16): the market crowdedness composite
+    # (analysis.market_crowdedness, the nightly pool-level crowding
+    # gauge) as rule cells on the INDEX itself — BUY below the pool's
+    # own bottom crowding tail (the crowd washed out — reversion),
+    # SELL above the top tail (exit timing); the crowdedness stats
+    # are the assistant metric, the trade is the index.
+    "crowdedness": 11,
 }
 # the family config grid (analysis_signals.signal_thresholds /
 # history_signals / signal_curves — converted 2026-10-11).
@@ -690,6 +697,42 @@ SIGNAL_SUB_TYPE_THRESHOLD: dict[str, int] = {
     # exit-timing mirror — the equity asymmetry)
     "macd_cross_up": 6000,
     "macd_cross_dn": 6001,
+    # the CROWDEDNESS family (2026-11-16, block 6120+ — the v3
+    # recent-extreme inventory; the v2 long-percentile tail block
+    # 6100-6111 retired the same day, its rows purged with the v3
+    # --force rebuild): {hot set}_{axis}_{state} over the TWO HOT-SET
+    # BASES x the two score axes x the two states — roll_* the
+    # DAILY-ROLLING hot set (re-ranked every date), year_* the
+    # THIS-YEAR pinned hot set (the date's own calendar year's frozen
+    # roster, chained across years); within each base _score_* the RAW
+    # composite, _ma5_* its ONLINE read.
+    #   drain  BUY   the crowd at its trailing 60-row LOW while the
+    #               index ROSE over its own trailing 10 rows — the
+    #               crowd drained while price rose: the move is not
+    #               overcrowded;
+    #   pilein SELL  the crowd at its trailing 60-row HIGH while the
+    #               index FELL — distribution churn in a decline,
+    #               exit timing.
+    "crowd_roll_score_drain": 6120,
+    "crowd_roll_score_pilein": 6121,
+    "crowd_roll_ma5_drain": 6122,
+    "crowd_roll_ma5_pilein": 6123,
+    "crowd_year_score_drain": 6124,
+    "crowd_year_score_pilein": 6125,
+    "crowd_year_ma5_drain": 6126,
+    "crowd_year_ma5_pilein": 6127,
+    # the v4 additions (2026-11-16, the user-named turning dates the v3
+    # states missed — see the seed file comment): drain_floor = the
+    # crowd at its trailing-250-row bottom while the index ticks up
+    # (loose gate: only a negative mean rejected); tech_washout = the
+    # hot set under water (the falling-knife capitulation catch);
+    # tech_euphoria / _div = the blow-off stretch (+ the price/crowd
+    # divergence) — exit timing.
+    "crowd_roll_score_drain_floor": 6128,
+    "crowd_year_score_drain_floor": 6129,
+    "crowd_tech_washout": 6130,
+    "crowd_tech_euphoria": 6131,
+    "crowd_tech_euphoria_div": 6132,
 }
 SIGNAL_SUB_TYPE_CODE: dict[str, int] = {
     **SIGNAL_SUB_TYPE_SERIES, **SIGNAL_SUB_TYPE_THRESHOLD,
@@ -785,6 +828,9 @@ EXT_HTTP_SOURCE_CODE: dict[str, int] = {
     # web_search rows (the BigModel web_search endpoint) — the audit
     # itself records zhipu traffic as ext_llm_provider.
     "zhipu": 15,
+    # E Fund fund-site family (downloads.etf.efunds.*): efundcf.com.cn
+    # detail pages and the www/api.efunds.com.cn fundlist/assetinfo backends.
+    "efunds": 16,
     "other": 99,
 }
 EXT_LLM_PROVIDER_CODE: dict[str, int] = {"zhipu": 0, "dummy": 1,
@@ -813,11 +859,25 @@ DB_REPLICATION_STATE_CODE: dict[str, int] = {
     "streaming": 0, "catchup": 1, "startup": 2, "backup": 3,
     "stopping": 4, "connecting": 5, "stopped": 6, "none": 99,
 }
+# Per-table workload audit (monitor.db_table_audit.write_flag /
+# monitor.db_table_alert.severity) — the write-heavy verdict of
+# database/db_table_audit.py: (ins+upd+del rows)/s over the sample window
+# vs the fixed amber/red thresholds. Code order is semantic: best -> worst.
+DB_WRITE_FLAG_CODE: dict[str, int] = {"ok": 0, "amber": 1, "red": 2}
 # Maintainer backup audit (maintenance.src_data_backup) — the robocopy
 # batch's scope and outcome; status derives from robocopy's exit code
 # bits (0-3 ok, 4-7 mismatches present, 8+ copy failures / fatal).
 BACKUP_MODE_CODE: dict[str, int] = {"full": 0, "incremental": 1}
 BACKUP_STATUS_CODE: dict[str, int] = {"ok": 0, "partial": 1, "failed": 2}
+# Non-daily task completeness verdict (monitor.non_daily_task_state.state)
+# — the identity-grounded check result of one non-daily orchestration
+# task (monthly/quarterly/semiannual tiers) evaluated by the monitor
+# area's NonDailyOps; the maintainer's Saturday backfill re-runs 'missing'
+# rows weekly until they pass. Code order is semantic: unknown ->
+# complete -> missing -> the check itself failed.
+NON_DAILY_STATE_CODE: dict[str, int] = {
+    "unknown": 0, "complete": 1, "missing": 2, "check_failed": 3,
+}
 # the generic analysis intermediate-result cache
 # (analysis_signals.analysis_cache.kind) — which analysis owns the row's
 # cache jsonb
@@ -929,7 +989,7 @@ AGENT_STEP_TYPE_CODE: dict[str, int] = {
 # the right-side edge path beside the forked continuation. Seventh
 # llm.* vocabulary
 AGENT_CHILD_KIND_CODE: dict[str, int] = {
-    "spawn": 0, "fork": 1, "abandoned": 2,
+    "spawn": 0, "fork": 1, "abandoned": 2, "resume": 3,
 }
 # text.search_lexicon_df.search_table — which searchable table a high-DF
 # lexeme row's document frequency counts. Code order = TSV_SPECS order
@@ -1031,8 +1091,10 @@ LABEL_MAPS: dict[str, dict[str, int]] = {
     "secret_sub_type": SECRET_SUB_TYPE_CODE,
     "db_instance": DB_INSTANCE_CODE,
     "db_replication_state": DB_REPLICATION_STATE_CODE,
+    "db_write_flag": DB_WRITE_FLAG_CODE,
     "backup_mode": BACKUP_MODE_CODE,
     "backup_status": BACKUP_STATUS_CODE,
+    "non_daily_state": NON_DAILY_STATE_CODE,
     "analysis_cache_kind": ANALYSIS_CACHE_KIND_CODE,
     "portfolio_type": PORTFOLIO_TYPE_CODE,
     "portfolio_sub_type": PORTFOLIO_SUB_TYPE_CODE,
@@ -1087,6 +1149,7 @@ DB_INSTANCE_LABEL: dict[int, str] = CODE_MAPS["db_instance"]
 DB_REPLICATION_STATE_LABEL: dict[int, str] = CODE_MAPS["db_replication_state"]
 BACKUP_MODE_LABEL: dict[int, str] = CODE_MAPS["backup_mode"]
 BACKUP_STATUS_LABEL: dict[int, str] = CODE_MAPS["backup_status"]
+DB_WRITE_FLAG_LABEL: dict[int, str] = CODE_MAPS["db_write_flag"]
 ANALYSIS_CACHE_KIND_LABEL: dict[int, str] = CODE_MAPS["analysis_cache_kind"]
 PORTFOLIO_TYPE_LABEL: dict[int, str] = CODE_MAPS["portfolio_type"]
 PORTFOLIO_SUB_TYPE_LABEL: dict[int, str] = CODE_MAPS["portfolio_sub_type"]
@@ -1136,8 +1199,10 @@ LABEL_ORDER: dict[str, tuple[str, ...]] = {
     "secret_sub_type": tuple(SECRET_SUB_TYPE_CODE),
     "db_instance": tuple(DB_INSTANCE_CODE),
     "db_replication_state": tuple(DB_REPLICATION_STATE_CODE),
+    "db_write_flag": tuple(DB_WRITE_FLAG_CODE),
     "backup_mode": tuple(BACKUP_MODE_CODE),
     "backup_status": tuple(BACKUP_STATUS_CODE),
+    "non_daily_state": tuple(NON_DAILY_STATE_CODE),
     "analysis_cache_kind": tuple(ANALYSIS_CACHE_KIND_CODE),
     "portfolio_type": tuple(PORTFOLIO_TYPE_CODE),
     "portfolio_sub_type": tuple(PORTFOLIO_SUB_TYPE_CODE),

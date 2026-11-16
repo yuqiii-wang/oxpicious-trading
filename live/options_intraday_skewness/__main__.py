@@ -45,7 +45,7 @@ from __future__ import annotations
 
 # Resource pre-check BEFORE the heavy imports (mirrors live.live_signals):
 # the API-spawned on-demand runs would otherwise abort on the default
-# 36 GiB RAM floor (this process peaks well under 1 GiB) and the GPU
+# 24 GiB RAM floor (this process peaks well under 1 GiB) and the GPU
 # check is irrelevant — setdefault so an explicit env value still wins.
 import os as _os
 

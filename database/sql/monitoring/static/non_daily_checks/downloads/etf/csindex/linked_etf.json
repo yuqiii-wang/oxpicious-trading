@@ -1,0 +1,14 @@
+{
+  "service": "downloads.etf.csindex.linked_etf",
+  "check": "snapshot_fresh",
+  "params": {
+    "dir": "temps/csindex_linked_etf",
+    "pattern": "etf_index_map_*.csv",
+    "min_bytes": 100,
+    "max_age_days": 100
+  },
+  "rerun_args": [
+    "--force-quarter-start"
+  ],
+  "notes": "Linked-ETF maps (etf_feeder_map feeds stats.sec_etf_links TRUNCATE+rebuild)."
+}

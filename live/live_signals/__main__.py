@@ -61,10 +61,10 @@ from __future__ import annotations
 
 
 # resource pre-check — pure asyncpg DB I/O, no GPU needed. The system-RAM
-# floor is likewise lowered (the default 36 GiB guards the heavy cudf
+# floor is likewise lowered (the default 24 GiB guards the heavy cudf
 # pipelines; this process peaks at ~1 GiB RSS) — without this, the
 # API-invoked on-demand --date spawns would abort whenever the WSL VM
-# reports < 36 GiB. setdefault: an explicit ANALYZE_MIN_SYS_GB in the
+# reports < 24 GiB. setdefault: an explicit ANALYZE_MIN_SYS_GB in the
 # environment still wins.
 import os as _os
 

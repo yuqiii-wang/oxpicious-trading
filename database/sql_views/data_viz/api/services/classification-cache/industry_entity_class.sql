@@ -5,7 +5,7 @@
 -- BOOL_AND(is_industry_not_strategy) picks the column. TTL-cached per
 -- id-set in-process.
 -- Serves the analysis theme services' industry-entity classification
--- (market-crowdedness / hot-stock-momentum / mov-ave-spreads themes).
+-- (market-crowdedness / mov-ave-spreads themes).
 -- args:
 --   ids: value text[] — the industry entity ids (deduped, non-null)
       SELECT industry_id,

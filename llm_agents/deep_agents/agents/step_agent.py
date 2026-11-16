@@ -168,16 +168,22 @@ class StepAgent(NodeAgent):
         instruction: str,
         prior_error: str = "",
         prior_context_id: Optional[str] = None,
+        step_budget: Optional[int] = None,
     ) -> Tuple[str, str, int, int]:
         """The supervisor-instructed retry WITH context: the step
         message carries the instruction, the prior attempt's error and
         the prior chain ref (its recorded traffic stays reachable
-        through the step's search_thread_context tool)."""
+        through the step's search_thread_context tool). ``step_budget``
+        (the cap-class lane, 2026-11-15) — the RAISED conversation
+        budget this pass runs under, named in the block so the model
+        paces itself to finish instead of restarting the study."""
         return await self.run(
             step_row,
             resume={"instruction": instruction,
                     "prior_error": prior_error,
-                    "prior_context_id": prior_context_id or ""})
+                    "prior_context_id": prior_context_id or "",
+                    **({"step_budget": str(step_budget)}
+                       if step_budget else {})})
 
     # -- internals -----------------------------------------------------
     @staticmethod
@@ -195,4 +201,10 @@ class StepAgent(NodeAgent):
                 f"{resume['prior_context_id']} — search_thread_context "
                 "finds what you already asked, fetched or concluded; "
                 "build on it instead of starting over.")
+        if resume.get("step_budget"):
+            parts.append(
+                "this pass's conversation budget: "
+                f"{resume['step_budget']} steps (raised after the prior "
+                "attempt hit its cap) — spend it FINISHING, not "
+                "restarting.")
         return "\n".join(parts)

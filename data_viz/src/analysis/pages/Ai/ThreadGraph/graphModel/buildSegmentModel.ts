@@ -82,6 +82,20 @@ function buildSegmentModel(input: SegmentInput): SegmentModel {
     states.find(
       (s) => s.parent_state_id === null && s.node === "plan",
     ) ?? null;
+  // THE TERMINAL FORK CONTINUATIONS (2026-11-16, run d7b24a36's
+  // output-seat fork): a TOP-LEVEL fork row (child_kind 1, parent NULL —
+  // the run-node fork off this segment's STATE-LESS output seat) is NOT
+  // a lane step and never chains from the lane's previous node: the
+  // fork CONTINUED the output seat's recorded conversation, so the
+  // continuation renders AFTER THE TERMINAL (the parent fork node)
+  // wearing the TERMINAL'S OWN KIND — the same node type as the
+  // conversation it continued. The lane walk below skips them; the
+  // terminal placement hangs them off the seat.
+  const terminalForks = topLevel.filter(
+    (s) => s.parent_state_id === null && s.child_kind === 1,
+  );
+  const terminalForkIds = new Set(terminalForks.map((s) => s.state_id));
+  const laneSteps = topLevel.filter((s) => !terminalForkIds.has(s.state_id));
 
   const childrenByParent = new Map<number, AgentThreadState[]>();
   for (const s of states) {
@@ -124,6 +138,13 @@ function buildSegmentModel(input: SegmentInput): SegmentModel {
       return true;
     });
   for (const [parentId] of childrenByParent) {
+    // A TERMINAL FORK row's fan keys under its fork- continuation node
+    // (placed after the terminal below) — the steps-mode refit after
+    // the lane walk registers it; the pre-walk placeholder skips it.
+    if (isTopLevelState.get(parentId)
+        && childKindByStateId.get(parentId) === 1) {
+      continue;
+    }
     const prefix = isTopLevelState.get(parentId)
       ? "step-"
       : childKindByStateId.get(parentId) === 1
@@ -306,6 +327,10 @@ function buildSegmentModel(input: SegmentInput): SegmentModel {
     straightId: string;
     bends: { id: string; row: number }[];
   } | null = null;
+  // The steps branch's subtreeWidth (spawn-subtree reach), hoisted for
+  // the TERMINAL FORK continuation columns below the mode branch —
+  // legacy lanes carry no spur pass, so it stays null there.
+  let subtreeWidthOf: ((stateId: number) => number) | null = null;
   const mergeInto = (id: string): void => {
     if (pendingMerges === null) {
       edges.push({ source: prev, target: id });
@@ -361,6 +386,23 @@ function buildSegmentModel(input: SegmentInput): SegmentModel {
     // conversation — its circle shows the counts of the spawns
     // (children) that did the work, read from their LLM-context
     // registry items.
+    // THE HANDLED-FAILURE FACE (2026-11-15, "main path all green"): a
+    // FAILED step whose chain carries a failure-fork marker (child_kind
+    // 3 — the supervisor's resume / no-action record) renders its lane
+    // node GREEN — the run's story continued past the handled failure.
+    // The failure itself lives on the RED side branch (the marker row)
+    // and in the clicked node's panel (which reads the row's TRUE
+    // status + the preserved error). Unhandled failures (no marker)
+    // stay red on the lane.
+    const handledFailedIds = new Set<number>();
+    for (const s of states) {
+      if (s.status !== "failed") continue;
+      if ((childrenByParent.get(s.state_id) ?? []).some(
+        (c) => c.child_kind === 3,
+      )) {
+        handledFailedIds.add(s.state_id);
+      }
+    }
     const pushStepNode = (
       state: AgentThreadState, x: number, y: number,
     ): string => {
@@ -397,7 +439,9 @@ function buildSegmentModel(input: SegmentInput): SegmentModel {
               usageByContext,
             )
           : spawnMetrics(state.state_id, childrenByParent, usageByContext),
-        status: state.status,
+        status: handledFailedIds.has(state.state_id)
+          ? "completed"
+          : state.status,
         x,
         y,
       });
@@ -433,7 +477,7 @@ function buildSegmentModel(input: SegmentInput): SegmentModel {
       if (memo !== undefined) return memo;
       let rows = 0;
       for (const child of spurKids(stateId)) {
-        const expandedId = `${child.child_kind === 1 ? "fork-" : "spawn-"}`
+        const expandedId = `${child.child_kind === 1 ? "fork-" : child.child_kind === 3 ? "resume-" : "spawn-"}`
           + `${child.state_id}`;
         rows += 1 + (input.expanded.has(expandedId)
           ? subtreeRows(child.state_id)
@@ -456,7 +500,7 @@ function buildSegmentModel(input: SegmentInput): SegmentModel {
       if (memo !== undefined) return memo;
       let width = 0;
       for (const child of spurKids(stateId)) {
-        const expandedId = `${child.child_kind === 1 ? "fork-" : "spawn-"}`
+        const expandedId = `${child.child_kind === 1 ? "fork-" : child.child_kind === 3 ? "resume-" : "spawn-"}`
           + `${child.state_id}`;
         width = Math.max(
           width,
@@ -469,18 +513,20 @@ function buildSegmentModel(input: SegmentInput): SegmentModel {
       subtreeWidthMemo.set(stateId, width);
       return width;
     };
+    subtreeWidthOf = subtreeWidth;
 
     let i = 0;
-    while (i < topLevel.length) {
+    while (i < laneSteps.length) {
       // The head step always joins the run; when it is wave-marked the
       // run extends over the consecutive wave-marked steps after it
       // (the runner's parallel wave) — either way the run is non-empty
-      // and the cursor always advances.
+      // and the cursor always advances. (laneSteps — the TERMINAL FORK
+      // rows walk no lane; they hang off the terminal below.)
       let j = i + 1;
-      if (waveMarked(topLevel[i])) {
-        while (j < topLevel.length && waveMarked(topLevel[j])) j += 1;
+      if (waveMarked(laneSteps[i])) {
+        while (j < laneSteps.length && waveMarked(laneSteps[j])) j += 1;
       }
-      const run = topLevel.slice(i, j);
+      const run = laneSteps.slice(i, j);
       i = j;
       // THE DRIFT-FORK FLIP: a SINGLE step's fork children (child_kind
       // 1) render INLINE in the main lane — registered here, before
@@ -637,8 +683,20 @@ function buildSegmentModel(input: SegmentInput): SegmentModel {
     // over the final spur sets (the ▸N cue counts foldable spurs only).
     childCountByNodeId.clear();
     for (const [parentId] of childrenByParent) {
+      // THE PLAN ROW'S FAN (2026-11-15, the run-node actions): a spawn/
+      // fork fired off a state-less runner-lane seat parents under the
+      // chain ROOT's plan row — its fold key is the plan node's canvas
+      // id ALONE ("plan"), never the step- prefix + id composition (the
+      // plan node's id carries no state id for a suffix to join).
+      if (parentId === (planTask?.state_id ?? -1)) {
+        childCountByNodeId.set(planNodeId, spurKids(parentId).length);
+        continue;
+      }
+      // A TERMINAL FORK row's fan keys under its fork- continuation
+      // node (placed after the terminal) — the run-node fork's main-line
+      // topology; every other top-level row keys under its step- node.
       const prefix = isTopLevelState.get(parentId)
-        ? "step-"
+        ? (childKindByStateId.get(parentId) === 1 ? "fork-" : "step-")
         : childKindByStateId.get(parentId) === 1
           ? "fork-"
           : "spawn-";
@@ -722,10 +780,55 @@ function buildSegmentModel(input: SegmentInput): SegmentModel {
       x: resultX, y: 0,
     });
   }
-  let endX = resultX;
+  // ---- THE TERMINAL FORK CONTINUATIONS (2026-11-16, run d7b24a36's
+  // output-seat fork): the segment's top-level fork rows (the run-node
+  // fork off this segment's state-less OUTPUT seat — child_kind 1,
+  // parent NULL) render as CONTINUATIONS of the TERMINAL, the parent
+  // fork node whose recorded conversation the fork rides:
+  //   1. the incoming edge leaves the TERMINAL — never the lane's
+  //      previous node (the last step/wave before it), which has
+  //      nothing to do with the fork — wearing the thick fork kind
+  //      (the inheritance cue; the drift-fork lane's precedent);
+  //   2. the node wears the TERMINAL'S OWN KIND — an output diamond on
+  //      the new lanes — the same node type as the conversation it
+  //      continued, never a step circle.
+  // Ordinal order chains successive continuations of the same seat; the
+  // pre-fork attempt stays the always-on old-chain stub off the
+  // continuation (the spur pass below). The main line's tip advances —
+  // END and the next segment's handoff geometry follow the newest
+  // continuation.
+  columnEdge = resultX + halfFootprint(terminalKind);
+  let laneTipId = terminalId;
+  for (const fc of terminalForks) {
+    const forkHalf = halfFootprint(terminalKind);
+    const fx = columnEdge + GAP_COL + forkHalf;
+    const forkExpanded = input.expanded.has(`fork-${fc.state_id}`);
+    const forkW = forkExpanded ? subtreeWidthOf?.(fc.state_id) ?? 0 : 0;
+    columnEdge = forkW > 0
+      ? fx + forkW + halfFootprint("spawn")
+      : fx + forkHalf;
+    const forkNode: ThreadGraphNode = {
+      id: `fork-${fc.state_id}`,
+      kind: terminalKind,
+      label: "fork",
+      // The fork's directive (the child row's title) — the canvas
+      // identity of the continuation's purpose.
+      sublabel: fc.title,
+      metrics: metricsTail(
+        stateElapsedS(fc),
+        fc.llm_context_id,
+        usageByContext,
+      ),
+      status: fc.status,
+      x: fx, y: 0,
+    };
+    nodes.push(forkNode);
+    edges.push({ source: laneTipId, target: forkNode.id, kind: "fork" });
+    laneTipId = forkNode.id;
+  }
+  let endX = columnEdge;
   if (last) {
-    endX = resultX + halfFootprint(terminalKind) + GAP_COL
-      + halfFootprint("endpoint");
+    endX = columnEdge + GAP_COL + halfFootprint("endpoint");
     nodes.push({ id: "end", kind: "endpoint", label: "END",
       status: "neutral", x: endX, y: 0 });
   }
@@ -787,9 +890,11 @@ function buildSegmentModel(input: SegmentInput): SegmentModel {
   // A wave that ended the lane merges ALL its members into the
   // terminal (right-angle bends at its x); otherwise the last lane
   // node chains in. The supervisor never joins these — it has no path
-  // to the graphs.
+  // to the graphs. END chains off the LANE TIP — the newest terminal
+  // fork continuation when one exists (the forked chain IS the main
+  // line), else the terminal.
   mergeInto(terminalId);
-  if (last) edges.push({ source: terminalId, target: "end" });
+  if (last) edges.push({ source: laneTipId, target: "end" });
 
   // ---- SPAWN SPURS (steps mode): every spawned subagent branch (and
   // anything the subagent itself added under its spawn) draws in a SPAWN
@@ -859,12 +964,14 @@ function buildSegmentModel(input: SegmentInput): SegmentModel {
         // THICKER than a spawn's (the inheritance cue; the option
         // builder's fork branch owns the weight).
         const isFork = child.child_kind === 1;
+        const isResume = child.child_kind === 3;
         const spawnNode: ThreadGraphNode = {
-          id: `${isFork ? "fork" : "spawn"}-${child.state_id}`,
-          kind: isFork ? "fork" : "spawn",
-          label: isFork ? "fork" : "spawn",
+          id: `${isResume ? "resume" : isFork ? "fork" : "spawn"}-${child.state_id}`,
+          kind: isResume ? "resume" : isFork ? "fork" : "spawn",
+          label: isResume ? "resume" : isFork ? "fork" : "spawn",
           // The spawn's goal (the child row's title) — the canvas
-          // identity of what the parent delegated/gathered.
+          // identity of what the parent delegated/gathered (a RESUME
+          // marker's title carries the retry verdict's note).
           sublabel: child.title,
           metrics: metricsTail(
             stateElapsedS(child),
@@ -895,10 +1002,16 @@ function buildSegmentModel(input: SegmentInput): SegmentModel {
         });
         edges.push({
           source: bendId, target: spawnNode.id,
-          kind: isFork ? "fork" : "spawn",
+          kind: isResume ? "resume" : isFork ? "fork" : "spawn",
         });
-        edges.push({ source: spawnNode.id, target: bendId, kind: "bare" });
-        edges.push({ source: bendId, target: parentNode.id, kind: "merge" });
+        if (!isResume) {
+          // THE RESUME MARKER IS A DEAD END (2026-11-15): the failed
+          // attempt it records led nowhere — one dashed leg INTO the
+          // red node, no merge-back (a retry's continuation is the
+          // lane itself; a no-action record just stops there).
+          edges.push({ source: spawnNode.id, target: bendId, kind: "bare" });
+          edges.push({ source: bendId, target: parentNode.id, kind: "merge" });
+        }
         addSpawns(
           spawnNode, child.state_id, spawnNode.x + SPAWN_TO_SPAWN_OFFSET);
       }
@@ -907,6 +1020,70 @@ function buildSegmentModel(input: SegmentInput): SegmentModel {
       const node = nodes.find((n) => n.id === `step-${state.state_id}`);
       if (node !== undefined) {
         addSpawns(node, state.state_id, node.x + spawnColumnOffset(node.kind));
+      }
+    }
+    // THE PLAN ROW'S SPAWN FAN (2026-11-15, the run-node actions): a
+    // spawn/fork fired off a state-less runner-lane seat (the output
+    // node) parents under the chain ROOT's plan row — the plan node
+    // carries its own spur fan like any lane step (fold-gated on its
+    // canvas id, the same ▸N cue the ▾ toggle reads).
+    if (planTask !== null) {
+      const planNode = nodes.find((n) => n.id === planNodeId);
+      if (planNode !== undefined) {
+        addSpawns(planNode, planTask.state_id,
+                  planNode.x + spawnColumnOffset(planNode.kind));
+      }
+    }
+    // The TERMINAL FORK's own fan: its children — beyond the always-on
+    // kind-2 old-chain stub below — render as the continuation node's
+    // fold-gated spurs (fork- ids), like any lane parent's.
+    for (const state of terminalForks) {
+      const node = nodes.find((n) => n.id === `fork-${state.state_id}`);
+      if (node !== undefined) {
+        addSpawns(node, state.state_id,
+                  node.x + spawnColumnOffset(node.kind));
+      }
+    }
+    // THE RUN-NODE FORK's OLD CHAIN (2026-11-15, "failed node on side
+    // branch"): a TOP-LEVEL fork row's kind-2 children — the pre-fork
+    // attempt the continuation replaced, wearing the seat's own
+    // status/error — render as always-on demoted spurs off the fork's
+    // CONTINUATION node (the terminal-kind node after the seat, since
+    // 2026-11-16), the same old-chain treatment an inline drift fork's
+    // tail gets.
+    for (const state of terminalForks) {
+      const forkLaneNode = nodes.find(
+        (n) => n.id === `fork-${state.state_id}`);
+      if (forkLaneNode === undefined) continue;
+      for (const ab of childrenByParent.get(state.state_id) ?? []) {
+        if (ab.child_kind !== 2) continue;
+        const columnX = forkLaneNode.x + spawnColumnOffset(forkLaneNode.kind);
+        const row = Math.max(
+          (columnRow.get(columnX) ?? -1) + 1,
+          (columnRow.get(forkLaneNode.x) ?? -1) + 1,
+          Math.round(forkLaneNode.y / Y_STEP) + 1,
+        );
+        columnRow.set(columnX, row);
+        columnRow.set(forkLaneNode.x, row);
+        maxRow = Math.max(maxRow, row);
+        const oldNode: ThreadGraphNode = {
+          id: `old-${ab.state_id}`,
+          kind: "abandoned",
+          label: "old chain",
+          sublabel: ab.title.replace(/^\[old chain\]\s*/, ""),
+          metrics: metricsTail(
+            stateElapsedS(ab),
+            ab.llm_context_id,
+            usageByContext,
+          ),
+          status: ab.status,
+          x: columnX,
+          y: row * Y_STEP,
+        };
+        nodes.push(oldNode);
+        edges.push({
+          source: forkLaneNode.id, target: oldNode.id, kind: "abandoned",
+        });
       }
     }
     // THE DRIFT-FORK FLIP's spur pass: each INLINE fork node (main

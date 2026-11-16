@@ -1,0 +1,13 @@
+{
+  "label": "主动",
+  "industries": {
+    "ACTIVE_ENHANCED": {
+      "label": "指数增强",
+      "slug": "active_enhanced"
+    },
+    "ACTIVE_MGMT": {
+      "label": "主动管理",
+      "slug": "active_mgmt"
+    }
+  }
+}

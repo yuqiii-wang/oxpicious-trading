@@ -257,7 +257,7 @@ export function buildThreadGraphOption(
       // below-label would sit — the same flip a wave entry/exit makes.
       // The clicked spawn's full goal renders in the beneath-graph panel.
       ...(node.kind === "spawn" || node.kind === "fork"
-          || node.kind === "abandoned"
+          || node.kind === "abandoned" || node.kind === "resume"
         ? {
             label: {
               show: true,
@@ -265,6 +265,8 @@ export function buildThreadGraphOption(
               distance: 6,
               formatter: node.kind === "abandoned"
                 ? "old chain"
+                : node.kind === "resume"
+                ? "↺ " + clip(node.sublabel ?? "", 18)
                 : clip(node.sublabel ?? "", 20) + foldCue,
               align: "center",
               color: c.textColor,
@@ -340,7 +342,13 @@ export function buildThreadGraphOption(
                 // short tag toward the previous step's label.
                 formatter:
                   `${clip(node.label, 24)}\n` +
-                  `{sub|${clip(node.sublabel ?? "", 14)}}`,
+                  `{sub|${clip(node.sublabel ?? "", 14)}}` +
+                  // THE FOLD CUE (2026-11-15, the run-node actions): a
+                  // runner seat can parent a fan too — the run-node
+                  // spawn/fork hangs its child under the chain root's
+                  // plan row, so the plan node carries the same ▸N/▾N
+                  // affordance a step's fan has.
+                  foldCue,
                 align: "center",
                 color,
                 fontSize: 12,
@@ -348,7 +356,10 @@ export function buildThreadGraphOption(
                 lineHeight: 17,
                 width: KIND_LABEL_PX.runner.w,
                 overflow: "truncate",
-                rich: { sub: { color: c.textColor, fontSize: 9 } },
+                rich: {
+                  sub: { color: c.textColor, fontSize: 9 },
+                  fold: { color: c.textColor, fontSize: 10, opacity: 0.65 },
+                },
               },
             }),
       info: {
@@ -381,6 +392,16 @@ export function buildThreadGraphOption(
           width: 1.6,
           type: "dashed",
         },
+      };
+    }
+    if (edge.kind === "handoff_lead") {
+      // A bent handoff's first legs — the handoff dash WITHOUT the
+      // arrowhead (the corner is wiring, the bare-leg rule); the final
+      // leg re-enters as a plain arrowed handoff.
+      return {
+        ...base,
+        symbol: ["none", "none"],
+        lineStyle: { color: c.axisLineColor, width: 1.6, type: "dashed" },
       };
     }
     if (edge.kind === "bare") {
@@ -432,6 +453,20 @@ export function buildThreadGraphOption(
         },
       };
     }
+    if (edge.kind === "resume") {
+      // THE RESUME SPUR (2026-11-15): parent → supervisor resume
+      // marker — fork-weighted but DASHED: the resumption CONTINUES
+      // the failed attempt (the fork action on the UI), it is not
+      // fresh delegated work.
+      return {
+        ...base,
+        lineStyle: {
+          color: c.axisLineColor,
+          width: 2.2,
+          type: "dashed",
+        },
+      };
+    }
     if (edge.kind === "merge") {
       return {
         ...base,
@@ -469,7 +504,7 @@ export function buildThreadGraphOption(
         // parent adds the expand/fold affordance line (kind-aware: a
         // fork parent folds forks).
         const subMax = info.kind === "spawn" || info.kind === "fork"
-            || info.kind === "abandoned"
+            || info.kind === "abandoned" || info.kind === "resume"
           ? 30
           : 60;
         const foldNoun = info.kind === "fork" ? "fork" : "spawn";

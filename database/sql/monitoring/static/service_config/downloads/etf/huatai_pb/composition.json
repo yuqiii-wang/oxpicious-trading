@@ -3,9 +3,9 @@
   "max_parallel": 1,
   "included_parallel_services": [],
   "excluded_parallel_services": [],
-  "freq": "monthly",
-  "schedule": "calendar-monthly pass (cron-scheduled; no in-script date guard)",
-  "notes": "huatai-pb.com fund-site data (510880 红利ETF): monthly PCF composition snapshot.",
-  "source_ref": "scripts/downloads_monthly.sh",
-  "updated_at": "2026-10-10T06:29:48.410435+00:00"
+  "freq": "quarterly",
+  "schedule": "calendar-quarterly pass — quarter-start refresh on the 1st of Jan/Apr/Jul/Oct (cron-scheduled; no in-script date guard)",
+  "notes": "huatai-pb.com fund-site data (510880 红利ETF): quarterly PCF composition snapshot.",
+  "source_ref": "scripts/orchestration/downloads_quarterly.json",
+  "updated_at": "2026-11-14T00:00:00.000000+00:00"
 }

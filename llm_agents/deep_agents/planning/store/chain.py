@@ -83,20 +83,57 @@ class ChainStoreMixin(OutputStoreMixin):
 
 
     async def list_unsettled_super_threads(self) -> List[str]:
-        """The super thread ids of chains still holding pending /
-        in_progress state rows — the daemon-boot ORPHAN sweep's input: a
-        fresh daemon process owns zero runs, so any unsettled chain at
-        boot belongs to a dead one (killed mid-run by a crash, OOM kill
-        or a forced recycle — their rows used to read as a live run
-        forever, keeping the UI's live chip + Stop button up). Legacy
+        """The super thread ids of chains still UNSETTLED — holding
+        pending/in_progress state rows OR a RUNNING runner-lane node
+        item — the daemon-boot ORPHAN sweep's input: a fresh daemon
+        process owns zero runs, so any unsettled chain at boot belongs
+        to a dead one (killed mid-run by a crash, OOM kill or a forced
+        recycle — their rows used to read as a live run forever, keeping
+        the UI's live chip + Stop button up). THE ITEMS HALF (2026-11-13):
+        a death inside a graph's finalize→output tail leaves every state
+        row terminal while the output node's item is still 'running' —
+        the states-only read missed that chain entirely and its node
+        items (the UI's live chip source) ran live forever; the read
+        unions both ledgers, each item thread resolving to its chain
+        root through its rows' super stamp (a thread with no state rows
+        — pre-chain-stamp — reads as its own chain). Legacy
         single-thread runs (super_thread_id NULL) resolve to their own
         thread_id."""
+        from llm_agents.deep_agents.langgraph.state_store import NS_ROOT
+
         conn = await self._connect()
         try:
             records = await conn.fetch(
-                "SELECT DISTINCT COALESCE(super_thread_id, thread_id) AS sid "
-                "FROM llm.deep_agent_states "
-                "WHERE status IN ('pending', 'in_progress')",
+                # The union read: state-open chains + item-open chains
+                # (namespace[1] = NS_ROOT with EXACTLY 2 elements is the
+                # node-state namespace — the contexts registry carries 3;
+                # `value->>'status' = 'running'` picks the open lanes).
+                """
+                WITH state_chains AS (
+                  SELECT DISTINCT COALESCE(super_thread_id, thread_id) AS sid
+                    FROM llm.deep_agent_states
+                   WHERE status IN ('pending', 'in_progress')
+                ),
+                item_threads AS (
+                  SELECT DISTINCT namespace[2] AS thread_id
+                    FROM llm.deep_agent_store_items
+                   WHERE namespace[1] = $1
+                     AND array_length(namespace, 1) = 2
+                     AND key LIKE 'node:%'
+                     AND value->>'status' = 'running'
+                )
+                SELECT sid FROM state_chains
+                UNION
+                SELECT COALESCE(s.super_thread_id, t.thread_id) AS sid
+                  FROM item_threads t
+                  LEFT JOIN LATERAL (
+                         SELECT super_thread_id
+                           FROM llm.deep_agent_states
+                          WHERE thread_id = t.thread_id
+                            AND super_thread_id IS NOT NULL
+                          LIMIT 1) s ON true
+                """,
+                NS_ROOT,
             )
         finally:
             await conn.close()
@@ -149,6 +186,13 @@ class ChainStoreMixin(OutputStoreMixin):
             write = render_sql_write(
                 "llm_agents/deep_agents/planning/store/"
                 "deep_agent_identities/delete_for_thread", thread_id)
+            await conn.execute(write.sql, *write.params)
+            # Authorizations are keyed by the CHAIN id — the delete
+            # matches exactly when this member IS the root (a no-op for
+            # the C/R segments; core/authorization).
+            write = render_sql_write(
+                "llm_agents/deep_agents/core/authorization/"
+                "deep_agent_authorizations/delete_for_thread", thread_id)
             await conn.execute(write.sql, *write.params)
         finally:
             await conn.close()

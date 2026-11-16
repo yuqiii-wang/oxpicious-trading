@@ -44,10 +44,14 @@ export function normalizeLabel(label: string, group: keyof PromptLabelSets): str
   return group === "optional" ? trimmed.toLowerCase() : trimmed;
 }
 
-/** A run row with steps that are neither completed/failed/skipped —
- *  the in-flight signature (the runner inserts the plan rows pending
- *  at run start; finalize settles the leftovers either way). */
+/** A run row that is still live — the server-computed `is_live` flag
+ *  (any member state open OR the chain root's store namespace holding a
+ *  running node item — the chain-orchestrator node:super spans the run),
+ *  falling back to the old count heuristic for an older payload without
+ *  the flag (the runner inserts the plan rows pending at run start;
+ *  finalize settles the leftovers either way). */
 export function hasUnsettledSteps(r: AiSummaryRun): boolean {
+  if (typeof r.is_live === "boolean") return r.is_live;
   return r.steps_total > r.steps_completed + r.steps_failed + r.steps_skipped;
 }
 

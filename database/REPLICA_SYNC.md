@@ -51,9 +51,9 @@ python -m database.monitoring                  # replication state + backlog + s
 python -m database.monitoring --schema-drift   # catalog fingerprint: primary vs replica
 ```
 
-Both run in `scripts/monitoring_occasionally.sh` (first step of
-`main_run.sh`, so every daily scheduled pass checks before heavy
-writes). Thresholds: backlog alert 64MB (same as the API probe), slot
+Both run in the `monitoring_occasionally` tier (first tier of the
+maintainer's nightly pipeline chain, so every daily scheduled pass
+checks before heavy writes). Thresholds: backlog alert 64MB (same as the API probe), slot
 retained-WAL alert 2GB, pg_wal dir alert 1.5× `max_wal_size` — the dir
 legitimately idles under `max_wal_size` (recycled segments are kept for
 reuse), so only growth past the recycle horizon means segments are
@@ -68,7 +68,8 @@ connections, size, cache hit, xact_commit, WAL shipping state, replay
 backlog, the instance's pg_wal dir size, and container CPU/memory from
 `docker stats`. Unreachable instances are sampled too
 (`healthy = false` + a short `error`), so outages leave a trail; the
-table keeps 90 days. Started by the watchdog (main_run.sh adopts it),
+table keeps 90 days. Started by the monitor's resident supervisor (the
+fleet bring-up adopts it),
 or directly:
 
 ```bash

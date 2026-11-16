@@ -50,9 +50,9 @@ from pydantic import BaseModel
 from _common.db_commons._helpers import _get_conn_params, _get_replica_conn_params
 from _common.service_heartbeat import (
     HEARTBEAT_TABLE,
-    MONITORED_SERVICES,
     STALE_AFTER_S,
     WATCHDOG_SERVICE,
+    always_on_roster,
 )
 
 # Replay backlog (bytes the replica received but has not replayed) over
@@ -279,23 +279,26 @@ class HealthCheck:
         return items
 
     def streams(self) -> list[CheckItem]:
-        """Downloads-stream liveness: every poller + the watchdog supervisor
-        must have a fresh heartbeat in monitor.service_heartbeat.
+        """Always-on fleet liveness: every always-on service (the
+        watchdog's scan charges + every area server's residents — the
+        completed 2026-11 resident migration's roster) must have a fresh
+        heartbeat in monitor.service_heartbeat.
 
         Heartbeats are written by a daemon thread inside each process
         (_common/service_heartbeat.py) every ~60s regardless of the poll
         loop's sleep windows, so a stale beat means the process is dead or
-        wedged — it never means "market closed". The watchdog
-        (database/stream_watchdog.py) is included because a dead supervisor
-        silently stops restarting pollers. The heartbeat rows of the repo's
-        OTHER (batch) processes are NOT liveness-alerted here: they
+        wedged — it never means "market closed". The roster comes from
+        always_on_roster() (one source of truth: the registry alone holds
+        only the monitor and the watchdog now, everything else lives in
+        the area servers' resident tables). The heartbeat rows of the
+        repo's OTHER (batch) processes are NOT liveness-alerted here: they
         legitimately sit stopped between runs (their run history lives in
         monitor.service_audit; the watchdog's orphan pass closes unrecorded
         deaths). Restart counts read the same audit table's merged watchdog
         restart trail (dead lives closed with a 'watchdog restart: …'
         exit_reason).
         """
-        expected = list(MONITORED_SERVICES)
+        expected = always_on_roster()
 
         with _connect(_get_conn_params()) as conn:
             with conn.cursor() as cur:

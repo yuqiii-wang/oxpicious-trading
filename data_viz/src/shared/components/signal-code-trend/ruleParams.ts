@@ -45,6 +45,36 @@ function baseBarWord(barDef: Record<string, unknown>): string {
       return tail == null ? "own tail quantile"
         : `own ${tail}% tail · ${String(barDef.window_days ?? "")}d`;
     }
+    case "recent_extreme": {
+      // the crowdedness family's v3 recent-extreme state: the crowd at
+      // its trailing-window low/high gated by the underlying's own
+      // trailing return direction (bar_def.side + trend_window)
+      const w = String(barDef.window_days ?? "");
+      const tw = String(barDef.trend_window ?? "");
+      const low = barDef.side === "low";
+      const state = low ? "low" : "high";
+      const dir = low ? "↑" : "↓";
+      return `crowd ${w}d ${state} · idx ${dir}${tw}d`;
+    }
+    case "crowd_floor": {
+      // the crowdedness family's v4 drain_floor: the crowd composite
+      // at its trailing-window bottom percentile while the index
+      // ticks up (bar_def.pos_cut + trend_window)
+      const w = String(barDef.window_days ?? "");
+      const tw = String(barDef.trend_window ?? "");
+      return `crowd ${w}d floor · idx ↑${tw}d`;
+    }
+    case "hot_tech_washout":
+      // the v4 tech_washout: the hot set's px-vs-MA60 percentile under
+      // water (the fresh-depth or amount-climax arm)
+      return "hot tech washed out · vol climax";
+    case "hot_tech_euphoria": {
+      // the v4 tech_euphoria(_div): the crowd ma5 blow-off stretch
+      // while the hot set is extended (+ the score divergence arm)
+      return barDef.div === true
+        ? "hot crowd stretched · div"
+        : "hot crowd stretched";
+    }
     case "fixed_sigma": {
       const k = num("k");
       return k == null ? "±kσ" : `±${k}σ`;

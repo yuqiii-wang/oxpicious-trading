@@ -63,6 +63,19 @@ class SpawnSubagentTool(Tool):
                                "steps); omit when you need the "
                                "answer right now.",
             },
+            "study_focus": {
+                "type": "string",
+                "description": "EXPLICIT DB-scope extension (rare): "
+                               "name the study DOMAIN this child must "
+                               "read BEYOND your own authorized tables "
+                               "(e.g. '期权持仓持仓量' / 'margin "
+                               "trading balance') — the harness "
+                               "KG-locates the related tables and "
+                               "grants the child exactly those. "
+                               "Omit it and the child inherits your "
+                               "table scope verbatim; a child cannot "
+                               "widen its own scope.",
+            },
         },
         "required": ["goal"],
     }

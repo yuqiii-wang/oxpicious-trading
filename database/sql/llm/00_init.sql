@@ -23,6 +23,7 @@
 \ir llm_qa_by_ask.sql
 \ir llm_qa_by_research.sql
 \ir deep_agent_states.sql
+\ir deep_agent_authorizations.sql
 \ir llm_qa_ask_context.sql
 \ir llm_qa_keywords.sql
 \ir llm_qa_keywords_by_ask.sql

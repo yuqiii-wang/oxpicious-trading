@@ -27,6 +27,7 @@ from llm_agents.deep_agents.core.loop import (
     AgentResult,
     DeepAgent,
 )
+from llm_agents.deep_agents.core.authorization import AuthorizationContext
 from llm_agents.deep_agents.core.mcp import McpToolClient
 from llm_agents.deep_agents.core.provider import ZhipuChatProvider
 from llm_agents.deep_agents.core.sandbox import Sandbox
@@ -121,6 +122,7 @@ def build_execution_graph(
     output: GraphOutputSpec = CUSTOM_OUTPUT_SPEC,
     degraded_lane: bool = True,
     decision_engine: Optional[Any] = None,
+    authorization: Optional[AuthorizationContext] = None,
 ):
     """Compile ONE EXECUTION GRAPH — :class:`ExecutionGraphBuilder`'s
     :meth:`build` (the former closure factory, 2026-11-06)."""
@@ -128,6 +130,7 @@ def build_execution_graph(
         provider, mcp, run_ctx, checkpointer=checkpointer, store=store,
         repair=repair, sandbox_cell=sandbox_cell, output=output,
         degraded_lane=degraded_lane,
-        decision_engine=decision_engine).build()
+        decision_engine=decision_engine,
+        authorization=authorization).build()
 
 

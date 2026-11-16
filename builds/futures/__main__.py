@@ -76,20 +76,11 @@ from builds.futures.loader import (
     ymd_to_date,
     build_futures_df,
 )
-from builds.futures.config import PRODUCT_CODES
+from builds.futures.config import CFFEX_CODE_SCOPE
 
 from _common.data_build import DataBuild
 
 logger = setup_logging("futures")
-
-# --force purge scope: CFFEX codes only. stats.futures_identity /
-# stats.futures_basic_stats are SHARED with the offshore China-A50 families
-# (CN = SGX, MCA = HKEX — downloads/futures/*), which this build must never
-# touch. Longest-first alternation keeps the T/TF/TL/TS prefixes distinct.
-_CFFEX_CODE_SCOPE = "^(?:" + "|".join(
-    sorted(PRODUCT_CODES, key=len, reverse=True)
-) + ")[0-9]{4}$"
-
 
 class FuturesBuild(DataBuild):
     """``python -m builds.futures`` — CFFEX futures baseline build."""
@@ -199,7 +190,7 @@ class FuturesBuild(DataBuild):
                         deleted = await chunked_purge_async(
                             conn, table,
                             where_sql="code ~ $1",
-                            params=(_CFFEX_CODE_SCOPE,),
+                            params=(CFFEX_CODE_SCOPE,),
                         )
                         logger.info(f"    [DB] purged {deleted} rows from {table}")
                 missing_dates = available_dates
@@ -210,8 +201,15 @@ class FuturesBuild(DataBuild):
                     conn, "stats.futures_identity", available_dates, code_filter
                 )
             else:
+                # Scope to this build's CFFEX contracts: the identity table
+                # is SHARED with the offshore CN (SGX) / MCA (HKEX) A50
+                # families, whose daily rows would otherwise make every
+                # date look present and silently skip the CFFEX CSVs
+                # (2026-08..2026-11 basis gap — same masking the exchange=
+                # guard prevents for multi-exchange identity tables).
                 missing_dates = await find_missing_dates(
-                    conn, "stats.futures_identity", available_dates
+                    conn, "stats.futures_identity", available_dates,
+                    code_scope=CFFEX_CODE_SCOPE,
                 )
 
             logger.info(

@@ -44,7 +44,7 @@ INSERT INTO llm.ai_prompts (prompt_key, prompt_sub_type, prompt_type, title, ver
      'deliveries, analysis.margin_changes / margin_index_series / '
      'exchange_margin_summary, analysis.futures_ext, analysis.options_'
      '*, analysis.industry_*, analysis.market_crowdedness, '
-     'analysis.hot_stock_momentum, analysis.mov_ave_trading_amt (the '
+     'analysis.mov_ave_trading_amt (the '
      'participation share vs its own MA — the 放量/缩量 gauge). TEXT '
      'CORPUS: llm.llm_qa / news_digestions — search via the '
      'text_search tool only (GIN search_tsv; raw Chinese ILIKE '

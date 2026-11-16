@@ -70,6 +70,7 @@ const FREQ_VALUES = [
   "always",
   "daily",
   "monthly",
+  "quarterly",
   "semiannually",
   "once",
   "occasionally",

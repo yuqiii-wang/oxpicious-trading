@@ -55,7 +55,9 @@ from llm_agents.deep_agents.supervisor.engine import root_path_failures
 from llm_agents.deep_agents.supervisor.event_queue import (
     EventKind, FailureRef, SupervisorEvent,
 )
-from llm_agents.deep_agents.supervisor.repair import RepairChannel
+from llm_agents.deep_agents.supervisor.repair import (
+    ACTION_NONE, RepairChannel, Verdict,
+)
 from llm_agents.deep_agents.supervisor.workers import (
     WORKER_FACTORIES, SupervisorWorker,
 )
@@ -152,7 +154,15 @@ class SupervisorSession:
                     await self._belt_scan()
                     continue
                 for event in self._prioritized(events):
-                    await self._dispatch(event)
+                    try:
+                        await self._dispatch(event)
+                    except Exception:  # noqa: BLE001 — one bad dispatch
+                        # must never kill the picker: a dead loop means
+                        # every later window grace-outs, the belt stops
+                        # and the final sweep never runs.
+                        logger.exception(
+                            "supervisor picker: dispatch of %s failed",
+                            event.kind)
         except asyncio.CancelledError:  # runner's finally — run is over
             return
 
@@ -185,8 +195,11 @@ class SupervisorSession:
                 "dropping %s", cls, event.kind)
             return
         if cls is EventClass.SWEEP:
-            with contextlib.suppress(Exception):
+            try:
                 await worker.handle(event)
+            except Exception:  # noqa: BLE001 — never into the picker loop
+                logger.exception(
+                    "supervisor picker: sweep dispatch failed")
             return
         await self._run_worker_under_agent(worker, event)
 
@@ -206,12 +219,26 @@ class SupervisorSession:
             return
         # The agent's llm-writer hook (the supervisor's ctor factory
         # defaults llm=False for the marker — interventions need
-        # contexts).
+        # contexts). The writer mint + node begin are GUARDED too: a
+        # failure here used to escape into the picker loop and kill the
+        # whole supervisor task (every later window grace-outs). The
+        # event's lane window resolves with no-action verdicts so the
+        # paused lane falls through instead of dead-waiting its grace.
         new_writer = getattr(agent, "new_llm_writer", None)
         if new_writer is None:
             new_writer = agent.new_writer
-        writer = new_writer()
-        await agent.begin_node(writer)
+        try:
+            writer = new_writer()
+            await agent.begin_node(writer)
+        except Exception as exc:  # noqa: BLE001 — the lane must not wait
+            logger.warning("supervisor worker context failed: %s", exc)
+            if (event.kind is EventKind.NODE_FAILED
+                    and event.window_id
+                    and self.channel.is_open(event.window_id)):
+                self.channel.resolve_window(event.window_id, {
+                    ref.state_id: Verdict(action=ACTION_NONE, instruction="")
+                    for ref in event.failures})
+            return
         try:
             with agent.chain(writer):
                 outcome = await worker.handle(event, writer=writer)
@@ -238,7 +265,7 @@ class SupervisorSession:
         interval; the final sweep still reviews anything left) and the
         open window's sids (their verdict belongs to the lane path).
         Fail-soft — a scan failure just waits for the next interval."""
-        with contextlib.suppress(Exception):
+        try:
             rows = await self._watched_states()
             channel = self.channel
             fresh = [s for s in root_path_failures(rows)
@@ -252,6 +279,8 @@ class SupervisorSession:
                                          error=s.error or "")
                               for s in fresh],
                     source="belt"))
+        except Exception as exc:  # noqa: BLE001 — the belt is best-effort
+            logger.warning("supervisor belt scan failed: %s", exc)
 
     # ------------------------------------------------------------------
     # The final sweep (kept for direct callers/tests)

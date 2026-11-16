@@ -27,7 +27,6 @@ import PePage from "@/analysis/pages/PePage";
 import DividendsPage from "@/analysis/pages/DividendsPage";
 import EtfHoldingsPage from "@/analysis/pages/EtfHoldingsPage";
 import MarketCrowdednessPage from "@/analysis/pages/MarketCrowdednessPage";
-import HotStockMomentumPage from "@/analysis/pages/HotStockMomentumPage";
 import MarginTrendsPage from "@/analysis/pages/MarginTrendsPage";
 import FuturesAnalysisPage from "@/analysis/pages/FuturesAnalysis";
 import OptionsAnalysisPage from "@/analysis/pages/OptionsAnalysis";
@@ -41,6 +40,8 @@ import ServiceMonitorPage from "@/monitor/pages/ServiceMonitor";
 import ExternalResourcesPage from "@/monitor/pages/ExternalResources";
 import AiMonitorPage from "@/monitor/pages/AiMonitor";
 import SrcDataAuditPage from "@/monitor/pages/SrcDataAuditPage";
+import NonDailyTasksPage from "@/monitor/pages/NonDailyTasksPage";
+import DbAuditPage from "@/monitor/pages/DbAudit";
 import ServiceConfigPage from "@/config/pages/ServiceConfigPage";
 import ExtRequestConfigPage from "@/config/pages/ExtRequestConfigPage";
 import SecretsPage from "@/config/pages/SecretsPage";
@@ -90,7 +91,6 @@ export default function App() {
           <Route path="/analysis/commons/dividends" element={<DividendsPage />} />
           <Route path="/analysis/commons/etf-holdings" element={<EtfHoldingsPage />} />
           <Route path="/analysis/commons/market-crowdedness" element={<MarketCrowdednessPage />} />
-          <Route path="/analysis/commons/hot-stock-momentum" element={<HotStockMomentumPage />} />
           <Route path="/analysis/derivatives" element={<DerivativesPage />} />
           <Route path="/analysis/derivatives/margin-trends" element={<MarginTrendsPage />} />
           <Route path="/analysis/derivatives/futures" element={<FuturesAnalysisPage />} />
@@ -127,7 +127,9 @@ export default function App() {
           <Route path="/monitor" element={<ServiceMonitorPage />} />
           <Route path="/monitor/ext-resources" element={<ExternalResourcesPage />} />
           <Route path="/monitor/ai" element={<AiMonitorPage />} />
+          <Route path="/monitor/db" element={<DbAuditPage />} />
           <Route path="/monitor/src-data" element={<SrcDataAuditPage />} />
+          <Route path="/monitor/non-daily" element={<NonDailyTasksPage />} />
           <Route path="/config" element={<Navigate to="/config/service" replace />} />
           <Route path="/config/service" element={<ServiceConfigPage />} />
           <Route path="/config/external" element={<ExtRequestConfigPage />} />

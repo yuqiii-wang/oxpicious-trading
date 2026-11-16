@@ -148,14 +148,9 @@ export {
   fetchMarketCrowdednessThemes,
   fetchMarketCrowdednessStrategyThemes,
   fetchMarketCrowdednessChart,
+  fetchMarketCrowdednessHotTech,
+  fetchMarketCrowdednessHotYears,
 } from "./analysis-market-crowdedness";
-
-export {
-  fetchHotStockMomentumCodes,
-  fetchHotStockMomentumThemes,
-  fetchHotStockMomentumStrategyThemes,
-  fetchHotStockMomentumChart,
-} from "./analysis-hot-stock-momentum";
 
 export { fetchSecBaseline } from "./sec-baseline";
 

@@ -10,10 +10,13 @@
 SELECT ((s.created_at AT TIME ZONE 'GMT')::date)::text  AS run_date,
        COUNT(DISTINCT COALESCE(s.super_thread_id, s.thread_id))::int
                                                          AS runs_total,
-       COUNT(*)::int                                     AS steps_total,
-       COUNT(*) FILTER (WHERE s.status = 'completed')::int AS steps_completed,
-       COUNT(*) FILTER (WHERE s.status = 'failed')::int    AS steps_failed,
-       COUNT(*) FILTER (WHERE s.status = 'skipped')::int   AS steps_skipped
+       COUNT(*) FILTER (WHERE s.child_kind IS DISTINCT FROM 3)::int                                AS steps_total,
+       COUNT(*) FILTER (WHERE s.status = 'completed'
+       AND s.child_kind IS DISTINCT FROM 3)::int AS steps_completed,
+       COUNT(*) FILTER (WHERE s.status = 'failed'
+       AND s.child_kind IS DISTINCT FROM 3)::int    AS steps_failed,
+       COUNT(*) FILTER (WHERE s.status = 'skipped'
+       AND s.child_kind IS DISTINCT FROM 3)::int   AS steps_skipped
   FROM llm.deep_agent_states s
   {{where_clause}}
  GROUP BY 1

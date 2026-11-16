@@ -1,15 +1,18 @@
 /**
  * Orchestration steps service — read-only access to the repo's
  * orchestration step files under scripts/orchestration/ (one JSON per
- * tier script, <tier>.json ↔ scripts/<tier>.sh; the sh keeps only its
- * guard and delegates to scripts/run_steps.sh, which executes the
- * file's steps one by one in key order).
+ * tier; the maintainer's nightly_pipeline job drives the tiers serially
+ * at 16:00 China time on A-share trading days through the monitor
+ * area's orchestration runner — the retired sh tier's successor; see
+ * scripts/orchestration/README.md).
  *
  * A tier's top-level keys are its STEP NUMBERS (run order); each step
- * holds { script (the python -m module), can_be_parallel (false for
- * every step today — the runner is strictly serial and only warns),
- * args (optional CLI args list), note (optional ordering/dependency
- * comment, ignored by the runner) }.
+ * holds { script (the python -m module), src_host (optional — the
+ * query-destination host group enabling the downloads tiers'
+ * diff-src-parallel waves: consecutive steps with distinct hosts run
+ * concurrently; absent = fully serial), can_be_parallel (legacy flag,
+ * false for every step), args (optional CLI args list), note (optional
+ * ordering/dependency comment, ignored by the runner) }.
  *
  * Reads are mtime-cached via static-config's readJsonCached (same
  * rationale: the files are tiny; the cache only exists so a burst of
@@ -26,23 +29,29 @@ const ORCHESTRATION_DIR = path.resolve(
   "..",
   "..",
   "..",
+  "..",
   "scripts",
   "orchestration",
 );
 
-/** Tier run order per scripts/orchestration/README.md ("What runs
- *  when"): monitoring → downloads (daily/monthly/semiannual/once) →
- *  builds → analysis → strategy. Tiers not listed here sort
- *  alphabetically after the known ones. */
+/** Tier run order — the display mirror of the maintainer's canonical
+ *  NIGHTLY_CHAIN (server_cluster/maintainer/pipeline.py; per
+ *  scripts/orchestration/README.md "What runs when"): monitoring →
+ *  downloads (daily/monthly/quarterly/semiannual/once) → builds
+ *  (daily/semiannual/once/monthly — monthly importance ranks AFTER the
+ *  daily/once builds) → analysis → strategy. Tiers not listed here
+ *  sort alphabetically after the known ones. */
 const TIER_RUN_ORDER = [
   "monitoring_occasionally",
   "downloads_daily",
   "downloads_monthly",
+  "downloads_quarterly",
   "downloads_semiannually",
   "downloads_once",
   "builds_daily",
-  "builds_once",
   "builds_semiannually",
+  "builds_once",
+  "builds_monthly",
   "analysis_daily",
   "strategy_once",
 ];
@@ -53,6 +62,7 @@ const TIER_FREQS = [
   "always",
   "daily",
   "monthly",
+  "quarterly",
   "semiannually",
   "once",
   "occasionally",
@@ -66,6 +76,10 @@ export interface OrchestrationStep {
   script: string;
   /** Extra CLI args (empty when the step takes none). */
   args: string[];
+  /** Query-destination host group (downloads tiers' diff-src-parallel):
+   *  consecutive steps with DISTINCT hosts share one concurrent wave in
+   *  the monitor area's runner. Null = the step runs fully serial. */
+  srcHost: string | null;
   /** false for every step today — the runner executes strictly
    *  serially and only warns if a step ever sets this true. */
   canBeParallel: boolean;
@@ -114,6 +128,7 @@ function normalizeStep(key: string, value: unknown): OrchestrationStep | null {
     args: Array.isArray(d.args)
       ? d.args.filter((a): a is string => typeof a === "string")
       : [],
+    srcHost: typeof d.src_host === "string" && d.src_host !== "" ? d.src_host : null,
     canBeParallel: d.can_be_parallel === true,
     note: typeof d.note === "string" && d.note !== "" ? d.note : null,
   };

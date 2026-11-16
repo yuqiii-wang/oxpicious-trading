@@ -12,10 +12,12 @@ continue the resident-loopback scheme 8765–8775; module prefixes match
 the pipeline-area taxonomy of ``_common/service_heartbeat.py``;
 residents are the area's supervised always-on children — the downloader
 supervises the five stream pollers (migrated from MONITORED_SERVICES
-2026-11) and the monitor supervises the other seven cluster SERVERS
-(migrated from MONITORED_SERVICES 2026-11 — the watchdog → monitor →
-residents chain; monitor cannot supervise itself, so it stays the
-watchdog's own charge). A ``cluster_config.json`` section MERGES over its
+2026-11) and the monitor supervises the other seven cluster SERVERS plus
+the six infra daemons plus the stream WATCHDOG itself (the 2026-11
+resident migration, completed: every always-on process but the boot-hook
+root is a resident; the watchdog keeps the monitor as its own
+heartbeat-scan charge, so the pair revives each other — a server still
+never supervises itself). A ``cluster_config.json`` section MERGES over its
 area's defaults field-by-field, so the JSON usually only pins ports and
 overrides resident desired states; runtime desired-state drift persists
 separately under the gitignored ``server_cluster/_state/`` (see
@@ -93,6 +95,14 @@ class AreaConfig(BaseModel):
         default=600.0, ge=1.0,
         description="How long a crash-looped resident waits before the "
         "supervisor tries again.")
+    hung_after_s: float = Field(
+        default=1800.0, ge=1.0,
+        description="A RUNNING resident whose heartbeat beat is older "
+        "than this is WEDGED (the heartbeat thread is independent of "
+        "the work loop — a stale beat with a live pid means stuck I/O, "
+        "not a dead process) and the supervisor's hung pass terminates "
+        "+ restarts it; past STALE_AFTER_S but below this it alerts "
+        "only. The stream watchdog's HUNG_AFTER_S rule, resident-tier.")
     # --- registry bounds -------------------------------------------------
     finished_history_size: int = Field(
         default=256, ge=1,
@@ -158,6 +168,36 @@ SERVER_RESIDENTS = [
                  "llm", "config", "maintainer")
 ]
 
+# The six infra daemons are monitor-area residents too (migrated from
+# _common/service_heartbeat.MONITORED_SERVICES 2026-11 — the same move
+# the pollers and the seven servers made, completing the resident
+# migration): the DB samplers (db_health / db_table_audit / sql_audit)
+# and the llm_agents daemons (mcp / sandbox / deep_agents server) — all
+# under the monitor area's module prefixes, same "service name IS the
+# python -m module" spawn contract.
+INFRA_RESIDENTS = [
+    ResidentSpec(service=service)
+    for service in (
+        "database.db_health",
+        "database.db_table_audit",
+        "database.sql_audit",
+        "llm_agents.mcp",
+        "llm_agents.sandbox",
+        "llm_agents.deep_agents.server",
+    )
+]
+
+# The stream watchdog itself is the monitor area's resident (the
+# migration's last step): the WSL boot hook starts it, the monitor's
+# supervisor ADOPTS the running instance (the /proc scan) — and revives
+# it when it dies, instead of the fleet waiting for the next boot or the
+# daily bring-up. The pair is mutual: the watchdog keeps the monitor as
+# its own heartbeat-scan charge (the registry's last entry), the monitor
+# holds the watchdog's life as a resident — each revives the other;
+# neither supervises itself. (String hardcoded — config stays
+# import-light; the canonical name is service_heartbeat.WATCHDOG_SERVICE.)
+WATCHDOG_RESIDENTS = [ResidentSpec(service="database.stream_watchdog")]
+
 DEFAULT_AREAS: dict[str, AreaConfig] = {
     # downloader + monitor are the two areas with residents — both
     # DELEGATE their restarts to the maintainer (the cluster's ONE
@@ -177,12 +217,15 @@ DEFAULT_AREAS: dict[str, AreaConfig] = {
     # add the fleet health check, resident aggregation, the ensure-up
     # bring-back, and the orchestration tier runner. (The daily 07:00
     # bring-up schedule moved to the maintainer area 2026-11 —
-    # maintainer/bring_up.py.) Its RESIDENTS are the other seven cluster
-    # SERVERS (SERVER_RESIDENTS — migrated from MONITORED_SERVICES
-    # 2026-11); monitor itself stays the stream watchdog's charge.
+    # maintainer/bring_up.py.) Its RESIDENTS are everything always-on
+    # except the boot-hook root: the other seven cluster SERVERS
+    # (SERVER_RESIDENTS), the six infra daemons (INFRA_RESIDENTS) and
+    # the stream watchdog itself (WATCHDOG_RESIDENTS — the mutual pair;
+    # the monitor is the watchdog's last heartbeat-scan charge).
     "monitor": _default_area("monitor", 8773,
                              ["database.", "llm_agents.", "test."],
-                             residents=SERVER_RESIDENTS,
+                             residents=SERVER_RESIDENTS + INFRA_RESIDENTS
+                             + WATCHDOG_RESIDENTS,
                              restart_via_maintainer=True),
     # Read-only configuration area (2026-11): serves the service catalog
     # (the service_config tree + per-area residents),

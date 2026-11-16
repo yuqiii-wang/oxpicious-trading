@@ -1,0 +1,16 @@
+{
+  "DUMMY_ACTIVE_MGMT": {
+    "name": "主动管理综合指数",
+    "exchange": null,
+    "sector_id": "ACTIVE",
+    "industry_id": "ACTIVE_MGMT",
+    "tags": [
+      {
+        "sector_id": "ACTIVE",
+        "industry_id": "ACTIVE_MGMT"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  }
+}

@@ -318,6 +318,18 @@ const SUMMARY_GOAL =
       "'question' field, when present, is the user's focus instruction and " +
       "defines the answer language; write in Chinese when it is absent.";
 
+/** The SELF-TEST prefix (mirrors deep_agents/selftest.py::TEST_PREFIX):
+ * a QUESTION starting with it turns the run into the daemon's
+ * ``[this is test]`` self-test — the prefix rides the GOAL ALONE (the
+ * summary goal is otherwise static; the daemon detects the prefix
+ * there and its empty-remainder fallback runs the canonical 沪深300
+ * dataset study), so the run loads the offline dummy LLM + the feature
+ * tool seam, walks MARKET-WIDE (the daemon drops the caller's code
+ * scope — no identity row, the history entry shows under every pick),
+ * and the response's answer is the auto-run assertion battery's
+ * PASS/FAIL report. The question's remainder rides the data as usual. */
+const SELF_TEST_PREFIX = "[this is test]";
+
 /** One POST /run over node:http (undici's fetch would 300s-timeout on a
  *  response the server only sends when the whole run finishes). The
  *  response is fully buffered server-side, so the socket is SILENT for
@@ -549,6 +561,11 @@ export interface SummaryRunRow extends QueryResultRow {
   steps_completed: number;
   steps_failed: number;
   steps_skipped: number;
+  /** THE LIVE BADGE (2026-11-13) — true while any member state is open
+   *  OR the chain root's store namespace holds a running node item (the
+   *  chain-orchestrator node:super spans the run): the same union
+   *  predicate the Thread Graph's poll loop reads. */
+  is_live: boolean;
   /** First state's created_at, Shanghai-local text. */
   first_at: string;
   /** Last settle time, Shanghai-local text (null when nothing settled). */
@@ -765,6 +782,12 @@ export async function deleteSummaryRun(
         loadSqlWrite("data_viz", "api", "deep_agent_identities", "delete_for_thread"),
         [member],
       );
+      // Keyed by the CHAIN id — matches exactly when the purged member
+      // is the chain root (no-op for the C/R segment members).
+      await client.query(
+        loadSqlWrite("data_viz", "api", "deep_agent_authorizations", "delete_for_thread"),
+        [member],
+      );
       await client.query(
         loadSqlWrite("data_viz", "api", "deep_agent_store_items", "delete_for_thread"),
         [["deep_agent", member]],
@@ -841,9 +864,22 @@ export async function generateAnalysisSummary(
           .map((t) => t.toLowerCase()),
       ),
     ];
+    // The [this is test] self-test: forward the question's prefix onto
+    // the GOAL (the daemon-side trigger) and strip it from the
+    // question the data carries — the run walks the dummy langgraph
+    // chain and the answer is the assertion report.
+    const rawQuestion = payload.question;
+    const selfTest =
+      rawQuestion !== undefined &&
+      rawQuestion.trim().toLowerCase().startsWith(SELF_TEST_PREFIX);
+    const question =
+      selfTest && rawQuestion !== undefined
+        ? rawQuestion.trim().slice(SELF_TEST_PREFIX.length).trim() ||
+          undefined
+        : rawQuestion;
     const data: AiSummaryAgentData = {
       source: "analysis-summary",
-      question: payload.question,
+      question,
       ...(scopes.length > 0 ? { scopes } : {}),
       ...(forcedTables.length > 0 ? { forced_tables: forcedTables } : {}),
       // The standing schema limit — every summary run is KG-scoped to
@@ -873,7 +909,10 @@ export async function generateAnalysisSummary(
       // or two items. A plan_template_id rides along when the run
       // starts from a saved template (zero planning LLM calls).
       res = await postRun({
-        goal: SUMMARY_GOAL,
+        // The prefix ALONE as the goal — the daemon's empty-remainder
+        // fallback runs the canonical 沪深300 dataset study (the user's
+        // typed remainder rides data.question below).
+        goal: selfTest ? SELF_TEST_PREFIX : SUMMARY_GOAL,
         data,
         max_steps: readDeepAgentLimits().max_conversation_steps,
         plan_template_id: payload.planTemplateId ?? null,

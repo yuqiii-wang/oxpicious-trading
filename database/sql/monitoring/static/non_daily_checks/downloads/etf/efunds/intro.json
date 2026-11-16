@@ -1,0 +1,14 @@
+{
+  "service": "downloads.etf.efunds.intro",
+  "check": "snapshot_fresh",
+  "params": {
+    "dir": "temps/efunds_intro",
+    "pattern": "efunds_intro_*.csv",
+    "min_bytes": 256,
+    "max_age_days": 100
+  },
+  "rerun_args": [
+    "--force"
+  ],
+  "notes": "Fund intro snapshots (reference metadata, no DB consumer yet)."
+}

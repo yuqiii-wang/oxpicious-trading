@@ -1,0 +1,13 @@
+{
+  "service": "downloads.etf.sse.composition",
+  "check": "db_universe_coverage",
+  "params": {
+    "view": "server_cluster/monitor/non_daily/etf_composition_exchange",
+    "exchange": "SS",
+    "grace_days": 7
+  },
+  "rerun_args": [
+    "--force-quarter-start"
+  ],
+  "notes": "etf_identity exchange=SS codes vs sec_composition etf snapshots; current-quarter cache guard requires the force flag mid-quarter."
+}

@@ -1,7 +1,7 @@
 /**
  * Market Crowdedness sec_type normalization — thin re-export over the
- * shared classification-universe module (also used by
- * hot-stock-momentum); the universe row sources live there.
+ * shared classification-universe module; the universe row sources live
+ * there.
  */
 export {
   normalizeIndexIndustrySecType as normalizeMcSecType,

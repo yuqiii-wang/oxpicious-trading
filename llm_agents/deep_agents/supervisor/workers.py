@@ -47,7 +47,7 @@ from llm_agents.deep_agents.supervisor.prompts import (
 )
 from llm_agents.deep_agents.supervisor.repair import (
     ACTION_IGNORE, ACTION_NONE, ACTION_RETRY, Verdict,
-    is_rate_limited, is_transient, should_retry,
+    is_rate_limited, is_step_cap, is_transient, should_retry,
 )
 from llm_agents.deep_agents.supervisor.tools import SupervisorToolKit
 
@@ -199,9 +199,7 @@ class RepairWorker(SupervisorWorker):
             return False
         failed = [s for s in root_path_failures(rows)
                   if s.state_id in {sid for sid, _ in pending}]
-        verdicts: Dict[int, Verdict] = {}
         agent_spent = False
-        throttled = False
         # The verdict call's own failure class (set only when it failed
         # transiently — the code-fallback path below).
         verdict_exc_rate_limited = False
@@ -217,21 +215,41 @@ class RepairWorker(SupervisorWorker):
         # code fallback below codifies exactly that when no model can
         # answer).
         engine = self.session.decision_engine
-        if engine is not None:
+        # THE CAP-CLASS LANE (repair.is_step_cap, 2026-11-15) SKIPS the
+        # fast path: the resume template's question presumes a transient
+        # error class ("the error class is transient...") — a step-cap
+        # death would be read against the wrong premise, and the raised-
+        # budget verdict is the generative ask's judgment anyway (the
+        # serving contract's question texts stay byte-stable). The skip
+        # costs nothing — the fast path can never veto, the ask lane
+        # judges as before.
+        if engine is not None and not is_step_cap(pending[0][1]):
             primary = failed[0] if failed else None
             # Primitive kwargs only — the supervisor package imports
             # nothing from langgraph at runtime (the layering rule);
-            # the injected engine builds its own typed facts.
-            decision = await engine.decide_resume(
-                error_text=pending[0][1],
-                node_title=getattr(primary, "title", "") or "",
-                rate_limited=is_rate_limited(pending[0][1]),
-                attempts=channel.attempts.get(pending[0][0], 0),
-                max_node_retries=limits.supervisor_max_node_retries,
-                repairs_used=channel.repairs_used,
-                max_repairs_per_run=limits.supervisor_max_repairs_per_run,
-            )
-            if decision.ok and decision.action == ACTION_RETRY:
+            # the injected engine builds its own typed facts. The read is
+            # DEFENDED (the loop's _engine_read discipline): an engine
+            # predating decide_resume, a broken engine or a read exception
+            # must never leave this window unresolved — the lane would
+            # dead-wait its whole grace for nothing. An unavailable read
+            # falls through to the ask lane (the fast path never vetoes).
+            decision = None
+            try:
+                decision = await engine.decide_resume(
+                    error_text=pending[0][1],
+                    node_title=getattr(primary, "title", "") or "",
+                    rate_limited=is_rate_limited(pending[0][1]),
+                    attempts=channel.attempts.get(pending[0][0], 0),
+                    max_node_retries=limits.supervisor_max_node_retries,
+                    repairs_used=channel.repairs_used,
+                    max_repairs_per_run=limits.supervisor_max_repairs_per_run,
+                )
+            except Exception as exc:  # noqa: BLE001 — the ask lane judges
+                logger.warning(
+                    "supervisor repair: jev resume read failed (%s) — the "
+                    "generative ask judges", exc)
+            if (decision is not None
+                    and decision.ok and decision.action == ACTION_RETRY):
                 action = decision.action
                 # The raw read (probabilities/confidence) stays OFF the
                 # resumed agent's context: it lives on the decision step
@@ -241,7 +259,6 @@ class RepairWorker(SupervisorWorker):
                 instruction = (
                     "Resume the failed step from where it stopped; do "
                     "not restart the whole plan.")
-                verdict_exc_rate_limited = False
                 logger.info(
                     "supervisor repair: jev verdict %s p=%.2f (no "
                     "generative ask spent)", action, decision.confidence)
@@ -266,7 +283,8 @@ class RepairWorker(SupervisorWorker):
                     verdict_action=action, instruction=instruction)
             logger.info(
                 "supervisor repair: jev read not decisive (%s) — the "
-                "generative ask judges", decision.note[:120])
+                "generative ask judges",
+                (getattr(decision, "note", "") or "")[:120])
         try:
             review, action = await self._intervene(
                 rows=rows, failures=failed or [], repair_eligible=True,
@@ -328,32 +346,95 @@ class RepairWorker(SupervisorWorker):
         land here): per-sid budget/structural gates (``should_retry`` —
         the verdict is advisory until it passes), the reopen/ignore
         writes, the rate-limit throttle, the window resolution.
-        Returns whether a supervisor LLM call was actually spent."""
-        verdicts: Dict[int, Verdict] = {}
-        retried_any = False
-        throttled = False
-        action = verdict_action
+        Returns whether a supervisor LLM call was actually spent.
+
+        THE LATE-VERDICT GUARD (2026-11-13): the window this decision
+        belongs to may have been ABANDONED by the lane (its grace
+        expired and it fell through to the failure semantics — the
+        doomed-tail settle and the route to finalize may already have
+        run). The review stands (the diagnosis row exists either way
+        and the asked/handled marks keep the sweep from repeating it),
+        but the row-mutating writes are refused: a reopen past finalize
+        would strand a pending row nothing will ever re-run (a zombie
+        live until the boot sweep), and an ignore would overwrite an
+        already-reopened row's audit. A None window id (direct
+        callers/tests without a lane window) keeps the ungated legacy
+        contract.
+
+        THE THROTTLE-BEFORE-WRITE ORDERING (2026-11-13): the verdicts
+        are DECIDED first (the pure should_retry pass), then the
+        rate-limit cooldown sleeps, then — and only then — the
+        reopen/ignore writes land. The old order (write, sleep, resolve)
+        could waste the retry: a sleep outlasting the lane's remaining
+        grace let the lane abandon the window and settle the
+        just-reopened rows as skipped. The window is re-checked after
+        the sleep; every row write is refused when the lane is gone."""
+        window_live = not (window_id is not None
+                           and not channel.is_open(window_id))
+        # Pass 1 — the pure decision: which sid retries (the structural
+        # gate), which is refused. No writes yet — the throttle must land
+        # first, on a state-set still untouched.
+        decided: Dict[int, str] = {}
+        rate_limited_retries = 0
         for sid, err in pending:
-            action_sid = action if (sid, err) in askable else ACTION_NONE
+            action_sid = (verdict_action if (sid, err) in askable
+                          else ACTION_NONE)
             if action_sid == ACTION_RETRY:
-                if not should_retry(channel, sid, err, action):
+                if not window_live or not should_retry(channel, sid, err,
+                                                       verdict_action):
                     action_sid = ACTION_NONE
-                else:
-                    try:
-                        if await PLAN_STORE.reopen_state(
-                                sid, thread_id=self.session.scope_id):
-                            channel.attempts[sid] = (
-                                channel.attempts.get(sid, 0) + 1)
-                            channel.repairs_used += 1
-                            retried_any = True
-                            if is_rate_limited(err):
-                                throttled = True
-                        else:
-                            action_sid = ACTION_NONE
-                    except Exception as exc:  # noqa: BLE001 — fail-soft
-                        logger.warning(
-                            "supervisor reopen failed (%s): %s", sid, exc)
+                elif is_rate_limited(err):
+                    rate_limited_retries += 1
+            elif action_sid == ACTION_IGNORE and not window_live:
+                action_sid = ACTION_NONE
+            decided[sid] = action_sid
+        if ((rate_limited_retries or fallback_rate_limited)
+                and any(a == ACTION_RETRY for a in decided.values())
+                and limits.supervisor_retry_throttle_sec > 0):
+            # The lane is paused in its window — the cooldown rides it:
+            # hold the re-run back so the hot account cools first. Either
+            # the STEP's error was rate-limited (the model said retry) or
+            # the verdict call itself just got rate-limited (the provider
+            # is hot right now — the code fallback decided the retry); a
+            # retry must at least have been DECIDED (a budget-refused
+            # batch re-runs nothing, so nothing to hold).
+            logger.info(
+                "supervisor repair: throttling rate-limit retry %ss",
+                limits.supervisor_retry_throttle_sec)
+            await asyncio.sleep(limits.supervisor_retry_throttle_sec)
+            if window_id is not None and not channel.is_open(window_id):
+                # The lane's grace expired mid-sleep — it fell through to
+                # the failure semantics already. The review stands (the
+                # asked/handled marks below keep the sweep from repeating
+                # it) but every row write is refused.
+                logger.info(
+                    "supervisor repair: window abandoned during the "
+                    "throttle — no row writes")
+                window_live = False
+                decided = {sid: ACTION_NONE for sid in decided}
+        # Pass 2 — the writes, under the (re-checked) window guard.
+        verdicts: Dict[int, Verdict] = {}
+        for sid, err in pending:
+            action_sid = decided[sid]
+            if action_sid == ACTION_RETRY:
+                try:
+                    if await PLAN_STORE.reopen_state(
+                            sid, thread_id=self.session.scope_id,
+                            note=instruction[:160]):
+                        channel.attempts[sid] = (
+                            channel.attempts.get(sid, 0) + 1)
+                        channel.repairs_used += 1
+                        if is_step_cap(err):
+                            # The cap lane's own budget (should_retry
+                            # reads it) — one raised-budget re-open per
+                            # run by default.
+                            channel.cap_retries_used += 1
+                    else:
                         action_sid = ACTION_NONE
+                except Exception as exc:  # noqa: BLE001 — fail-soft
+                    logger.warning(
+                        "supervisor reopen failed (%s): %s", sid, exc)
+                    action_sid = ACTION_NONE
             elif action_sid == ACTION_IGNORE:
                 try:
                     if not await PLAN_STORE.ignore_state(
@@ -363,6 +444,20 @@ class RepairWorker(SupervisorWorker):
                     logger.warning(
                         "supervisor ignore failed (%s): %s", sid, exc)
                     action_sid = ACTION_NONE
+            elif action_sid == ACTION_NONE and window_live:
+                # THE FAILURE FORK (2026-11-15): a no-action verdict
+                # leaves the row failed — record the failed attempt as
+                # the red dead-end branch under the step (the fork
+                # action on the UI), so the canvas shows the failure
+                # forked off the main path instead of a bare red lane
+                # node. Fail-soft; the row moving on records nothing.
+                try:
+                    await PLAN_STORE.record_failure_marker(
+                        sid, title="supervisor no-action")
+                except Exception as exc:  # noqa: BLE001 — fail-soft
+                    logger.warning(
+                        "supervisor failure-marker failed (%s): %s",
+                        sid, exc)
             verdicts[sid] = Verdict(
                 action=action_sid,
                 instruction=instruction
@@ -373,20 +468,6 @@ class RepairWorker(SupervisorWorker):
             # settles skipped; a no-action row stays failed and already
             # carries its review).
             channel.handled.add(sid)
-        if ((throttled or fallback_rate_limited)
-                and retried_any
-                and limits.supervisor_retry_throttle_sec > 0):
-            # The lane is paused in its window — the cooldown rides it:
-            # hold the re-run back so the hot account cools first. Either
-            # the STEP's error was rate-limited (the model said retry) or
-            # the verdict call itself just got rate-limited (the provider
-            # is hot right now — the code fallback decided the retry); a
-            # retry must actually have been APPLIED (a budget-refused or
-            # re-open-refused batch re-runs nothing, so nothing to hold).
-            logger.info(
-                "supervisor repair: throttling rate-limit retry %ss",
-                limits.supervisor_retry_throttle_sec)
-            await asyncio.sleep(limits.supervisor_retry_throttle_sec)
         channel.resolve_window(window_id, verdicts)
         return agent_spent  # was a supervisor LLM call actually spent?
 
@@ -453,8 +534,14 @@ class SweepWorker(SupervisorWorker):
         if session.marker is None:
             if session.writer_factory is None:
                 return WorkerOutcome(note="no marker factory")
-            session.marker = session.writer_factory(False)
-            await session.marker.begin(None)
+            try:
+                session.marker = session.writer_factory(False)
+                await session.marker.begin(None)
+            except Exception as exc:  # noqa: BLE001 — never into the picker
+                logger.warning(
+                    "supervisor sweep: marker begin failed: %s", exc)
+                session.marker = None
+                return WorkerOutcome(note="marker begin failed")
         marker = session.marker
         try:
             rows = await session._watched_states()
@@ -478,8 +565,18 @@ class SweepWorker(SupervisorWorker):
             return WorkerOutcome()
         logger.info("supervisor sweep: %d root-path failure(s) — "
                     "intervening", len(failures))
-        sweep_writer = session.writer_factory(True)
-        await sweep_writer.begin(None)
+        try:
+            sweep_writer = session.writer_factory(True)
+            await sweep_writer.begin(None)
+        except Exception as exc:  # noqa: BLE001 — the sweep is best-effort
+            logger.warning(
+                "supervisor sweep: writer begin failed: %s", exc)
+            try:
+                await marker.finish(
+                    "failed", error=f"{type(exc).__name__}: {exc}")
+            except Exception:  # noqa: BLE001 — best-effort
+                pass
+            return WorkerOutcome(note="sweep writer begin failed")
         review: Optional[str] = None
         error: Optional[str] = None
         try:

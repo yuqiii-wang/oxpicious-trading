@@ -99,9 +99,18 @@ class SubagentSpawnRejected(Exception):
 
 
 def format_subagent_result(run: SubagentRun) -> str:
-    """The default tool-result text for a completed subagent — also the
+    """The default tool-result text for a finished subagent — also the
     raw form an output hook receives via ``format_subagent_result``.
     The run id LEADS so the model can address the spawn later (collect /
-    cancel by id)."""
+    cancel by id). STATUS-AWARE (2026-11-15, run d7b24a36): a failed
+    child renders its error and its REAL spent usage — the old
+    unconditional `finished (N step(s)...)` shape reported a failed
+    child as `finished (0 step(s), 0 tool call(s)): None`, and the
+    supervisor's reviews diagnosed a 32-step analysis as a zero-work
+    spawn hiccup off exactly that text."""
+    if run.status in ("failed", "cancelled", "timed_out"):
+        return (f"subagent {run.run_id} {run.status} "
+                f"({run.steps} step(s), {run.tool_call_count} tool "
+                f"call(s) were spent): {run.error or 'no answer'}")
     return (f"subagent {run.run_id} finished ({run.steps} step(s), "
             f"{run.tool_call_count} tool call(s)):\n{run.answer}")

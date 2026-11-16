@@ -122,7 +122,14 @@ COMMENT ON COLUMN llm.deep_agent_states.child_kind IS
     'handback; 2 = abandoned — the drift fork''s ABANDONED pre-fork '
     'tail stub (the drifted segment after the fork point, settled '
     'skipped with the drift note; the canvas demotes it to the '
-    'right-side edge path beside the forked continuation). NULL for '
+    'right-side edge path beside the forked continuation); 3 resume '
+    '(2026-11-15) — the SUPERVISOR FAILURE-FORK RECORD: a record row '
+    'the repair lane writes under a failed step it handled (the fork '
+    'action on the UI — the failed attempt as a red dead-end branch): '
+    'the retry writes it as the flip clears the parent''s error, a '
+    'no-action verdict beside the still-failed row; carries the prior '
+    'attempt''s error and the verdict note as its title; never routed, '
+    'excluded from the summary-run step counts. NULL for 
     'top-level rows (not children) and for child rows predating the '
     'column (read as spawn).';
 

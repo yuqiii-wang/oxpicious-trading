@@ -1,0 +1,62 @@
+{
+ "1": {
+  "script": "downloads.index.csindex.composition",
+  "src_host": "csindex",
+  "can_be_parallel": false,
+  "note": "quarterly cadence (2026-11: moved off the monthly tier): quarter-start refresh (Jan/Apr/Jul/Oct) inside the task; non-quarter-start cached snapshots kept"
+ },
+ "2": {
+  "script": "downloads.index.szse.composition",
+  "src_host": "szse",
+  "can_be_parallel": false,
+  "note": "quarterly cadence (2026-11: moved off the monthly tier): quarter-start refresh inside the task; non-quarter-start cached snapshots kept"
+ },
+ "3": {
+  "script": "downloads.index.bse.composition",
+  "src_host": "csindex",
+  "can_be_parallel": false,
+  "note": "北证50/北证专精特新 closeweight (CSI co-published autofile, .BJ suffixes); quarterly cadence (2026-11: moved off the monthly tier): quarter-start refresh inside the task"
+ },
+ "4": {
+  "script": "downloads.etf.csindex.linked_etf",
+  "src_host": "csindex",
+  "can_be_parallel": false,
+  "note": "quarterly cadence (2026-11: moved off the monthly tier): quarter-start refresh inside the task; non-quarter-start cached snapshots kept"
+ },
+ "5": {
+  "script": "downloads.etf.sse.composition",
+  "src_host": "sse",
+  "can_be_parallel": false,
+  "note": "quarterly cadence: quarter-start refresh (Jan/Apr/Jul/Oct) inside the task; current-quarter cached snapshots skipped"
+ },
+ "6": {
+  "script": "downloads.etf.szse.composition",
+  "src_host": "szse",
+  "can_be_parallel": false,
+  "note": "quarterly cadence: --download-mode quarterly (default) + quarter-start refresh inside the task"
+ },
+ "7": {
+  "script": "downloads.etf.huatai_pb.composition",
+  "src_host": "huatai",
+  "can_be_parallel": false,
+  "note": "huatai-pb.com fund site (510880 红利ETF): quarterly PCF composition snapshot; current-quarter cached snapshots skipped"
+ },
+ "8": {
+  "script": "downloads.etf.efunds.composition",
+  "src_host": "efunds",
+  "can_be_parallel": false,
+  "note": "E Fund fund site: quarterly-report top-10 stock composition per listed-ETF fund; current-quarter cached snapshots skipped; cooldown-guarded (host_block_cooldown_sec=600)"
+ },
+ "9": {
+  "script": "downloads.etf.huatai_pb.intro",
+  "src_host": "huatai",
+  "can_be_parallel": false,
+  "note": "基金概况 intro (NAV 成立以来 = archive once, trend daily, dividends semi-annual); quarterly cadence (2026-11: moved off the monthly tier): current-quarter intro snapshot skipped"
+ },
+ "10": {
+  "script": "downloads.etf.efunds.intro",
+  "src_host": "efunds",
+  "can_be_parallel": false,
+  "note": "E Fund 基金概况 intro snapshot for the listed-ETF universe (per-fund detail pages + fundlist fallbacks); quarterly cadence (2026-11: moved off the monthly tier): current-quarter intro snapshot skipped; cooldown-guarded"
+ }
+}

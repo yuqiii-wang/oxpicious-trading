@@ -1,6 +1,6 @@
 {
-  "1": { "script": "downloads.stock.sse.dividend", "can_be_parallel": false },
-  "2": { "script": "downloads.stock.szse.dividend", "can_be_parallel": false },
-  "3": { "script": "downloads.etf.szse.archive", "args": ["reports"], "can_be_parallel": false },
-  "4": { "script": "downloads.etf.huatai_pb.dividends", "can_be_parallel": false }
+ "1": { "script": "downloads.stock.sse.dividend", "src_host": "sse", "can_be_parallel": false },
+ "2": { "script": "downloads.stock.szse.dividend", "src_host": "cninfo", "can_be_parallel": false },
+ "3": { "script": "downloads.etf.szse.archive", "args": ["reports"], "src_host": "szse", "can_be_parallel": false },
+ "4": { "script": "downloads.etf.huatai_pb.dividends", "src_host": "huatai", "can_be_parallel": false }
 }

@@ -5,7 +5,7 @@
   "excluded_parallel_services": [],
   "freq": "always",
   "schedule": "always-on while the host is up; the stream watchdog restarts it when the beat goes stale",
-  "notes": "Also captures the SSE options EOD snapshot once per trading date (--options-eod step in downloads_daily.sh, published ~16:29) so builds.options' nightly finality gate accepts the date.",
-  "source_ref": "scripts/stream_always.sh;scripts/stream_watchdog.sh;scripts/downloads_daily.sh",
+  "notes": "Also captures the SSE options EOD snapshot once per trading date (--options-eod step in downloads_daily, published ~16:29) so builds.options' nightly finality gate accepts the date.",
+  "source_ref": "server_cluster/_common/resident_supervisor.py;scripts/stream_watchdog.sh;scripts/orchestration/downloads_daily.json",
   "updated_at": "2026-10-10T06:29:48.410435+00:00"
 }

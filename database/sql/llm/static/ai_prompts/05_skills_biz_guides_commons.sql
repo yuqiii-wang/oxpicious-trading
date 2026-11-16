@@ -1,8 +1,8 @@
 -- ============================================================================
 --  AI prompts seed — skills / biz_guide, COMMONS: one guide per
 --  commons analysis scope (the MA lens incl. its roof/floor sub scope,
---  valuation, dividends, ETF holdings, market beta, crowdedness,
---  hot-stock momentum). One of the static/ai_prompts/ seed files —
+--  valuation, dividends, ETF holdings, market beta, crowdedness). One
+--  of the static/ai_prompts/ seed files —
 --  DDL + the shared contract: 06_ai_prompts.sql.
 --
 --  Every scope-bound guide carries its bound_labels (the GIN-indexed
@@ -180,26 +180,7 @@ INSERT INTO llm.ai_prompts (prompt_key, prompt_sub_type, prompt_type, title, ver
      'The crowdedness lens (commons/market-crowdedness).',
      ARRAY['拥挤', '过热', '抱团'],
      ARRAY['market crowdedness', 'crowding', 'participation breadth', 'overheating'],
-     19),
-    ('hot-stock-momentum-guide',
-     'biz_guide',
-     1,
-     'Hot stock momentum guide',
-     1,
-     'hot-stock-momentum-guide: the speculative leaders are the '
-     'market''s risk-appetite gauge — where the marginal trader''s '
-     'energy is parked. Report which themes and names are hot, the '
-     'turnover energy behind them (a hot name on shrinking turnover '
-     'is already fading) and the rotation direction (old leaders'' '
-     'drain vs new leaders'' ignition). Speculative heat is a '
-     'sentiment read for the whole market — tie it to the '
-     'crowdedness and market-trend reads; it makes no direct index '
-     'buy/sell call.',
-     'How to read the hot-stock momentum lens — where speculative trading energy concentrates and how it rotates.',
-     'The hot-stock lens (commons/hot-stock-momentum).',
-     ARRAY['龙头', '连板', '热门'],
-     ARRAY['hot stock', 'speculative leaders', 'theme rotation', 'turnover energy'],
-     20)
+     19)
 ON CONFLICT (prompt_key, prompt_sub_type) DO UPDATE
     SET prompt_type = EXCLUDED.prompt_type,
         title       = EXCLUDED.title,

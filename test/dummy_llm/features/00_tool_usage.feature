@@ -22,6 +22,17 @@ Feature: tool_usage — the 2026-11-13 tool-usage fixes' canned turns
     parent. Its conversation embeds the failed goal, so its scenarios
     (keyed "[Repair handoff") are ordered BEFORE the repeat-child
     ones.
+  * SYNTAX REPAIR (语法修复回交) — the same breaker walked on PURE
+    compile-time errors: run 1 dies on `SyntaxError: invalid syntax`,
+    run 2 on `IndentationError: unexpected indent` — NEITHER output
+    carries a `Traceback` header — yet both count toward the
+    syntax-failure streak (the 2026-11-14 classification fix) and the
+    fresh-context repair child still spawns, patches the broken block
+    (sandbox_edit_file — the "propose new changes" face) and hands the
+    evidence back. Its repair-child faces key on syntax_study.py AND
+    are ordered BEFORE the repeat walk's (whose looser "[Repair
+    handoff" predicates would otherwise steal these turns); the child
+    faces key on the [syntax child] marker.
 
   MATCH ORDER (same discipline as 00_router_chain): child scenarios
   (their conversations embed the parent's markers "[reserve child]" /
@@ -99,6 +110,157 @@ Feature: tool_usage — the 2026-11-13 tool-usage fixes' canned turns
        "steps": ["spawn 一个 scripting 子节点运行分组脚本",
                  "失败时修补而不是原样重试，汇总证据"]}
     ]}
+    """
+
+  @tool-usage-plan-syntax
+  Scenario: the syntax walk's planner proposes the repair-handback plan
+    Given the system contains "planning node"
+    And the conversation contains "语法修复回交"
+    When the planner is asked for the plan proposal
+    Then the reply is
+    """
+    {"steps": [
+      {"title": "拉取沪深300日线并计算均线趋势",
+       "steps": ["用 kg_search 定位均线研究的数据表",
+                 "用 db_run_query 读取 v_index_daily 的收盘序列",
+                 "计算 MA5/MA20 均线与多头排列状态",
+                 "给出趋势结论并标记 [CRITICAL] 数据窗口"]},
+      {"title": "量价关系观察",
+       "steps": ["用 kg_search 定位量价研究的数据表",
+                 "对比近20日成交额的放量缩量节奏",
+                 "总结量价背离信号"]},
+      {"title": "脚本子节点与语法修复回交",
+       "steps": ["spawn 一个 scripting 子节点编写并运行语法脚本",
+                 "连续语法失败时等修复子节点回交再汇总证据"]}
+    ]}
+    """
+
+  @repair-syntax-patch
+  Scenario: the syntax breaker's repair child patches the broken block
+    Given the conversation contains "[Repair handoff"
+    And the conversation contains "syntax_study.py"
+    And the conversation does not contain "edited scripts/syntax_study.py"
+    And the conversation does not contain "SYNTAX_REPAIR_OK"
+    And the system does not contain "supervisor"
+    And tools are declared
+    When the repair child patches the broken syntax block
+    Then the reply calls "sandbox_edit_file" with
+    """
+    {"path": "scripts/syntax_study.py",
+     "old_text": "    prin(total)",
+     "new_text": "    print(total)"}
+    """
+
+  @repair-syntax-rerun
+  Scenario: the syntax repair child re-runs the patched script
+    Given the conversation contains "[Repair handoff"
+    And the conversation contains "edited scripts/syntax_study.py"
+    And the conversation does not contain "SYNTAX_REPAIR_OK"
+    And the system does not contain "supervisor"
+    And tools are declared
+    When the repair child re-runs the patched script
+    Then the reply calls "sandbox_run" with
+    """
+    {"path": "scripts/syntax_study.py"}
+    """
+
+  @repair-syntax-handback
+  Scenario: the syntax repair child hands the repair evidence back
+    Given the conversation contains "[Repair handoff"
+    And the conversation contains "SYNTAX_REPAIR_OK"
+    And the system does not contain "supervisor"
+    When the repair child hands back its repair evidence
+    Then the reply is
+    """
+    REPAIR EVIDENCE (rule=repair-syntax-handback)
+    根因：syntax_study.py 两处纯语法错误（SyntaxError: invalid syntax、
+    IndentationError: unexpected indent，无 Traceback 头）；已用
+    sandbox_edit_file 修补 prin(total) 为 print(total) 并重跑，
+    exit_code=0，stdout 含 SYNTAX_REPAIR_OK；脚本位于
+    scripts/syntax_study.py。
+    """
+
+  @syntax-child-write
+  Scenario: the syntax child writes its script first
+    Given the conversation contains "[syntax child]"
+    And the conversation does not contain "wrote scripts/syntax_study.py"
+    And the conversation does not contain "SyntaxError"
+    And the system does not contain "supervisor"
+    And tools are declared
+    When the child writes the syntax-buggy script
+    Then the reply calls "sandbox_write_file" with
+    """
+    {"path": "scripts/syntax_study.py",
+     "content": "import pandas as pd\ncode = '000300'\ntotal = 42\ndef main():\n    prin(total)\n    print('SYNTAX_REPAIR_OK')"}
+    """
+
+  @syntax-child-run
+  Scenario: the syntax child's first run dies on a plain SyntaxError
+    Given the conversation contains "[syntax child]"
+    And the conversation contains "wrote scripts/syntax_study.py"
+    And the conversation does not contain "SyntaxError"
+    And the system does not contain "supervisor"
+    And tools are declared
+    When the child runs the script the first time
+    Then the reply calls "sandbox_run" with
+    """
+    {"path": "scripts/syntax_study.py"}
+    """
+
+  @syntax-child-run2
+  Scenario: the syntax child's second run dies on an IndentationError
+    Given the conversation contains "[syntax child]"
+    And the conversation contains "SyntaxError"
+    And the conversation does not contain "IndentationError"
+    And the system does not contain "supervisor"
+    And tools are declared
+    When the child runs the script again
+    Then the reply calls "sandbox_run" with
+    """
+    {"path": "scripts/syntax_study.py"}
+    """
+
+  @syntax-child-handup
+  Scenario: the syntax child hands the repair evidence up to the step
+    Given the conversation contains "[syntax child]"
+    And the conversation contains "[Fresh-context repair agent took over]"
+    And the system does not contain "supervisor"
+    When the child passes the repair evidence up in its own handback
+    Then the reply is
+    """
+    REPAIR EVIDENCE (rule=syntax-child-handup)
+    修复子节点已回交：根因为两处纯语法错误，修补 prin(total) 后重跑
+    全绿（SYNTAX_REPAIR_OK）；脚本位于 scripts/syntax_study.py；
+    本节点据此回交父链。
+    """
+
+  @syntax-step-spawn
+  Scenario: the syntax walk's step spawns the scripting child
+    Given the conversation contains "[step_3]"
+    And the conversation contains "脚本子节点与语法修复回交"
+    And the conversation does not contain "REPAIR EVIDENCE"
+    And the system does not contain "supervisor"
+    And tools are declared
+    When the step spawns its child
+    Then the reply calls "spawn_subagent" with
+    """
+    {"goal": "[syntax child] 编写并运行 scripts/syntax_study.py 输出均线统计",
+     "background": false, "role": "scripting"}
+    """
+
+  @syntax-step-fold
+  Scenario: the step folds the syntax repair child's evidence
+    Given the conversation contains "[step_3]"
+    And the conversation contains "脚本子节点与语法修复回交"
+    And the conversation contains "REPAIR EVIDENCE"
+    And the system does not contain "supervisor"
+    When the step answers with its folded finding
+    Then the reply is
+    """
+    DUMMY FINDING (rule=syntax-step-fold)
+    子节点两次纯语法失败（无 Traceback 头）触发了修复子节点：其
+    修补 prin(total) 后重跑全绿（SYNTAX_REPAIR_OK）；本步引用其
+    证据：脚本路径 scripts/syntax_study.py，统计结论 total=42。
     """
 
   @reserve-child-write

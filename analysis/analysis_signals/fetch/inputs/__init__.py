@@ -1,9 +1,10 @@
 """Input loaders of the in-engine signal-family computations
 (analysis.analysis_signals.fetch.inputs) — one module per family,
 mirroring engines/signal_families: _mov_rsi, _boll_std, _ma_cross,
-_options_wall, _options_vix, _momentum, _rf_break, _rebound and
+_options_wall, _options_vix, _momentum, _rf_break, _rebound,
 _macd (the classic MACD construction computed at the fetch
-boundary), plus
+boundary) and _crowdedness (the nightly market crowdedness
+composite, data-driven universe), plus
 _hedge_pairs (the portfolio family's pair universe + the three-curve
 trio frames), over the cross-family vocabulary in _shared (table
 names, the active-code / first-date lookups, the market-breadth
@@ -72,6 +73,11 @@ from ._macd import (
     fetch_latest_macd_date,
     fetch_macd_inputs,
 )
+from ._crowdedness import (
+    fetch_crowdedness_inputs,
+    fetch_latest_crowdedness_date,
+    resolve_crowdedness_universe,
+)
 from ._hedge_pairs import (
     fetch_hedge_pair_inputs,
     resolve_hedge_pair_universe,
@@ -80,10 +86,12 @@ from ._hedge_pairs import (
 __all__ = [
     "fetch_active_codes",
     "fetch_boll_inputs",
+    "fetch_crowdedness_inputs",
     "fetch_first_dates",
     "fetch_hedge_pair_inputs",
     "fetch_index_classes",
     "fetch_latest_boll_date",
+    "fetch_latest_crowdedness_date",
     "fetch_latest_macd_date",
     "fetch_latest_ma_date",
     "fetch_latest_options_vix_date",
@@ -103,6 +111,7 @@ __all__ = [
     "fetch_rf_inputs",
     "fetch_rsi_codes",
     "fetch_rsi_inputs",
+    "resolve_crowdedness_universe",
     "resolve_hedge_pair_universe",
     "resolve_sec_type_universe",
 ]

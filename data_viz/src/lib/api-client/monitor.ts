@@ -49,7 +49,8 @@ export interface ProcessStatus {
   maxParallel: number | null;
   /** Supposed-run cadence from the service_config/ static tree
    *  (database/sql/monitoring/static/service_config/), mirrored from
-   *  scripts/*.sh; "on_demand" for services without their own file. */
+   *  the orchestration tier files; "on_demand" for services without
+   *  their own file. */
   freq: string;
   /** The freq's supposed-run window in ms (null = no checkable period:
    *  always / occasionally / on_demand / once) — a Last beat older than
@@ -199,16 +200,12 @@ export async function runHealthCheck(): Promise<HealthCheckResponse> {
 // Start the always-on resident processes — POST /api/monitor/stream-always
 // ---------------------------------------------------------------------------
 
-/** Result of the always-stream starter: `success` = the hidden keeper
- * session was spawned through the API server's shared WSL runner (same
- * mechanism as every other API-triggered python run — no console
- * window). It runs the idempotent watchdog starter then
- * scripts/stream_always.sh (the five pollers, sleep 1 apart) and parks,
- * keeping the nohup'd services alive (a WSL session's children die with
- * its wsl.exe client, so the client — held by the API server — must stay
- * connected; an API server restart takes the stream down and the button
- * is the recovery). Real liveness is the heartbeat table the page
- * already polls: first beats within ~60s. */
+/** Result of the always-stream starter: `success` = the monitor area's
+ *  ensure-up pass ran (every desired-running-but-down resident gets an
+ *  explicit start; idempotent over a healthy fleet — recurring
+ *  supervision stays the watchdog's every ~60s plus the maintainer's
+ *  daily 07:00 China-time pass). Real liveness is the heartbeat table
+ *  the page already polls: first beats within ~60s. */
 export interface StreamAlwaysResponse {
   success: boolean;
   message: string;
@@ -359,10 +356,11 @@ export interface OrchestrationRunResponse {
   message: string;
 }
 
-/** Spawn ONE orchestration tier's whole step list — the shared serial
- *  runner `bash scripts/run_steps.sh scripts/orchestration/<file>`
- *  (fire-and-forget; the tier's steps heartbeat onto Pipeline processes
- *  as they start). Raw fetch, same no-cache rule as runService. */
+/** Spawn ONE orchestration tier's whole step list — the monitor area's
+ *  serial tier runner over scripts/orchestration/<file> (fire-and-forget;
+ *  the tier's steps heartbeat onto Pipeline processes as they start; the
+ *  maintainer's nightly chain drives the same runner at 16:00 China
+ *  time on trading days). Raw fetch, same no-cache rule as runService. */
 export async function runOrchestrationTier(
   file: string,
 ): Promise<OrchestrationRunResponse> {
@@ -759,4 +757,408 @@ export async function fetchAiKgChain(
     throw new Error(`ai kg-chain fetch failed (HTTP ${res.status})`);
   }
   return (await res.json()) as AiKgChainResponse;
+}
+
+// ---------------------------------------------------------------------------
+//  DB workload audit (the DB tab) — monitor.db_table_audit /
+//  monitor.db_table_alert / monitor.db_health
+// ---------------------------------------------------------------------------
+
+/** Which store the DB tab's workload endpoints read: live = the per-pass
+ *  audit table's trailing window (hours) vs archive = the computed daily
+ *  rollup table's LIFETIME aggregate per table (no window — the archive
+ *  IS the retention). */
+export type DbAuditSource = "live" | "archive";
+
+/** One table's LATEST workload audit row: the write side from the
+ *  primary (write_rate + the write-heavy flag) and the read side from
+ *  the replica (where the API reads). Rows are ACTIVITY-SPARSE — a
+ *  table with no row in the window is idle, so writeCheckedAt /
+ *  readCheckedAt read as "last active pass". For a partitioned table
+ *  the row is the FAMILY aggregate (rates and deltas summed over its
+ *  live partitions, flag the max family severity) — the partitions
+ *  themselves come from fetchDbPartitions on expand. In archive mode
+ *  (source=archive) the row is the table's LIFETIME aggregate over the
+ *  daily rollup table instead: ins/upd/del are lifetime day-sum totals,
+ *  writeRate/readRate lifetime peaks, nLiveTup/nDeadTup/sizeBytes the
+ *  latest archived day's end-of-day snapshots, and the stamps the most
+ *  recent active day (windowS always null). */
+export interface DbTableEntry {
+  schema: string;
+  table: string;
+  writeCheckedAt: string | null;
+  windowS: number | null;
+  /** (ins+upd+del) rows/s over the window — the write-heavy metric. */
+  writeRate: number | null;
+  insRows: number | null;
+  updRows: number | null;
+  delRows: number | null;
+  readCheckedAt: string | null;
+  /** scans/s (replica side when the API read it, else the primary's
+   *  own read rate; null = no audited read activity). */
+  readRate: number | null;
+  nLiveTup: number | null;
+  nDeadTup: number | null;
+  sizeBytes: number | null;
+  /** db_write_flag code: 0 ok | 1 amber | 2 red; null = not evaluated. */
+  writeFlag: number | null;
+  writeFlagLabel: string | null;
+  /** Live partition children of this table (0 = not partitioned) —
+   *  the expand affordance; null on fetchDbPartitions rows. */
+  partitionCount: number | null;
+}
+
+/** The workload table's ordering — workload = combined write+read rate
+ *  (heaviest first), recent = the later last-active stamp (newest first). */
+export type DbTableOrder = "workload" | "recent";
+
+export interface DbTablesResponse {
+  success: true;
+  generatedAt: string;
+  hours: number;
+  order: string;
+  source: DbAuditSource;
+  rows: DbTableEntry[];
+}
+
+/** One point of the per-table workload trend — LIVE mode: one active
+ *  pass of one table on the primary (idle gaps have no points);
+ *  ARCHIVE mode: one GMT operational day of the daily rollup (at = the
+ *  day's last active stamp, date = the GMT day itself — browser-local
+ *  dates of at can skew a day off the archive's UTC-day grain). */
+export interface DbTrendPoint {
+  at: string;
+  date: string | null;
+  windowS: number | null;
+  writeRate: number | null;
+  readRate: number | null;
+  insRows: number | null;
+  updRows: number | null;
+  delRows: number | null;
+  writeFlag: number | null;
+}
+
+export interface DbTrendResponse {
+  success: true;
+  generatedAt: string;
+  schema: string;
+  table: string;
+  hours: number;
+  source: DbAuditSource;
+  /** true = points are the partition-family aggregate of a partitioned
+   *  parent (false = a plain table's / a partition's own rows). */
+  family: boolean;
+  points: DbTrendPoint[];
+}
+
+/** One write_flag STATE TRANSITION from the alert trail: raise /
+ *  downgrade / clear, with the tripping rate vs the threshold in
+ *  effect (severity 0 ok = a clear). */
+export interface DbAlertEntry {
+  id: number;
+  raisedAt: string;
+  schema: string;
+  table: string;
+  severity: number;
+  severityLabel: string;
+  writeRate: number;
+  thresholdRate: number;
+  windowS: number;
+  message: string;
+}
+
+export interface DbAlertsResponse {
+  success: true;
+  generatedAt: string;
+  rows: DbAlertEntry[];
+}
+
+/** The LATEST monitor.db_health row of one Postgres instance (the 60s
+ *  sampler — the DB tab's instance vitals panel). */
+export interface DbInstanceVitals {
+  instance: number;
+  instanceLabel: string;
+  checkedAt: string;
+  healthy: boolean;
+  connectMs: number | null;
+  error: string | null;
+  uptimeS: number | null;
+  activeConnections: number | null;
+  dbSizeBytes: number | null;
+  cacheHitRatio: number | null;
+  replicationState: number | null;
+  replicationStateLabel: string | null;
+  replayBacklogBytes: number | null;
+  walDirBytes: number | null;
+  cpuPct: number | null;
+  memPct: number | null;
+}
+
+export interface DbInstanceTrendPoint {
+  instance: number;
+  at: string;
+  activeConnections: number | null;
+  cacheHitRatio: number | null;
+  replayBacklogBytes: number | null;
+}
+
+export interface DbInstancesResponse {
+  success: true;
+  generatedAt: string;
+  latest: DbInstanceVitals[];
+  trend: DbInstanceTrendPoint[];
+}
+
+/** The DB tab's per-table workload panel — LATEST audit row per MAIN
+ *  table (partition families folded into their parent row) over a
+ *  trailing window (activity-sparse), ordered server-side by the given
+ *  key (workload | recent) before the limit. live hours=0 = the full
+ *  retained history (no lower bound — the sampler's retention prunes
+ *  the table), so tables idle in recent windows still show;
+ *  source=archive swaps to the daily rollup table's LIFETIME aggregate
+ *  per table (hours ignored on the wire, echoed 0). Plain no-store
+ *  fetch: live audit state — the point of the tab is "what is hot right
+ *  now". */
+export async function fetchDbTables(
+  hours = 24,
+  limit = 500,
+  order: DbTableOrder = "workload",
+  source: DbAuditSource = "live",
+): Promise<DbTablesResponse> {
+  const res = await fetch(
+    `/api/monitor/db/tables?hours=${hours}&order=${order}&limit=${limit}&source=${source}`,
+    { cache: "no-store" },
+  );
+  if (!res.ok) {
+    throw new Error(`db tables fetch failed (HTTP ${res.status})`);
+  }
+  return (await res.json()) as DbTablesResponse;
+}
+
+export interface DbPartitionsResponse {
+  success: true;
+  generatedAt: string;
+  schema: string;
+  table: string;
+  hours: number;
+  source: DbAuditSource;
+  rows: DbTableEntry[];
+}
+
+/** The live partitions of ONE partitioned parent (the lazy expansion
+ *  behind a workload-panel family row) — every partition present, its
+ *  audit metrics populated when it was active in the window (live
+ *  hours=0 = full retained history; source=archive = the rollup
+ *  table's LIFETIME aggregate per partition, hours ignored on the
+ *  wire). Plain no-store fetch: live audit state. */
+export async function fetchDbPartitions(
+  schema: string,
+  table: string,
+  hours = 24,
+  source: DbAuditSource = "live",
+): Promise<DbPartitionsResponse> {
+  const res = await fetch(
+    `/api/monitor/db/partitions?schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}&hours=${hours}&source=${source}`,
+    { cache: "no-store" },
+  );
+  if (!res.ok) {
+    throw new Error(`db partitions fetch failed (HTTP ${res.status})`);
+  }
+  return (await res.json()) as DbPartitionsResponse;
+}
+
+/** ONE table's write/read workload trend on the primary (the drill-down
+ *  chart behind a workload-row click; a partitioned parent returns its
+ *  family aggregate — response.family; live hours=0 = the full retained
+ *  history; source=archive = the rollup table's per-GMT-day series over
+ *  the full archive history, each point stamped with its operational
+ *  day — point.date). */
+export async function fetchDbTableTrend(
+  schema: string,
+  table: string,
+  hours = 6,
+  source: DbAuditSource = "live",
+): Promise<DbTrendResponse> {
+  const res = await fetch(
+    `/api/monitor/db/trend?schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}&hours=${hours}&source=${source}`,
+    { cache: "no-store" },
+  );
+  if (!res.ok) {
+    throw new Error(`db trend fetch failed (HTTP ${res.status})`);
+  }
+  return (await res.json()) as DbTrendResponse;
+}
+
+/** The write-heavy alert trail — flag transitions, newest first. */
+export async function fetchDbAlerts(limit = 50): Promise<DbAlertsResponse> {
+  const res = await fetch(`/api/monitor/db/alerts?limit=${limit}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new Error(`db alerts fetch failed (HTTP ${res.status})`);
+  }
+  return (await res.json()) as DbAlertsResponse;
+}
+
+/** One DISTINCT audited SQL statement: pg_stat_statements' normalized
+ *  text (literals -> $n) with its sha256 identity and delta-accumulated
+ *  call/time/row totals (cumulative since first seen — no window). */
+export interface DbSqlEntry {
+  /** sha256 hex of the normalized statement text — the identity. */
+  sqlHash: string;
+  sqlText: string;
+  queryid: string | null;
+  roles: string[];
+  instances: string[];
+  callCount: number;
+  totalExecMs: number;
+  avgExecMs: number;
+  maxExecMs: number;
+  rowsTotal: number;
+  firstSeenAt: string;
+  lastActiveAt: string;
+}
+
+export interface DbSqlResponse {
+  success: true;
+  generatedAt: string;
+  order: string;
+  rows: DbSqlEntry[];
+}
+
+/** The SQL audit rows, ordered by the given key (total_ms | calls |
+ *  recent | avg_ms), optionally narrowed to a text substring or hash
+ *  prefix. Plain no-store fetch — live audit state. */
+export async function fetchDbSql(
+  order = "total_ms",
+  limit = 100,
+  q = "",
+): Promise<DbSqlResponse> {
+  const res = await fetch(
+    `/api/monitor/db/sql?order=${order}&limit=${limit}&q=${encodeURIComponent(q)}`,
+    { cache: "no-store" },
+  );
+  if (!res.ok) {
+    throw new Error(`db sql fetch failed (HTTP ${res.status})`);
+  }
+  return (await res.json()) as DbSqlResponse;
+}
+
+/** The instance vitals panel: latest db_health row per instance + the
+ *  trailing connections / cache-hit / backlog trend (hours=0 = archive:
+ *  the full retained db_health history). */
+export async function fetchDbInstances(
+  hours = 24,
+): Promise<DbInstancesResponse> {
+  const res = await fetch(`/api/monitor/db/instances?hours=${hours}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new Error(`db instances fetch failed (HTTP ${res.status})`);
+  }
+  return (await res.json()) as DbInstancesResponse;
+}
+
+// ---------------------------------------------------------------------------
+// Non-daily tasks — completeness monitor + weekend backfill
+// ---------------------------------------------------------------------------
+
+/** One non-daily task row (GET /api/monitor/non-daily): the orchestration
+ *  tier step merged with its check config, its completeness state
+ *  (monitor.non_daily_task_state — the identity-grounded verdict) and its
+ *  service_config cadence. */
+export type NonDailyState = "unknown" | "complete" | "missing" | "check_failed";
+
+export interface NonDailyTask {
+  service: string;
+  tier: string;
+  step: string;
+  script: string;
+  args: string[];
+  check: string | null;
+  rerunArgs: string[];
+  rerunEligible: boolean;
+  state: NonDailyState;
+  stateCode: number;
+  missingCount: number;
+  missingDetail: Record<string, unknown> | null;
+  attempts: number;
+  lastCheckAt: string | null;
+  lastRerunAt: string | null;
+  nextCheckAt: string | null;
+  freq: string | null;
+  schedule: string | null;
+}
+
+export interface NonDailyTasksResponse {
+  success: true;
+  generatedAt: string;
+  tasks: NonDailyTask[];
+}
+
+export interface NonDailyEvaluateResponse {
+  success: true;
+  evaluated: number;
+  complete: number;
+  missing: number;
+  checkFailed: number;
+}
+
+export interface NonDailyRerun {
+  service: string;
+  tier: string;
+  module: string;
+  args: string[];
+  dryRun: boolean;
+  submitted: boolean;
+  exitCode: number | null;
+  stateAfter: string | null;
+}
+
+export interface NonDailyBackfillResponse {
+  success: true;
+  evaluated: number;
+  missing: number;
+  due: string[];
+  reruns: NonDailyRerun[];
+  detail: string;
+}
+
+/** The non-daily tasks inventory. Plain no-store fetch — the state rows
+ *  change with every evaluate / backfill pass. */
+export async function fetchNonDailyTasks(): Promise<NonDailyTasksResponse> {
+  const res = await fetch("/api/monitor/non-daily", { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error(`non-daily tasks fetch failed (HTTP ${res.status})`);
+  }
+  return (await res.json()) as NonDailyTasksResponse;
+}
+
+/** One completeness check pass now (the page's Evaluate action; the
+ *  verdicts upsert into monitor.non_daily_task_state). */
+export async function evaluateNonDailyTasks(): Promise<NonDailyEvaluateResponse> {
+  const res = await fetch("/api/monitor/non-daily/evaluate", {
+    method: "POST",
+  });
+  if (!res.ok) {
+    throw new Error(`non-daily evaluate failed (HTTP ${res.status})`);
+  }
+  return (await res.json()) as NonDailyEvaluateResponse;
+}
+
+/** The weekend backfill drive on demand (dryRun=true lists the due
+ *  re-runs without submitting). Can run for minutes when it drives real
+ *  re-runs — the caller surfaces a spinner. */
+export async function backfillNonDailyTasks(
+  dryRun: boolean,
+): Promise<NonDailyBackfillResponse> {
+  const res = await fetch("/api/monitor/non-daily/backfill", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dryRun }),
+  });
+  if (!res.ok) {
+    throw new Error(`non-daily backfill failed (HTTP ${res.status})`);
+  }
+  return (await res.json()) as NonDailyBackfillResponse;
 }

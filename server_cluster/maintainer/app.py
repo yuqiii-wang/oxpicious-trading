@@ -2,9 +2,11 @@
 
 One lean FastAPI (the config-area own-app shape): liveness, the job
 catalogue with each job's last result, and a run-on-demand trigger for
-a single job or the whole schedule. The scheduler daemon thread owns
-the daily fire; the API shares the same job objects, so an on-demand
-run refreshes ``last_result`` everywhere.
+a single job or the shared schedule. ONE scheduler daemon thread owns
+every fire — jobs declare their own ``fire_at`` group (03:30 shared
+maintenance, 07:00 fleet bring-up, 16:00 nightly pipeline chain); the
+API shares the same job objects, so an on-demand run refreshes
+``last_result`` everywhere.
 """
 from __future__ import annotations
 
@@ -18,9 +20,15 @@ from pydantic import BaseModel
 
 from server_cluster._common.config import AreaConfig, ClusterConfig
 from server_cluster._common.process_manager import ProcessManager
-from server_cluster.maintainer.bring_up import DailyBringUp, FleetBringUpJob
-from server_cluster.maintainer.jobs import (JobResult, LogCleanupJob,
+from server_cluster.maintainer.bring_up import FleetBringUpJob
+from server_cluster.maintainer.jobs import (DbTableAuditArchiveJob,
+                                            JobResult, LogCleanupJob,
                                             StatsDbBackupJob)
+from server_cluster.maintainer.non_daily import (NonDailyBackfillJob,
+                                                 NonDailyBackfillRunRequest)
+from server_cluster.maintainer.pipeline import (NightlyPipelineJob,
+                                                PipelineLastPass,
+                                                PipelineRunRequest)
 from server_cluster.maintainer.processes import build_router
 from server_cluster.maintainer.scheduler import MaintenanceScheduler
 
@@ -54,32 +62,46 @@ class MaintenanceApp:
                  cluster: Optional[ClusterConfig] = None) -> None:
         self.config = config
         self.processes = ProcessManager(config)
-        self.bring_up = DailyBringUp()
+        self.pipeline = NightlyPipelineJob()
+        self.non_daily_backfill = NonDailyBackfillJob()
         self.jobs: list = [LogCleanupJob(), StatsDbBackupJob(),
-                           self.bring_up.job]
+                           DbTableAuditArchiveJob(), FleetBringUpJob(),
+                           self.pipeline, self.non_daily_backfill]
         self.scheduler = MaintenanceScheduler(self.jobs)
         self.app = self._build_app()
 
     def _build_app(self) -> FastAPI:
         app = FastAPI(
             title=f"server-cluster-{self.config.area}",
-            description="Resident maintenance API: periodic cluster "
-            "maintenance jobs (log cleanup today) on a daily schedule, "
-            "plus run-on-demand over the same job objects — and, since "
-            "2026-11-13, the cluster's ONE resident-process EXECUTOR "
-            "(the monitor/downloader detectors POST their restarts "
-            "here instead of spawning in-process).",
+            description="Resident maintenance API: the cluster's "
+            "schedules — daily maintenance jobs (03:30), the fleet "
+            "bring-up (07:00), the nightly pipeline chain (16:00 "
+            "China time on A-share trading days: monitoring → "
+            "downloads → builds → analysis → strategy driven through "
+            "the monitor area's orchestration runner; the recovery "
+            "surface GET /pipeline/last-pass + POST /pipeline/finish "
+            "covers failed or interrupted passes), and the Saturday "
+            "non-daily backfill (05:00 China time: the monitor area's "
+            "/non-daily completeness checks + weekend re-runs of "
+            "missing monthly/quarterly/semiannual tasks, weekly retry "
+            "until loaded) — plus run-on-demand "
+            "over the same job objects, and, since 2026-11-13, the "
+            "cluster's ONE resident-process EXECUTOR (the "
+            "monitor/downloader detectors POST their restarts here "
+            "instead of spawning in-process).",
             version="1.0.0",
         )
 
         @app.on_event("startup")
         async def _start_threads() -> None:
             self.scheduler.start()
-            self.bring_up.start()
+            # An interrupted nightly chain (state file from today)
+            # resumes on a daemon thread — the in-flight tier, if any,
+            # is adopted first, never raced.
+            self.pipeline.resume_if_incomplete()
 
         @app.on_event("shutdown")
         async def _stop_threads() -> None:
-            self.bring_up.stop()
             self.scheduler.stop()
 
         app.include_router(build_router(self.processes))
@@ -103,22 +125,38 @@ class MaintenanceApp:
                 last_result=j.last_result) for j in self.jobs])
 
         # The run endpoints are sync ``def`` on purpose: a job pass is
-        # minutes-long blocking work (a whole-tree mirror walk), and an
-        # async def would run it on the event loop, wedging every other
-        # endpoint until the pass ends. FastAPI runs sync endpoints on
-        # the threadpool, so the API stays live meanwhile.
+        # minutes-to-hours-long blocking work (a whole-tree mirror
+        # walk, a full tier chain), and an async def would run it on
+        # the event loop, wedging every other endpoint until the pass
+        # ends. FastAPI runs sync endpoints on the threadpool, so the
+        # API stays live meanwhile.
         @app.post("/jobs/{name}/run", response_model=JobResult)
-        def run_job(name: str) -> JobResult:
+        def run_job(name: str,
+                    req: Optional[PipelineRunRequest] = None) -> JobResult:
             job = next((j for j in self.jobs if j.name == name), None)
             if job is None:
                 raise HTTPException(
                     status_code=404, detail=f"no job named {name!r} — "
                     f"known: {[j.name for j in self.jobs]}")
+            if isinstance(job, (NightlyPipelineJob, NonDailyBackfillJob)):
+                return job.run(req)
             return job.run()
 
         @app.post("/jobs/run-all", response_model=list[JobResult])
         def run_all() -> list:
             return self.scheduler.run_all()
+
+        # The nightly chain's recovery surface — the 21:00 check (or
+        # an operator) reads the last pass's record and finishes /
+        # reruns what remains. GET is instant; finish is a sync ``def``
+        # like the run endpoints (it IS a chain pass, hours-long).
+        @app.get("/pipeline/last-pass", response_model=PipelineLastPass)
+        async def pipeline_last_pass() -> PipelineLastPass:
+            return self.pipeline.last_pass()
+
+        @app.post("/pipeline/finish", response_model=JobResult)
+        def pipeline_finish() -> JobResult:
+            return self.pipeline.finish_incomplete()
 
         return app
 

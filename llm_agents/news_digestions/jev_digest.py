@@ -31,6 +31,8 @@ about what the row contains. ``llm_model`` records ``onejev-1.6-4b``.
   * ``digest_new_articles_jev``  — the builds.text side task: digest the
     articles a news build just wrote and upsert their digestion rows
     (fail-soft — a host outage logs a warning, never fails the build).
+    The fake-news detector (``fake_news.py``) rides EVERY row here too,
+    same as the CLI loop.
 """
 from __future__ import annotations
 
@@ -41,6 +43,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from pydantic import BaseModel, Field
 
 from llm_agents.news_digestions.agent import truncate_content
+from llm_agents.news_digestions.fake_news import FakeNewsDetector
 from llm_agents.news_digestions.store import fetch_pending_articles, upsert_digestions
 
 logger = logging.getLogger(__name__)
@@ -173,13 +176,15 @@ async def digest_new_articles_jev(
     if not articles:
         return {"digested": 0, "failed": 0, "pending": 0}
     engine = JevDigestionEngine(config)
+    detector = FakeNewsDetector()
     sem = asyncio.Semaphore(max(1, concurrency))
     ok = failed = 0
 
     async def run_one(article: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         async with sem:
             try:
-                return await engine.digest_article(article)
+                return await detector.annotate_row(
+                    await engine.digest_article(article), article)
             except Exception as exc:  # one bad read never kills the build
                 failed_article = article["news_id"]
                 logger.warning("    [jev-digest] news_id=%s failed: %s: %s",

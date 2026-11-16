@@ -22,10 +22,12 @@
 \ir analysis_signals/portfolio_signal_rules.sql
 \ir analysis_signals/signal_rules.sql
 \ir futures_ext.sql
-\ir hot_stock_momentum.sql
 \ir industry_correlations.sql
 \ir industry_hypes_seasonal.sql
 \ir market_crowdedness.sql
+\ir market_crowdedness_hot_sets.sql
+\ir market_crowdedness_hot_tech.sql
+\ir market_crowdedness_year.sql
 \ir market_participation.sql
 \ir mov_ave_price_vs_amt.sql
 \ir mov_ave_spreads/mov_ave_high_low_pct.sql

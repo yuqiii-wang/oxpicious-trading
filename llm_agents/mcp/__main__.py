@@ -37,13 +37,14 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8765)
     args = ap.parse_args()
 
-    # Liveness heartbeat for database/stream_watchdog.py — the watchdog
-    # starts this service when no heartbeat row exists and restarts it
-    # when the beat goes stale. Must stay registered for the server's
-    # whole life: the exit hooks record the stop on shutdown. Logging is
-    # stderr-only (logging default): the stdio transport carries the
-    # MCP JSON-RPC stream on stdout and must stay clean.
-    register_service("llm_agents.mcp")
+    # Liveness heartbeat — a monitor-area resident now (2026-11 resident
+    # migration; the monitor's supervisor starts/revives it), so the
+    # scope is passed explicitly: the service left MONITORED_SERVICES,
+    # the registry no longer supplies it. Must stay registered for the
+    # server's whole life: the exit hooks record the stop on shutdown.
+    # Logging is stderr-only (logging default): the stdio transport
+    # carries the MCP JSON-RPC stream on stdout and must stay clean.
+    register_service("llm_agents.mcp", scope="database", sub_scope="stream")
     DbReadonlyServer(host=args.host, port=args.port).run(stdio=args.stdio)
 
 

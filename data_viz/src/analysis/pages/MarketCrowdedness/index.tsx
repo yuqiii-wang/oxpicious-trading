@@ -10,8 +10,12 @@
  *
  *   • sec_type toggle exposes INDEX and INDUSTRY only (the pipeline's
  *     scope) — default index.
- *   • One CrowdednessPanel card per code — the daily crowdedness curve
- *     from analysis.market_crowdedness.
+ *   • One card pair per code (CrowdednessCodeGroup): CrowdednessPanel
+ *     (the daily crowdedness curve from analysis.market_crowdedness)
+ *     and HotTechPanel (the hot stocks' typical technical profile from
+ *     …_hot_tech, with the stat-switcher button group) — sharing the
+ *     Hot set year select and one echarts.connect group (dataZoom time
+ *     slider + hover sync).
  *
  * The nav/codes universe is the FULL classification (stats.sec_classification
  * type='index' + stats.industry_identity entities), deliberately NOT
@@ -26,7 +30,7 @@ import {
   fetchMarketCrowdednessPageCodes,
 } from "./navSources";
 import { PAGE_SIZE } from "./constants";
-import CrowdednessPanel from "./CrowdednessPanel";
+import CrowdednessCodeGroup from "./CrowdednessCodeGroup";
 
 export default function MarketCrowdednessPage() {
   return (
@@ -49,7 +53,9 @@ export default function MarketCrowdednessPage() {
       errorPrefix="Market Crowdedness data"
       pageSize={PAGE_SIZE}
       renderCode={(c) => (
-        <CrowdednessPanel
+        // The shell wraps this in its own keyed Fragment; the group
+        // renders the two cards as the two Stack children under it.
+        <CrowdednessCodeGroup
           code={c.code}
           name={c.name}
           secType={c.secType as MarketCrowdednessSecType}

@@ -14,7 +14,7 @@ import contextlib
 import json
 import logging
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dc_replace
 from typing import (Any, Callable, Dict, List, Optional, Set, Tuple,
                      TypedDict)
 
@@ -50,7 +50,7 @@ from llm_agents.deep_agents.agents import (
 )
 from llm_agents.deep_agents.supervisor import SupervisorSession  # noqa: F401 (tests)
 from llm_agents.deep_agents.supervisor.repair import (
-    ACTION_IGNORE, ACTION_RETRY, RepairChannel,
+    ACTION_IGNORE, ACTION_RETRY, RepairChannel, cap_retry_step_budget,
 )
 from llm_agents.deep_agents.planning.plan_json import REVIEW_NODE_TAGS
 from llm_agents.deep_agents.planning.planner import (
@@ -164,13 +164,15 @@ class StepLane:
         common = self._hop_common(state)
 
         async def _fetch_delegate(
-                state_row: StateRow) -> Tuple[Optional[str], bool]:
+                state_row: StateRow) -> Tuple[Optional[str], bool,
+                                             Optional[str]]:
             try:
-                return await PLAN_STORE.fetch_step_delegate(state_row.state_id)
+                return await PLAN_STORE.fetch_step_delegate(
+                    state_row.state_id)
             except Exception as exc:  # noqa: BLE001 — inline fallback
                 logger.warning("delegate fetch failed for step %s: %s",
                                state_row.state_id, exc)
-                return None, False
+                return None, False, None
 
         findings = list(state.get("findings") or [])
         n_tool_calls = int(state.get("n_tool_calls") or 0)
@@ -194,8 +196,9 @@ class StepLane:
         # settles this member's row failed and returns its finding, so
         # one bad spawn never takes the wave (or the lane) down.
         # ------------------------------------------------------------------
-        async def _delegated_hop(step_row: StateRow,
-                                 delegate: str) -> Tuple[str, str, int, int]:
+        async def _delegated_hop(step_row: StateRow, delegate: str,
+                                 study_focus: Optional[str] = None,
+                                 ) -> Tuple[str, str, int, int]:
             writer = NodeRunWriter(
                 self._store, thread_id, f"step-{step_row.state_id}",
                 model=state.get("model"), llm=False,
@@ -258,6 +261,32 @@ class StepLane:
                 # the engine. The step hop carries no context of its
                 # own; the child mints its own (registry + requests all
                 # hang off the child's id).
+                # THE CAP-CLASS RESUME (2026-11-15, run d7b24a36): a
+                # supervisor retry verdict on a step-cap death carries
+                # a RAISED conversation budget (repair.cap_retry_
+                # step_budget over the entry's prior_error) — this
+                # hop's DeepAgent AND its delegated child run under it
+                # (run_delegation re-caps the child at the parent's
+                # budget, so the parent must rise too), and the
+                # supervisor's instruction rides the child's first
+                # user message as an addendum. Per-hop override — the
+                # shared `common` is never mutated (sibling hops keep
+                # their clamp).
+                resume_info = resume_map.get(str(step_row.state_id))
+                hop_common = dict(common)
+                resume_addendum: Optional[str] = None
+                if resume_info:
+                    raised = cap_retry_step_budget(
+                        str(resume_info.get("prior_error") or ""),
+                        int(common["max_steps"]))
+                    if raised:
+                        hop_common["max_steps"] = raised
+                        resume_addendum = StepAgent._resume_block({
+                            "instruction": str(
+                                resume_info.get("instruction") or ""),
+                            "prior_error": str(
+                                resume_info.get("prior_error") or ""),
+                            "step_budget": str(raised)})
                 hooks = SpawnHooks(
                     thread_id, step_row.state_id,
                     store=self._store, parent_context_id=None,
@@ -270,7 +299,11 @@ class StepLane:
                     extra_builtin_tools=load_tools,
                     preplanned_steps=preplanned,
                     decision_engine=getattr(
-                        self, "_decision_engine", None))
+                        self, "_decision_engine", None),
+                    # The thread scope the child inherits (or unions its
+                    # study focus onto — core/authorization).
+                    authorization=getattr(
+                        self, "_authorization", None))
                 agent = DeepAgent(
                     self._provider, self._mcp,
                     allow_subagents=True,
@@ -281,17 +314,24 @@ class StepLane:
                     subagent_input_hook=hooks.input_hook,
                     subagent_output_hook=hooks.output_hook,
                     subagent_run_wrapper=hooks.run_wrapper,
-                    **common)
+                    **hop_common)
                 broker.agent = agent
                 # A delegated spawn (a sub-plan section) spends its first
                 # conversation turns planning its own subtree (add_nodes
                 # + per-node ticks) before the study begins — give it
                 # bounded headroom over the inline clamp (live 2026-11-03
-                # run: 12-step spawns starved exactly there).
+                # run: 12-step spawns starved exactly there). The ceiling
+                # rises with a cap-class resume's raised budget (max with
+                # the clamp — the bump deliberately exceeds it).
                 finding = await agent.run_delegation(
-                    delegate, max_steps=min(
-                        common["max_steps"] + 8,
-                        run_limits().max_steps_cap))
+                    delegate,
+                    max_steps=min(
+                        hop_common["max_steps"] + 8,
+                        max(run_limits().max_steps_cap,
+                            int(hop_common["max_steps"]))),
+                    study_focus=study_focus,
+                    **({"user_addendum": resume_addendum}
+                       if resume_addendum else {}))
                 child = (agent.subagent_runs() or [None])[-1]
                 status = ("completed" if child is not None
                           and child.status == "completed" else "failed")
@@ -369,8 +409,24 @@ class StepLane:
         ) -> Tuple[str, str, int, int]:
             # One agent per hop run: its writer factory composes THIS
             # step's node item (step-<state_id>) + model + state row.
+            # THE CAP-CLASS RESUME (2026-11-15): the entry's raised
+            # budget overrides THIS hop's conversation budget only —
+            # a per-hop deps copy, the shared step_deps untouched.
+            info = resume_map.get(str(step_row.state_id))
+            hop_deps = step_deps
+            hop_budget: Optional[int] = None
+            if info and info.get("step_budget"):
+                try:
+                    hop_budget = int(info["step_budget"])
+                except (TypeError, ValueError):
+                    hop_budget = None
+                if hop_budget:
+                    hop_deps = dc_replace(
+                        step_deps,
+                        common={**step_deps.common,
+                                "max_steps": hop_budget})
             agent = StepAgent(
-                self._provider, deps=step_deps, thread_id=thread_id,
+                self._provider, deps=hop_deps, thread_id=thread_id,
                 model=state.get("model"),
                 writer_factory=lambda: NodeRunWriter(
                     self._store, thread_id, f"step-{step_row.state_id}",
@@ -379,26 +435,26 @@ class StepLane:
             # THE INSTRUCTED RESUME: a supervisor retry verdict left
             # this step's instruction in the node-scope resume map —
             # the agent re-runs WITH its prior context instead of cold.
-            info = resume_map.get(str(step_row.state_id))
             if info:
                 return await agent.resume(
                     step_row,
                     instruction=str(info.get("instruction") or ""),
                     prior_error=str(info.get("prior_error") or ""),
                     prior_context_id=(
-                        step_row.llm_context_id or None))
+                        step_row.llm_context_id or None),
+                    step_budget=hop_budget)
             return await agent.run(step_row)
 
-        head_delegate, head_parallel = await _fetch_delegate(step)
+        head_delegate, head_parallel, head_focus = await _fetch_delegate(step)
         # Wave eligibility: a DELEGATED step (its goal is fixed at plan
         # time — it cannot depend on sibling findings) or an explicitly
         # parallel-marked INLINE step (the planner asserted
         # independence). An unmarked inline step is the dependency
         # barrier: it may need every earlier finding, so the wave stops.
         async def _wave_flags(
-                row: StateRow) -> Tuple[Optional[str], bool]:
+                row: StateRow) -> Tuple[Optional[str], bool, Optional[str]]:
             if row.state_id == step.state_id:
-                return head_delegate, head_parallel
+                return head_delegate, head_parallel, head_focus
             return await _fetch_delegate(row)
 
         if head_delegate is not None or head_parallel:
@@ -418,12 +474,17 @@ class StepLane:
             wave: List[StateRow] = [step]
             delegates: Dict[int, Optional[str]] = {
                 step.state_id: head_delegate}
+            # Each delegated member's study focus (core/authorization —
+            # the plan's explicit per-spawn scope extension).
+            foci: Dict[int, Optional[str]] = {
+                step.state_id: head_focus}
             for candidate in runnable[1:]:
-                goal, parallel = await _wave_flags(candidate)
+                goal, parallel, focus = await _wave_flags(candidate)
                 if goal is None and not parallel:
                     break
                 wave.append(candidate)
                 delegates[candidate.state_id] = goal
+                foci[candidate.state_id] = focus
             if len(wave) > 1:
                 logger.info("parallel wave: %d step(s) %s run concurrently",
                             len(wave), [w.ordinal for w in wave])
@@ -438,7 +499,8 @@ class StepLane:
                 async with wave_slots:
                     goal = delegates[member.state_id]
                     if goal is not None:
-                        return await _delegated_hop(member, goal)
+                        return await _delegated_hop(
+                            member, goal, foci[member.state_id])
                     return await _inline_hop(member, plan_lock)
 
             outcomes = await asyncio.gather(
@@ -584,6 +646,17 @@ class StepLane:
                             "instruction": verdicts[sid].instruction,
                             "prior_error": prior_errors.get(sid, ""),
                         }
+                        # THE CAP-CLASS RESUME (repair.cap_retry_
+                        # step_budget, 2026-11-15): a retry verdict on a
+                        # step-cap death with recorded real work carries
+                        # the RAISED conversation budget this pass runs
+                        # under (str-encoded — the resume map is
+                        # checkpoint-safe strings only). The hop paths
+                        # read it into their per-hop budget.
+                        raised = cap_retry_step_budget(
+                            entry["prior_error"], int(common["max_steps"]))
+                        if raised:
+                            entry["step_budget"] = str(raised)
                         # BOTH maps: the per-hop dict rides the node
                         # return (fresh entries beat the settled-ids
                         # pruning); the node-scope map feeds the

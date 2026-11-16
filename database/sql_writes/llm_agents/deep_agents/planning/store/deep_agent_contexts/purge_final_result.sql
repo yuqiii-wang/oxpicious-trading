@@ -1,0 +1,21 @@
+-- SQL write action — llm.deep_agent_contexts DELETE (one thread's
+-- FINAL-RESULT rows — the REFRESH purge, 2026-11-16). Executed by
+-- llm_agents/deep_agents/planning/store/outputs.py
+-- (PlanStore.record_final_result, replace=True) from the deep-agents
+-- daemon's run-node fork lane: a fork fired off the chain's LAST
+-- segment's OUTPUT seat continues THE FINAL ANSWER's conversation, so
+-- its completed answer REPLACES the run's final-result document — ONE
+-- live final-result row per thread, so every reader of "the" result
+-- (the UI's Result view, the Thread Graph's output-seat context) sees
+-- the refreshed document and never a stale first write. Runs inside
+-- the caller's transaction with the INSERT that follows: purge +
+-- insert land together or neither does.
+--
+-- Params (asyncpg $n, in order):
+--   $1 thread_id  TEXT — the chain's RESULT segment thread
+--   $2 kind       SMALLINT — the static.label_dim 'agent_context_kind'
+--                 code for final-result (resolved host-side via
+--                 _common.labels AGENT_CONTEXT_KIND_CODE; never a
+--                 CASE map)
+DELETE FROM llm.deep_agent_contexts
+ WHERE thread_id = $1 AND kind = $2

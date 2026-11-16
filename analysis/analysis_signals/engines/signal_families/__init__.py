@@ -32,6 +32,15 @@ subclasses (engines/rule_base.py).
                 cross-down SELL (exit timing), the value source
                 computing the construction in its fetch from the base
                 closes
+  crowdedness   the pool-level crowding tail family (2026-11-16): the
+                nightly market crowdedness composite (analysis.
+                market_crowdedness) as rule cells ON THE INDEX ITSELF
+                — BUY below the pool's own bottom crowding tail (the
+                crowd washed out — reversion), SELL above the top
+                (exit timing); two axes (the raw score day spike +
+                the ma5 ONLINE read) x the nested tail grid, per-code
+                adaptive quantile bars; data-driven universe (the
+                codes with crowdedness rows — index only)
   hedge_pairs   the PORTFOLIO family (fresh 2026-10-24): the typical
                 negative-correlation trio — two offset-opposite leg
                 curves + the broad market, all three in their own RSI
@@ -59,6 +68,9 @@ from __future__ import annotations
 from analysis.analysis_signals.engines.rule_base import RuleEntry
 from analysis.analysis_signals.engines.signal_families.boll_std import (
     BollBandEntry,
+)
+from analysis.analysis_signals.engines.signal_families.crowdedness import (
+    CrowdTailEntry,
 )
 from analysis.analysis_signals.engines.signal_families.hedge_pairs import (
     HedgePairTrioEntry,
@@ -108,6 +120,7 @@ SIGNAL_FAMILY_ENTRIES: dict[str, list[type[RuleEntry]]] = {
     "rf_break": [RoofFloorEntry],
     "rebound": [ReboundEntry],
     "macd": [MacdCrossEntry],
+    "crowdedness": [CrowdTailEntry],
     "hedge_pairs": [HedgePairTrioEntry],
 }
 

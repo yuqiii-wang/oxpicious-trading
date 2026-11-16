@@ -34,10 +34,12 @@ since 2026-11-07 (user-directed; was the 10 study indices, still
 available via --codes <list>); the options families run their OWN
 universe — the sec_type's option underlyings from stats.options_terms
 (fetch/inputs.resolve_options_universe; options_wall drops the SSE ETF
-underlyings, whose chain OI is an accumulated-volume estimator) — and
+underlyings, whose chain OI is an accumulated-volume estimator) —
+crowdedness runs the codes with crowdedness rows at the sec_type
+(fetch/inputs.resolve_crowdedness_universe; index only), and
 hedge_pairs runs the ALL-INDUSTRY-PAIRS universe
 (fetch/inputs.resolve_hedge_pair_universe; --codes is ignored for
-both).
+all three).
 Bootstrap-first layout: the runtime setup runs before this module's
 imports.
 """
@@ -90,7 +92,8 @@ def _parse_args() -> argparse.Namespace:
                         "stats table (close IS NOT NULL) — the daily run "
                         "covers every index since 2026-11-07 (was the 10 "
                         "study indices); ignored for the options families "
-                        "(stats.options_terms) and hedge_pairs (its "
+                        "(stats.options_terms), crowdedness (the codes "
+                        "with crowdedness rows) and hedge_pairs (its "
                         "all-industry-pairs universe resolves from the "
                         "composites + offsets)")
     p.add_argument("--analyze", action="store_true",
@@ -132,6 +135,17 @@ async def amain() -> None:
             if label in OPTIONS_FAMILIES:
                 fam_codes = await resolve_options_universe(
                     conn, label, args.sec_type,
+                )
+            elif label == "crowdedness":
+                # the crowdedness universe is DATA-DRIVEN (the codes
+                # with crowdedness rows at the sec_type — index; etf/
+                # stock have no crowdedness data, the family skips) —
+                # --codes is ignored
+                from analysis.analysis_signals.fetch import (
+                    resolve_crowdedness_universe,
+                )
+                fam_codes = await resolve_crowdedness_universe(
+                    conn, args.sec_type,
                 )
             elif label == "hedge_pairs":
                 # the pair universe is DATA-DRIVEN (the offsets table's

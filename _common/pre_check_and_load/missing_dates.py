@@ -45,6 +45,7 @@ async def find_missing_dates(
     source_dates: Iterable[datetime.date],
     *,
     exchange: Optional[str] = None,
+    code_scope: Optional[str] = None,
 ) -> Set[datetime.date]:
     """Return the subset of ``source_dates`` not already present in ``table``.
 
@@ -64,6 +65,15 @@ async def find_missing_dates(
             equals that value. This prevents a date populated for one
             exchange from masking the same date being missing for another
             (e.g. SSE loading masking SZSE dates in stock_identity).
+        code_scope: optional code REGEX (POSIX, for ``code ~ $1``).
+            Same masking guard as ``exchange`` for tables whose rows are
+            families distinguished by code prefix instead of an exchange
+            column: on a SHARED table (stats.futures_identity carries the
+            CFFEX IC/IF/IH/IM + T/TF/TL/TS contracts alongside the offshore
+            CN = SGX / MCA = HKEX A50 families), the date-only check sees a
+            date already populated by ONE family and skips it, so the other
+            family's rows for that date are never loaded. Scope the check
+            to the family this build writes.
     """
     source_set = set(source_dates)
     if not source_set:
@@ -75,6 +85,11 @@ async def find_missing_dates(
         existing_rows = await conn.fetch(
             f'SELECT DISTINCT date FROM {from_clause} WHERE exchange = $1',
             exchange,
+        )
+    elif code_scope is not None:
+        existing_rows = await conn.fetch(
+            f'SELECT DISTINCT date FROM {from_clause} WHERE code ~ $1',
+            code_scope,
         )
     else:
         existing_rows = await conn.fetch(

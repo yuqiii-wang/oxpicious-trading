@@ -1,18 +1,21 @@
 """server_cluster.maintainer.processes — the cluster's ONE resident-process
 EXECUTOR, reached over HTTP by the detectors.
 
-The supervision split (2026-11-13): the monitor (its 7 server-residents)
-and the downloader (its 5 poller residents) own DETECTION — desired state,
-adoption, crash backoff, stale-process fingerprints — but the restart
-EXECUTION lives here: a detector that finds a resident dead or stale
-POSTs ``/processes/{service}/restart`` and this server terminates the old
-instance and spawns the fresh one (``ProcessManager`` — the same detached
-Popen + day-log contract as every spawner in the repo).
+The supervision split (2026-11-13): the monitor (its 14 residents — the
+seven other cluster servers, the six infra daemons and the stream
+watchdog itself, the completed 2026-11 resident migration) and the
+downloader (its 5 poller residents) own DETECTION — desired state,
+adoption, crash backoff, stale-process fingerprints, hung-runtime kills —
+but the restart EXECUTION lives here: a detector that finds a resident
+dead, stale or wedged POSTs ``/processes/{service}/restart`` and this
+server terminates the old instance and spawns the fresh one
+(``ProcessManager`` — the same detached Popen + day-log contract as every
+spawner in the repo).
 
 Scope guards:
-  * only the two resident NAMESPACES are restartable here
-    (``server_cluster.*`` servers + ``downloads.*`` pollers) — anything
-    else is 403;
+  * only the resident NAMESPACES are restartable here (``server_cluster.*``
+    servers + ``downloads.*`` pollers + the ``database.*`` /
+    ``llm_agents.*`` infra daemons and watchdog) — anything else is 403;
   * the maintainer NEVER restarts itself (a process cannot reliably
     SIGTERM itself and then spawn its successor) — 409; the monitor
     restarts this server in-process, as always.
@@ -30,9 +33,11 @@ from server_cluster._common.process_manager import (
 
 logger = logging.getLogger(__name__)
 
-# The resident namespaces this server may restart — the two populations
-# from server_cluster._common.config (SERVER_RESIDENTS + STREAM_POLLERS).
-RESIDENT_NAMESPACE_PREFIXES = ("server_cluster.", "downloads.")
+# The resident namespaces this server may restart — the resident
+# populations from server_cluster._common.config (SERVER_RESIDENTS +
+# INFRA_RESIDENTS + WATCHDOG_RESIDENTS + STREAM_POLLERS).
+RESIDENT_NAMESPACE_PREFIXES = ("server_cluster.", "downloads.",
+                               "database.", "llm_agents.")
 
 # This server's own module path: a self-restart request is refused (409) —
 # the monitor holds this server's life in-process (bootstrap: the
@@ -62,7 +67,8 @@ def _validate_service(service: str) -> None:
             status_code=403,
             detail=f"{service!r} is outside this server's resident "
             f"namespaces {RESIDENT_NAMESPACE_PREFIXES} — only the cluster "
-            "servers and the stream pollers restart here")
+            "servers, the stream pollers and the infra daemons restart "
+            "here")
     if service == SELF_SERVICE:
         raise HTTPException(
             status_code=409,

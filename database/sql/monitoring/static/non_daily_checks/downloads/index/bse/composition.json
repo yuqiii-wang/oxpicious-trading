@@ -1,0 +1,12 @@
+{
+  "service": "downloads.index.bse.composition",
+  "check": "db_universe_coverage",
+  "params": {
+    "view": "server_cluster/monitor/non_daily/index_composition_quarter",
+    "grace_days": 7
+  },
+  "rerun_args": [
+    "--force-quarter-start"
+  ],
+  "notes": "Shared view across the three index-composition tasks (BSE closeweight is the CSI co-published autofile)."
+}

@@ -58,11 +58,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import replace as dc_replace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.store.base import BaseStore
 
+from llm_agents.deep_agents.core.authorization import AuthorizationContext
 from llm_agents.deep_agents.core.mcp import McpToolClient
 from llm_agents.deep_agents.core.provider import ZhipuChatProvider
 from llm_agents.deep_agents.agents import StepAgent
@@ -81,7 +83,7 @@ from llm_agents.deep_agents.langgraph.state_store import (
 from llm_agents.deep_agents.limits import run_limits
 from llm_agents.deep_agents.planning.store import StateRow
 from llm_agents.deep_agents.supervisor.repair import (
-    ACTION_IGNORE, ACTION_RETRY, RepairChannel,
+    ACTION_IGNORE, ACTION_RETRY, RepairChannel, cap_retry_step_budget,
 )
 
 logger = logging.getLogger("deep_agents.runner.review_lane")
@@ -176,6 +178,22 @@ class ReviewLane:
                 deps = self.build_step_deps(
                     state, thread_id=thread_id,
                     findings=list(state.get("findings") or []))
+                # THE CAP-CLASS RESUME (2026-11-15, parity with the step
+                # lane): the entry's raised budget overrides THIS seat's
+                # conversation budget only — a per-hop deps copy.
+                info = (state.get("resume_instructions") or {}).get(
+                    str(seat_row.state_id))
+                hop_budget: Optional[int] = None
+                if info and info.get("step_budget"):
+                    try:
+                        hop_budget = int(info["step_budget"])
+                    except (TypeError, ValueError):
+                        hop_budget = None
+                    if hop_budget:
+                        deps = dc_replace(
+                            deps,
+                            common={**deps.common,
+                                    "max_steps": hop_budget})
                 agent = StepAgent(
                     self._provider, deps=deps, thread_id=thread_id,
                     model=state.get("model"),
@@ -183,15 +201,14 @@ class ReviewLane:
                         self._store, thread_id, f"step-{seat_row.state_id}",
                         model=state.get("model"), llm=True,
                         state_id=seat_row.state_id))
-                info = (state.get("resume_instructions") or {}).get(
-                    str(seat_row.state_id))
                 if info:
                     status, finding, n_llm, n_tool = await agent.resume(
                         seat_row,
                         instruction=str(info.get("instruction") or ""),
                         prior_error=str(info.get("prior_error") or ""),
                         prior_context_id=(
-                            seat_row.llm_context_id or None))
+                            seat_row.llm_context_id or None),
+                        step_budget=hop_budget)
                 else:
                     status, finding, n_llm, n_tool = await agent.run(
                         seat_row, plan_lock=self._review_plan_lock)
@@ -294,14 +311,27 @@ class ReviewLane:
                             "review join repair: re-running %s, "
                             "ignoring %s", sorted(retried), sorted(ignored))
                         resume = dict(update["resume_instructions"])
+                        # The seat's normal clamp (base.py's formula —
+                        # the bump rides on top of it, the cap lane's
+                        # point is to exceed the cap).
+                        seat_base = max(
+                            run_limits().min_conversation_steps,
+                            min(int(state.get("max_steps")
+                                    or run_limits().max_conversation_steps),
+                                run_limits().max_steps_cap))
                         for sid, verdict in retried.items():
                             name = self._seat_name_by_state_id.get(int(sid))
                             if name is not None:
                                 retry_seats.append(name)
-                            resume[str(sid)] = {
+                            entry = {
                                 "instruction": verdict.instruction,
                                 "prior_error": failed_err.get(int(sid), ""),
                             }
+                            raised = cap_retry_step_budget(
+                                entry["prior_error"], seat_base)
+                            if raised:
+                                entry["step_budget"] = str(raised)
+                            resume[str(sid)] = entry
                         update["resume_instructions"] = resume
                         update["review_passes"] = (
                             int(state.get("review_passes") or 0) + 1)
@@ -362,12 +392,14 @@ class ResultGraphBuilder(ExecutionGraphBuilderBase, ReviewLane, TailNodes):
         output: GraphOutputSpec = RESULT_OUTPUT_SPEC,
         seats: Optional[List[StateRow]] = None,
         decision_engine: Optional[Any] = None,
+        authorization: Optional[AuthorizationContext] = None,
     ) -> None:
         super().__init__(
             provider, mcp, run_ctx, checkpointer=checkpointer,
             store=store, repair=repair, sandbox_cell=sandbox_cell,
             output=output, degraded_lane=False,
-            decision_engine=decision_engine)
+            decision_engine=decision_engine,
+            authorization=authorization)
         self._init_review_lane(list(seats or []))
 
     def build(self):
@@ -405,6 +437,7 @@ def build_result_graph(
     output: GraphOutputSpec = RESULT_OUTPUT_SPEC,
     seats: Optional[List[StateRow]] = None,
     decision_engine: Optional[Any] = None,
+    authorization: Optional[AuthorizationContext] = None,
 ):
     """Compile THE RESULT GRAPH — :class:`ResultGraphBuilder`'s
     :meth:`build` (the four+ saved-template review seats as one real
@@ -413,4 +446,5 @@ def build_result_graph(
         provider, mcp, run_ctx, checkpointer=checkpointer, store=store,
         repair=repair, sandbox_cell=sandbox_cell, output=output,
         seats=seats,
-        decision_engine=decision_engine).build()
+        decision_engine=decision_engine,
+        authorization=authorization).build()

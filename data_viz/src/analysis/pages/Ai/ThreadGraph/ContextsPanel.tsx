@@ -10,6 +10,7 @@ import type {
 } from "@/lib/api-client/aiThreads";
 import { formatElapsedS, usageTail } from "./format";
 import { ContextBlock } from "./payloadViews";
+import { TaskAgentSteps } from "./TaskAgentSteps";
 
 /** One spawn review of the clicked step's SPAWN RESULTS — the parent
  *  agent's reviewed material (the merge-back edge's payload).
@@ -31,9 +32,14 @@ export interface SpawnReview {
  *  (the runner's design — the node's whole execution, every LLM
  *  request in it, runs as one conversation referenced by id). A SPAWN
  *  node click joins through its own state row instead (spawn children
- *  are not runner-lane nodes — no node_states store item). Renders
- *  nothing when no node is effective or nothing was recorded for it. */
+ *  are not runner-lane nodes — no node_states store item) and its
+ *  branch renders the node's OWN AGENT STEPS (2026-11-13 — the
+ *  recorded inference/decision/nested-spawn rows over the child's
+ *  chain, open on mount) rather than pure-text input/answer payloads.
+ *  Renders nothing when no node is effective or nothing was recorded
+ *  for it. */
 export default function ContextsPanel({
+  threadId,
   effectiveNodeId,
   defaultSelection,
   nodeLane,
@@ -46,9 +52,11 @@ export default function ContextsPanel({
   spawnReviews,
   spawnState,
   spawnCtx,
-  spawnInputPayload,
-  spawnAnswerPayload,
+  onRefresh,
 }: {
+  /** The owning thread id — the clicked spawn/fork node's agent steps
+   *  fetch rides it (2026-11-13). */
+  threadId?: string | null;
   effectiveNodeId: string | null;
   /** Nothing clicked — the supervisor (or the first default view)
    *  shows, and the caption says so. */
@@ -66,12 +74,9 @@ export default function ContextsPanel({
   spawnState?: AgentThreadState | null;
   /** The spawn's ONE llm-context registry row (state_id join). */
   spawnCtx?: AgentLlmContext | null;
-  /** The spawn's input context payload — the fresh prompt it was
-   *  given (input_context_id). */
-  spawnInputPayload?: unknown;
-  /** The spawn's answer payload (result_context_id — the subagent
-   *  result the parent gathered). */
-  spawnAnswerPayload?: unknown;
+  /** The graph's refresh — fired after a successful UI spawn/fork so
+   *  the new child node lands on the canvas. */
+  onRefresh?: () => void;
 }) {
   if (
     effectiveNodeId === null ||
@@ -200,38 +205,38 @@ export default function ContextsPanel({
           </Typography>
         )
       )}
-      {spawnState != null &&
-        (spawnInputPayload == null && spawnAnswerPayload == null ? (
-          <Typography
-            variant="caption"
-            color="text.disabled"
-            sx={{ display: "block", mt: 1 }}
-          >
-            no persisted input/answer context for this
-            {spawnState.child_kind === 1 ? " fork" : " spawn"}
-          </Typography>
-        ) : (
-          <Box sx={{ mt: 1, display: "flex", flexDirection: "column", gap: 0.75 }}>
-            {spawnInputPayload != null && (
-              <ContextBlock
-                label={
-                  spawnState.child_kind === 1
-                    ? "fork input — the fork directive over the inherited conversation"
-                    : "spawn input — the fresh prompt the spawn was given"
-                }
-                payload={spawnInputPayload}
-                scroll
-              />
-            )}
-            {spawnAnswerPayload != null && (
-              <ContextBlock
-                label={spawnState.child_kind === 1 ? "fork answer" : "spawn answer"}
-                payload={spawnAnswerPayload}
-                scroll
-              />
-            )}
-          </Box>
-        ))}
+      {spawnState != null && threadId != null && (
+        // THE NODE'S EXPANSION (2026-11-13): the clicked spawn/fork
+        // node's AGENT STEPS — its own recorded work (inference /
+        // decision / nested spawn rows over its own chain) — instead
+        // of the pure-text input/answer payloads. Open on mount: the
+        // click IS the expansion.
+        <TaskAgentSteps
+          threadId={threadId}
+          stateId={spawnState.state_id}
+          hasContext={spawnCtx != null}
+          defaultOpen
+          onActionDone={onRefresh}
+        />
+      )}
+      {spawnState == null && nodeLane !== null
+        && nodeLane.state_id === null && nodeLane.llm_context_id !== null
+        && nodeLane.node !== "supervisor" && threadId != null && (
+        // THE STATE-LESS SEAT'S EXPANSION (2026-11-15): a runner-lane
+        // node with NO deep_agent_states row (the output node — the
+        // run's final answer seat) keyed by its node item's chain. Its
+        // recorded work (the whole output conversation's inference /
+        // decision rows) was invisible before — the seat read as a bare
+        // caption. BOTH actions ride the daemon's node-keyed routes:
+        // the spawn parents under the chain root's plan row and the
+        // fork continues a step of the seat's own chain.
+        <TaskAgentSteps
+          threadId={threadId}
+          nodeKey={nodeLane.node}
+          hasContext
+          defaultOpen
+        />
+      )}
       {spawnReviews.length > 0 && (
         <Box sx={{ mt: 1 }}>
           <Typography

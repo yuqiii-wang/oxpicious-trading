@@ -32,6 +32,27 @@ here the whole request IS one JSON body).
               is true when the run was cancelled by POST /stop before
               it finished (empty answer, the plan snapshot settled with
               the stop).
+              THE ``[this is test]`` SELF-TEST (2026-11-14): a goal
+              starting with that prefix bypasses the provider config —
+              the run loads the offline dummy LLM + the feature tool
+              seam (selftest.DummySelfTestRun), walks the SHOWCASE
+              chain (plan → trend → volume-with-resume → spawn step →
+              fork step with its own sub node) MARKET-WIDE (the
+              caller's code scope is dropped — no identity row, the
+              history entry shows under every Summary History pick),
+              and the ANSWER is the auto-run assertion battery's
+              rendered PASS/FAIL report (the walked chains stay in the
+              history for the Thread Graph; a mid-walk drift settles as
+              a FAIL report, not a 500). BESIDE the main chain the
+              self-test runs every shared ROUTER/TOOL-USAGE walk —
+              spawn / fork / fork-drift / fork-sub / join / probe /
+              background / reserve / cut / repeat / repair / syntax /
+              the four resume variants — each its own chain kept in the
+              history, its id listed in the response's
+              ``walk_chain_ids``. The walk goal is the caller's text
+              after the prefix (or the canonical 沪深300 dataset study)
+              suffixed with the 【全场景自检】 marker that keys the
+              showcase plan.
   POST /stop  {thread_id?} — cancel the in-flight run(s): the named
               thread, or every active run when thread_id is absent (the
               API bridge sends the absent form — its Stop button stops
@@ -62,6 +83,34 @@ here the whole request IS one JSON body).
                 rows. The inserts publish state_created per row — the
                 UI's live canvas rerenders the new nodes instantly (the
                 /ws chain).
+  POST /threads/:thread_id/states/:state_id/spawn — the UI node action
+                (2026-11-15, the Thread Graph's spawn button): one
+                fresh-context child delegation under the clicked node of
+                a SETTLED run, body {goal, max_steps?, provider?} — the
+                SpawnHooks registration face (child_kind 0 row, pass-down,
+                plan/stats/kg kits, the child's own hooks) and a full
+                DeepAgent run as a background task; the response carries
+                the child's state/context ids and the UI polls the
+                detail. 409 on an active chain, 404 unknown state.
+  POST /threads/:thread_id/nodes/:node/spawn — the RUN-NODE spawn (the
+                failed-output-node request): the same action hanging off
+                a RUNNER-LANE SEAT (the output node — NO state row), the
+                canvas node key's s<k>: prefix resolving the owning
+                segment; the child parents under the chain ROOT's plan
+                state row (the canvas draws it as a spawn spur off the
+                plan node). Spawn ONLY on a state-less seat — fork
+                continues a recorded step conversation, which a
+                graph-level seat has none of. 409 active chain, 404
+                unknown segment/chain, 400 bad node key.
+  POST /threads/:thread_id/states/:state_id/fork — the inherit-context
+                twin (the fork button on every agent step): the child
+                CONTINUES the clicked agent step's recorded conversation
+                (the NEXT request's as-sent messages — the fork point's
+                reply + tool results included; the chain's last request
+                forks from just before its reply) under the directive
+                {goal, request_id, max_steps?} — child_kind 1, the
+                fork_<topic> slug, the handback-reserve contract on.
+                400 when the request id is not on the state's chain.
   GET /active → the in-flight runs' thread ids (empty when idle) — the
               bridge forwards this to the UI's live-view poll so the
               thread graph opens on the click, before any plan row
@@ -115,9 +164,10 @@ import asyncio  # noqa: E402
 import contextlib  # noqa: E402
 import json  # noqa: E402
 import logging  # noqa: E402
+import re  # noqa: E402
 import uuid  # noqa: E402
 from contextlib import asynccontextmanager  # noqa: E402
-from typing import Any, Dict, List, Optional, Union  # noqa: E402
+from typing import Any, Dict, List, Optional, Tuple, Union  # noqa: E402
 
 import uvicorn  # noqa: E402
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect  # noqa: E402
@@ -134,10 +184,23 @@ from llm_agents.deep_agents.llm_config import (  # noqa: E402
     build_chat_provider, load_llm_config,
 )
 from llm_agents.deep_agents.limits import run_limits  # noqa: E402
+from llm_agents.deep_agents.selftest import DummySelfTestRun  # noqa: E402
 from llm_agents.deep_agents.core.mcp import (  # noqa: E402
     DEFAULT_MCP_URL, McpToolClient,
 )
 from llm_agents.deep_agents.core.provider import ZhipuChatProvider  # noqa: E402
+from llm_agents.deep_agents.core.sandbox import Sandbox  # noqa: E402
+from llm_agents.deep_agents.core.delegation import (  # noqa: E402
+    DELEGATION_GUIDANCE,
+)
+from llm_agents.deep_agents.core.data_definitions import (  # noqa: E402
+    SubagentRequest, SubagentRun,
+)
+from llm_agents.deep_agents.langgraph.hooks import SpawnHooks  # noqa: E402
+from llm_agents.deep_agents.core.loop import DeepAgent  # noqa: E402
+from llm_agents.deep_agents.planning.session import SpawnPassDown  # noqa: E402
+from _common.db_commons import get_db_connection_async  # noqa: E402
+from _common.sql_views import render_sql_view  # noqa: E402
 
 logger = logging.getLogger("deep_agents.server")
 
@@ -273,6 +336,12 @@ class RunResponse(BaseModel):
     super_thread_id: Optional[str] = None
     plan: List[PlanStepState] = Field(default_factory=list)
     stopped: bool = False
+    # The ``[this is test]`` self-test's ROUTER-WALK chains (the spawn /
+    # fork / fork-drift / join / probe walks that STAY in the history
+    # beside the main chain) — a leave-no-trace driver (the standing
+    # prefix probe) purges them after its assertion pass; every other
+    # consumer ignores the field.
+    walk_chain_ids: List[str] = Field(default_factory=list)
 
 
 class StopRequest(BaseModel):
@@ -299,14 +368,17 @@ ORPHAN_FAILURE = "orphaned by a daemon restart — settled at boot"
 
 
 async def _settle_orphan_chains() -> int:
-    """Settle every chain still holding pending/in_progress rows at
-    daemon START. The fresh process owns ZERO runs, so each unsettled
-    chain belongs to a dead daemon life (killed mid-run by a crash,
-    OOM kill or a forced recycle — e.g. the stream watchdog's
+    """Settle every chain still UNSETTLED at daemon START — open
+    pending/in_progress state rows OR running runner-lane node items
+    (the widened discovery). The fresh process owns ZERO runs, so each
+    unsettled chain belongs to a dead daemon life (killed mid-run by a
+    crash, OOM kill or a forced recycle — e.g. the stream watchdog's
     stale-process recycle) — its rows used to read as a live run
     forever and the UI kept the live chip + Stop button up (observed
-    2026-11-13: six zombie chains dating back to Nov 7). Fail-soft: a
-    failed sweep only leaves the old zombies, never blocks the boot."""
+    2026-11-13: six zombie chains dating back to Nov 7; the same day's
+    items-half caught the mirror flavor — a chain whose state rows were
+    all gone while a node item still ran 'running' forever). Fail-soft:
+    a failed sweep only leaves the old zombies, never blocks the boot."""
     from llm_agents.deep_agents.langgraph.state_store import DeepAgentStore
     from llm_agents.deep_agents.planning.store import PLAN_STORE
 
@@ -322,7 +394,15 @@ async def _settle_orphan_chains() -> int:
             await runner.settle_thread(sid, failure=ORPHAN_FAILURE)
             if store is None:
                 store = DeepAgentStore()
-            for member in await PLAN_STORE.fetch_chain_threads(sid):
+            # The item settle walks the chain's member threads — PLUS
+            # the sid's own namespace: an items-only orphan (its state
+            # rows purged/never written) resolves to an EMPTY members
+            # list, and without this the stuck item survived every
+            # sweep, the discovery kept finding the chain, and the UI's
+            # live chip never cleared.
+            members = await PLAN_STORE.fetch_chain_threads(sid)
+            for member in ([sid, *members] if sid not in members
+                           else members):
                 await store.settle_node_items(member, failure=ORPHAN_FAILURE)
             settled += 1
             logger.warning("[orphan sweep] %s settled (dead daemon life's "
@@ -458,6 +538,618 @@ async def add_thread_steps(thread_id: str,
     ])
 
 
+# ---------------------------------------------------------------------------
+# THE NODE ACTIONS (2026-11-15 — the Thread Graph's fork/spawn buttons):
+# run ONE delegation out of a SETTLED run's node, driven from the UI.
+#
+#   POST /threads/:thread_id/states/:state_id/spawn  {goal, max_steps?}
+#   POST /threads/:thread_id/states/:state_id/fork   {goal, request_id,
+#                                                     max_steps?}
+#
+# The SPAWN lane mints a fresh-context child state row under the clicked
+# node's state (child_kind 0, the same row shape every model-called
+# spawn registers) and runs it under the FULL supervision policy — the
+# SpawnHooks machinery (the run's pass-down → the child row → the plan/
+# stats/kg kits → the child's own hooks) and the DeepAgent loop — so the
+# new node joins the canvas and records agent steps exactly like a
+# run-native spawn's. The FORK lane is the inherit-context twin: the
+# child CONTINUES the clicked agent step's recorded conversation (the
+# NEXT request's as-sent messages — the fork point's reply and its tool
+# results included; the chain's last request forks from just before its
+# reply) under the user's directive — child_kind 1, the fork_<topic>
+# slug, the handback-reserve contract on.
+#
+# Both run as background tasks on THIS daemon (one delegation is a
+# minutes-long LLM conversation; the /run runs' RUNS registry stays
+# separate): the response carries the child's ids immediately (the row
+# exists — the input hook ran synchronously) and the UI polls the thread
+# detail until the child state row settles. 409 when the chain is an
+# ACTIVE run on this daemon (a live run's tree is its lane's business —
+# the external-add endpoint above is the running-run surface); 404
+# unknown state; 400 a fork request id outside the state's chain.
+# ---------------------------------------------------------------------------
+
+
+class NodeSpawnRequest(BaseModel):
+    """One UI SPAWN action's body — the fresh-context child's goal."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    goal: str = Field(min_length=1)
+    max_steps: Optional[int] = Field(default=None, ge=1, le=100)
+    # The provider override ('zhipu' | 'dummy' — build_chat_provider's
+    # labels), the same contract RunRequest.provider holds: an explicit
+    # action runs that provider on its own defaults (the dummy test
+    # double never spends zhipu tokens).
+    provider: Optional[str] = None
+
+
+class NodeForkRequest(BaseModel):
+    """One UI FORK action's body — the continuation directive plus the
+    agent step (request id) to continue from."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    goal: str = Field(min_length=1)
+    request_id: int = Field(ge=1)
+    max_steps: Optional[int] = Field(default=None, ge=1, le=100)
+    provider: Optional[str] = None
+
+
+class NodeActionResult(BaseModel):
+    """The background delegation's registration — the child's ids. The
+    UI polls the thread detail until the child state row settles."""
+
+    kind: str
+    state_id: Optional[int] = None
+    context_id: Optional[str] = None
+    thread_id: Optional[str] = None
+    parent_state_id: Optional[int] = None
+    status: str = "running"
+
+
+# The node actions' in-flight registry: child state_id → its runner task
+# (pops itself in the runner's finally).
+NODE_ACTIONS: Dict[int, "asyncio.Task[None]"] = {}
+
+
+async def _fetch_plan_passdown(root_thread_id: str) -> Optional[Dict[str, Any]]:
+    """The chain ROOT's plan input context payload ({args, goal, …}) —
+    the UI spawn's pass-down source (sql view
+    llm_agents/deep_agents/server/plan_run_input). Fail-soft None (a
+    degraded/legacy thread without a plan row)."""
+    try:
+        conn = await get_db_connection_async()
+    except Exception as exc:  # noqa: BLE001 — degrade to the bare goal
+        logger.warning("node action pass-down connect failed: %s", exc)
+        return None
+    try:
+        view = render_sql_view(
+            "llm_agents/deep_agents/server/plan_run_input",
+            thread_id=str(root_thread_id))
+        rows = await conn.fetch(view.sql, *view.params)
+    except Exception as exc:  # noqa: BLE001 — degrade to the bare goal
+        logger.warning("node action pass-down read failed: %s", exc)
+        return None
+    finally:
+        await conn.close()
+    if not rows or rows[0]["payload"] is None:
+        return None
+    payload = rows[0]["payload"]
+    return dict(payload) if isinstance(payload, dict) else None
+
+
+async def _fetch_fork_messages(chain_id: Optional[str],
+                               request_id: int) -> Optional[List[Any]]:
+    """The fork point's CONTINUATION transcript (sql view
+    llm_agents/deep_agents/server/fork_transcript): the chain's
+    message-bearing request rows in order — a chained row stores only
+    its NEW messages (_chain_incremental), so the full transcript is
+    reconstructed by walking the rows (a non-incremental row replaces
+    the list) up to the fork point's NEXT message row (its delta = the
+    fork point's reply + tool results; a fork on the chain's last
+    message row continues from just before that reply). None when the
+    request is not on this chain (or the chain is unstamped)."""
+    if not chain_id:
+        return None
+    try:
+        conn = await get_db_connection_async()
+    except Exception as exc:  # noqa: BLE001 — surfaced as a 400
+        logger.warning("node fork transcript connect failed: %s", exc)
+        return None
+    try:
+        view = render_sql_view(
+            "llm_agents/deep_agents/server/fork_transcript",
+            chain_id=str(chain_id))
+        rows = await conn.fetch(view.sql, *view.params)
+    except Exception as exc:  # noqa: BLE001 — surfaced as a 400
+        logger.warning("node fork transcript read failed: %s", exc)
+        return None
+    finally:
+        await conn.close()
+    if not rows:
+        return None
+    # The fork point's position among the chain's message rows.
+    point_idx: Optional[int] = None
+    for i, row in enumerate(rows):
+        if int(row["request_id"]) == int(request_id):
+            point_idx = i
+            break
+    if point_idx is None:
+        return None
+    # Accumulate through the fork point's NEXT message row (or the
+    # fork point itself when it is the chain's last).
+    cut = point_idx + 1 if point_idx + 1 < len(rows) else point_idx
+    full: List[Any] = []
+    for row in rows[:cut + 1]:
+        raw = row["messages"]
+        if raw is None:
+            continue
+        msgs = raw if isinstance(raw, list) else json.loads(str(raw))
+        if row["incremental"] and full:
+            full.extend(msgs)
+        else:
+            full = list(msgs)
+    return full or None
+
+
+async def _resolve_action_runtime(
+    provider_label: Optional[str] = None,
+) -> Any:
+    """The node action's provider + model — the same resolution a /run
+    uses (static.llm_config's active row at action start; the lifespan
+    env-key fallback). An explicit *provider_label* wins over the row
+    (the RunRequest.provider contract — a test action names 'dummy' and
+    never spends zhipu tokens). Returns (provider, model)."""
+    cfg = (await load_llm_config()
+           if not provider_label else None)
+    if cfg is not None:
+        provider = build_chat_provider(
+            cfg.provider, api_key=cfg.api_key, api_url=cfg.api_url)
+        model = cfg.model_name or ZhipuChatProvider.DEFAULT_MODEL
+    elif provider_label:
+        provider = build_chat_provider(provider_label.strip().lower())
+        model = ZhipuChatProvider.DEFAULT_MODEL
+    else:
+        assert _provider is not None  # lifespan ran before any request
+        provider = _provider
+        model = ZhipuChatProvider.DEFAULT_MODEL
+    return provider, model
+
+
+async def _run_node_child(run: SubagentRun, hooks: SpawnHooks, *,
+                          provider: ZhipuChatProvider, model: str,
+                          fork_child: bool) -> None:
+    """One UI node action's child conversation — the spawner's
+    ``_execute_subagent`` face without a parent loop: the request-stamped
+    child DeepAgent under the action's OWN MCP session + sandbox cell,
+    the run wrapper binding the child's request chain, the output hook
+    settling the child row (completed/failed) whatever the outcome. The
+    task pops itself from NODE_ACTIONS."""
+    state_id = run.state_id
+    try:
+        async with McpToolClient(url=DEFAULT_MCP_URL) as mcp:
+            child = DeepAgent(
+                provider, mcp,
+                model=model,
+                max_steps=run.request.max_steps,
+                system=(run.request.system + DELEGATION_GUIDANCE
+                        if run.request.depth < run_limits().max_spawn_depth
+                        else run.request.system),
+                allow_subagents=True,
+                spawn_depth=run.request.depth,
+                node_role=run.request.role,
+                fork_child=fork_child,
+                builtin_tools=run.request.builtin_tools,
+                sandbox=Sandbox(),
+                subagent_input_hook=run.request.subagent_input_hook,
+                subagent_output_hook=run.request.subagent_output_hook,
+                subagent_run_wrapper=run.request.subagent_run_wrapper,
+            )
+            wrapper = hooks.run_wrapper(run)
+            if wrapper is not None:
+                with wrapper:
+                    result = await child.run(
+                        run.request.goal, data=run.request.data,
+                        user_addendum=run.request.user_addendum,
+                        inherited_messages=run.request.inherit_transcript)
+            else:
+                result = await child.run(
+                    run.request.goal, data=run.request.data,
+                    user_addendum=run.request.user_addendum,
+                    inherited_messages=run.request.inherit_transcript)
+            run.status = "completed"
+            run.answer = result.answer
+            run.steps = result.steps
+            run.tool_call_count = len(result.tool_calls)
+    except asyncio.CancelledError:
+        run.status = "cancelled"
+        raise
+    except Exception as exc:  # noqa: BLE001 — the row settles failed
+        run.status = "failed"
+        run.error = f"{type(exc).__name__}: {exc}"
+    finally:
+        with contextlib.suppress(Exception):
+            await hooks.output_hook(run)
+        if state_id is not None:
+            NODE_ACTIONS.pop(state_id, None)
+
+
+async def _register_and_run_spawn(
+    parent_row: Any, root: str, goal: str, budget: int,
+    provider_label: Optional[str] = None,
+) -> Tuple[SubagentRun, Any]:
+    """The shared SPAWN registration (both the state-keyed and the
+    node-keyed endpoint bodies): the pass-down from the chain root's
+    plan context, the SpawnHooks registration under *parent_row* (the
+    child row + stamped request exist before the background work), the
+    runner task started, NODE_ACTIONS registered. Returns (run,
+    parent_row)."""
+    from llm_agents.deep_agents.langgraph.state_store import DeepAgentStore
+
+    provider, model = await _resolve_action_runtime(provider_label)
+    store = DeepAgentStore()
+    payload = await _fetch_plan_passdown(root) or {}
+    args = payload.get("args")
+    biz_ctx = SpawnPassDown.pack(
+        str(payload.get("goal") or ""),
+        args if isinstance(args, dict) else None,
+        payload.get("prompts_loaded") or {},
+        payload.get("prompts_catalog") or {},
+    ).to_context()
+    hooks = SpawnHooks(
+        str(parent_row.thread_id), parent_row.state_id, store=store,
+        model=model,
+        state_by_run={}, context_by_run={},
+        biz_context=biz_ctx)
+    run = SubagentRun(
+        run_id=uuid.uuid4().hex[:8],
+        request=SubagentRequest(
+            goal=goal, max_steps=budget, background=False, depth=1),
+        background=False,
+    )
+    await hooks.input_hook(run)
+    task = asyncio.create_task(_run_node_child(
+        run, hooks, provider=provider, model=model, fork_child=False))
+    if run.state_id is not None:
+        NODE_ACTIONS[run.state_id] = task
+    return run, parent_row
+
+
+async def _node_action(
+    thread_id: str, state_id: int, kind: str, goal: str,
+    max_steps: Optional[int], request_id: Optional[int],
+    provider_label: Optional[str] = None,
+) -> NodeActionResult:
+    """The shared spawn/fork endpoint body: resolve the clicked state
+    row, guard the chain, register the child row synchronously (the
+    input hook — the response's ids exist before the background work),
+    then start the runner task."""
+    from llm_agents.deep_agents.langgraph.state_store import DeepAgentStore
+    from llm_agents.deep_agents.planning.store import PLAN_STORE
+
+    row = await PLAN_STORE.fetch_state(int(state_id))
+    if row is None:
+        raise HttpLike(404, f"no state row {state_id}")
+    row_thread = str(row.thread_id)
+    # The row's chain root (the first member in chain order — StateRow
+    # carries no super stamp; the members read resolves it from any id).
+    try:
+        members = await PLAN_STORE.fetch_chain_threads(row_thread)
+    except Exception as exc:  # noqa: BLE001 — degrade to the own thread
+        logger.warning("node action chain read failed (%s): %s",
+                       state_id, exc)
+        members = [row_thread]
+    root = members[0] if members else row_thread
+    # The path thread must name the row's chain (the UI opens runs by
+    # the root; any member id also resolves).
+    if thread_id not in {row_thread, root, *members}:
+        raise HttpLike(404, f"state {state_id} is not on thread chain "
+                            f"'{thread_id}'")
+    if RUNS.is_active(root) or RUNS.is_active(row_thread):
+        raise HttpLike(409, "the run this node belongs to is still "
+                            "active on this daemon — stop it first")
+    provider, model = await _resolve_action_runtime(provider_label)
+    store = DeepAgentStore()
+    state_by_run: Dict[str, int] = {}
+    context_by_run: Dict[str, Optional[str]] = {}
+    budget = max_steps or run_limits().max_conversation_steps
+    if kind == "fork":
+        messages = await _fetch_fork_messages(row.llm_context_id,
+                                              int(request_id or 0))
+        if not messages:
+            raise HttpLike(
+                400, f"request {request_id} carries no conversation on "
+                     f"state {state_id}'s chain — fork rides a recorded "
+                     "inference step of this node")
+        hooks = SpawnHooks(
+            row_thread, row.state_id, store=store, model=model,
+            state_by_run=state_by_run, context_by_run=context_by_run)
+        run = SubagentRun(
+            run_id=uuid.uuid4().hex[:8],
+            request=SubagentRequest(
+                goal=goal, max_steps=budget, background=False,
+                depth=1, inherit_transcript=list(messages)),
+            background=False,
+        )
+        # The synchronous registration: the child row + its stamped
+        # request (the response's ids exist before the work starts).
+        await hooks.input_hook(run)
+        task = asyncio.create_task(_run_node_child(
+            run, hooks, provider=provider, model=model, fork_child=True))
+        if run.state_id is not None:
+            NODE_ACTIONS[run.state_id] = task
+        return NodeActionResult(
+            kind=kind, state_id=run.state_id,
+            context_id=run.llm_context_id,
+            thread_id=row_thread, parent_state_id=row.state_id,
+            status="running")
+    run, parent = await _register_and_run_spawn(
+        row, root, goal, budget, provider_label)
+    return NodeActionResult(
+        kind=kind, state_id=run.state_id, context_id=run.llm_context_id,
+        thread_id=str(parent.thread_id), parent_state_id=parent.state_id,
+        status="running")
+
+
+class HttpLike(Exception):
+    """An endpoint-local status-carrying error — rendered by the same
+    JSON-shape handler contract the HttpError bridge side uses."""
+
+    def __init__(self, status_code: int, detail: str) -> None:
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail
+
+
+@app.post("/threads/{thread_id}/states/{state_id}/spawn",
+          response_model=NodeActionResult)
+async def spawn_thread_node(thread_id: str, state_id: int,
+                            req: NodeSpawnRequest) -> NodeActionResult:
+    """One UI SPAWN action — a fresh-context child under the clicked
+    node (see the block comment above)."""
+    try:
+        return await _node_action(thread_id, state_id, "spawn",
+                                  req.goal, req.max_steps, None,
+                                  req.provider)
+    except HttpLike as exc:
+        return JSONResponse(status_code=exc.status_code,
+                            content={"detail": exc.detail})
+
+
+@app.post("/threads/{thread_id}/states/{state_id}/fork",
+          response_model=NodeActionResult)
+async def fork_thread_node(thread_id: str, state_id: int,
+                           req: NodeForkRequest) -> NodeActionResult:
+    """One UI FORK action — a continuation child from the clicked agent
+    step's recorded conversation (see the block comment above)."""
+    try:
+        return await _node_action(thread_id, state_id, "fork",
+                                  req.goal, req.max_steps, req.request_id,
+                                  req.provider)
+    except HttpLike as exc:
+        return JSONResponse(status_code=exc.status_code,
+                            content={"detail": exc.detail})
+
+
+# The canvas node key: bare for the plan segment's nodes, `s<k>:`-prefixed
+# for k>0 segments (s1:output = the custom graph's output seat, s2:output
+# = the result's) — the same ids the merged thread detail carries.
+_NODE_KEY_RE = re.compile(r"^(?:(s(\d+)):)?([a-z_][a-z0-9_:-]{0,80})$")
+
+
+@app.post("/threads/{thread_id}/nodes/{node}/spawn",
+          response_model=NodeActionResult)
+async def spawn_thread_run_node(thread_id: str, node: str,
+                                req: NodeSpawnRequest) -> NodeActionResult:
+    """The RUN-NODE SPAWN (2026-11-15, the failed-output-node request): a
+    UI spawn action hanging off a RUNNER-LANE SEAT — the output node has
+    NO deep_agent_states row, so the state-keyed route cannot serve it.
+    The canvas node key's `s<k>:` prefix resolves the OWNING segment;
+    the child parents under the CHAIN ROOT's plan state row (the run's
+    plan-level spawn — the canvas draws it as a spawn spur off the plan
+    node). Spawn is the only action a state-less seat carries: fork
+    continues a recorded step conversation, which a graph-level seat has
+    none of."""
+    from llm_agents.deep_agents.planning.store import PLAN_STORE
+
+    match = _NODE_KEY_RE.match(str(node))
+    if match is None:
+        return JSONResponse(status_code=400, content={
+            "detail": f"bad node key '{node}'"})
+    try:
+        seg_idx = int(match.group(2) or 0)
+        members = await PLAN_STORE.fetch_chain_threads(str(thread_id))
+        if not members:
+            raise HttpLike(404, f"no deep-agent chain for '{thread_id}'")
+        if seg_idx >= len(members):
+            raise HttpLike(404, f"segment {seg_idx} out of range "
+                                f"({len(members)} segments)")
+        root = members[0]
+        if RUNS.is_active(root):
+            raise HttpLike(409, "the run is still active on this daemon — "
+                                "stop it first")
+        # The parent: the chain root's plan state row (the plan session's
+        # graph-level row), falling back to the first top-level row.
+        rows = await PLAN_STORE.list_thread_states(root)
+        parent = next((r for r in rows if r.node == "plan"), None) \
+            or (rows[0] if rows else None)
+        if parent is None:
+            raise HttpLike(404, "the chain has no settled top-level row "
+                                "to parent the spawn under")
+        budget = req.max_steps or run_limits().max_conversation_steps
+        run, parent_row = await _register_and_run_spawn(
+            parent, root, req.goal, budget, req.provider)
+    except HttpLike as exc:
+        return JSONResponse(status_code=exc.status_code,
+                            content={"detail": exc.detail})
+    return NodeActionResult(
+        kind="spawn", state_id=run.state_id,
+        context_id=run.llm_context_id,
+        thread_id=str(parent_row.thread_id),
+        parent_state_id=parent_row.state_id,
+        status="running")
+
+
+@app.post("/threads/{thread_id}/nodes/{node}/fork",
+          response_model=NodeActionResult)
+async def fork_thread_run_node(thread_id: str, node: str,
+                               req: NodeForkRequest) -> NodeActionResult:
+    """The RUN-NODE FORK (2026-11-15, "should show both fork and spawn";
+    topology reworked the same day — "forked node on the main branch,
+    failed node on side branch"): the fork action on a RUNNER-LANE SEAT
+    — the seat has no state row, but its node item carries the seat
+    conversation's OWN chain, and the fork point request (an inference
+    row of the seat's agent steps) is validated ON that chain.
+
+    THE MAIN-LINE TOPOLOGY (driven from the backend state rows, the
+    drift-fork precedent): the continuation lands as a TOP-LEVEL row on
+    the OWNING segment's thread (parent NULL, ordinal after the last
+    top-level row, child_kind 1) — the canvas's lane walk renders it IN
+    the lane; the pre-fork attempt materializes as the seat's kind-2
+    old-chain stub UNDER the fork row wearing the seat's status/error —
+    the failed node on the side branch. The canvas derives the whole
+    shape from the rows; nothing is UI-side."""
+    from llm_agents.deep_agents.langgraph.state_store import DeepAgentStore
+    from llm_agents.deep_agents.langgraph.hooks.spawns import (
+        _fork_node_slug, _old_node_slug,
+    )
+    from llm_agents.deep_agents.langgraph.state_store import (
+        DeepAgentStore, new_context_id,
+    )
+    from llm_agents.deep_agents.planning.store import PLAN_STORE
+
+    match = _NODE_KEY_RE.match(str(node))
+    if match is None:
+        return JSONResponse(status_code=400, content={
+            "detail": f"bad node key '{node}'"})
+    try:
+        seg_idx = int(match.group(2) or 0)
+        bare_node = match.group(3)
+        members = await PLAN_STORE.fetch_chain_threads(str(thread_id))
+        if not members:
+            raise HttpLike(404, f"no deep-agent chain for '{thread_id}'")
+        if seg_idx >= len(members):
+            raise HttpLike(404, f"segment {seg_idx} out of range "
+                                f"({len(members)} segments)")
+        root = members[0]
+        if RUNS.is_active(root):
+            raise HttpLike(409, "the run is still active on this daemon — "
+                                "stop it first")
+        # The seat's OWN chain + its settled face (node_chain.sql) — the
+        # fork point must be a request ON it, and the seat's status/
+        # error ride the old-chain stub.
+        owner = members[seg_idx]
+        # THE FINAL-RESULT REFRESH (2026-11-16, "since the forked node is
+        # the final output, the result should also get refreshed"): a
+        # fork off the chain's LAST segment's OUTPUT seat continues THE
+        # FINAL ANSWER's own conversation — when the child completes,
+        # its answer REPLACES the run's final-result document (the
+        # Result view and the Thread Graph's seat context read exactly
+        # that row; a middle seat's fork refreshes nothing — the result
+        # graph already consumed the pre-fork handoff).
+        refresh_final = bare_node == "output" and seg_idx == len(members) - 1
+        conn = await get_db_connection_async()
+        try:
+            view = render_sql_view(
+                "llm_agents/deep_agents/server/node_chain",
+                thread_id=str(owner), node=bare_node)
+            chain_rows = await conn.fetch(view.sql, *view.params)
+        finally:
+            await conn.close()
+        if not chain_rows or chain_rows[0]["chain_id"] is None:
+            raise HttpLike(404, f"the seat '{node}' recorded no "
+                                "conversation to fork from")
+        seat_chain = str(chain_rows[0]["chain_id"])
+        seat_status = str(chain_rows[0]["seat_status"] or "skipped")
+        seat_error = chain_rows[0]["seat_error"]
+        messages = await _fetch_fork_messages(seat_chain,
+                                              int(req.request_id))
+        if not messages:
+            raise HttpLike(
+                400, f"request {req.request_id} carries no conversation "
+                     f"on the '{node}' seat's chain — fork rides a "
+                     "recorded inference step of this node")
+        budget = req.max_steps or run_limits().max_conversation_steps
+        provider, model = await _resolve_action_runtime(req.provider)
+        store = DeepAgentStore()
+        # THE MAIN-LINE ROW: the continuation as a top-level fork row on
+        # the owning segment (the canvas lane renders it after the
+        # segment's last step).
+        context_id = new_context_id()
+        from llm_agents.deep_agents.planning.plan_json import MAX_TITLE_LEN
+        fork_row_id = await PLAN_STORE.create_toplevel_fork(
+            str(owner), _fork_node_slug(req.goal),
+            req.goal.strip()[:MAX_TITLE_LEN], llm_context_id=context_id)
+        # THE FAILED NODE ON THE SIDE BRANCH: the pre-fork attempt as
+        # the seat's kind-2 old-chain stub under the fork row, settled
+        # with the seat's OWN status + error.
+        stub_title = (f"[old chain] {bare_node} attempt ({seat_status})"
+                      + (f": {str(seat_error)[:160]}" if seat_error else ""))
+        stub_id = await PLAN_STORE.create_child_state(
+            str(owner), fork_row_id, _old_node_slug(),
+            stub_title[:MAX_TITLE_LEN], child_kind=2)
+        await PLAN_STORE.finish_child_state(
+            stub_id, seat_status if seat_status in ("failed", "skipped",
+                                                    "completed")
+            else "skipped",
+            error=str(seat_error)[:800] if seat_error else None,
+            thread_id=str(owner), node=_old_node_slug())
+        # The preregistered lane: the hooks mount the kits/hints/system
+        # under the EXISTING row (no second row).
+        state_by_run: Dict[str, int] = {}
+        context_by_run: Dict[str, Optional[str]] = {}
+        hooks = SpawnHooks(
+            str(owner), fork_row_id, store=store, model=model,
+            state_by_run=state_by_run, context_by_run=context_by_run,
+            preregistered=True)
+        run = SubagentRun(
+            run_id=uuid.uuid4().hex[:8],
+            request=SubagentRequest(
+                goal=req.goal, max_steps=budget, background=False,
+                depth=1, inherit_transcript=list(messages)),
+            background=False,
+        )
+        run.state_id = fork_row_id
+        run.llm_context_id = context_id
+        await hooks.input_hook(run)
+
+        async def _run_fork_child() -> None:
+            """The run-node fork's child runner — the shared body, plus
+            the FINAL-RESULT refresh: a COMPLETED continuation of the
+            chain's last output seat replaces the run's final-result
+            document with its answer (fail-soft — the child row is
+            already settled; only the refresh is lost)."""
+            await _run_node_child(
+                run, hooks, provider=provider, model=model,
+                fork_child=True)
+            if (refresh_final and run.status == "completed"
+                    and run.answer):
+                try:
+                    await PLAN_STORE.record_final_result(
+                        str(owner), answer=run.answer, replace=True)
+                except Exception as exc:  # noqa: BLE001 — refresh-only
+                    logger.warning(
+                        "final-result refresh after the output-seat "
+                        "fork (%s) failed: %s", fork_row_id, exc)
+
+        task = asyncio.create_task(_run_fork_child())
+        NODE_ACTIONS[fork_row_id] = task
+    except HttpLike as exc:
+        return JSONResponse(status_code=exc.status_code,
+                            content={"detail": exc.detail})
+    return NodeActionResult(
+        kind="fork", state_id=run.state_id,
+        context_id=run.llm_context_id,
+        thread_id=str(owner),
+        # parent_state_id NULL — the continuation is a TOP-LEVEL row on
+        # the owning segment (the main line); the failed pre-fork
+        # attempt hangs as the kind-2 stub UNDER it (the side branch).
+        parent_state_id=None,
+        status="running")
+
+
+
 @app.exception_handler(Exception)
 async def agent_error_handler(_req: Request, exc: Exception) -> JSONResponse:
     # Any agent-loop failure reaches the bridge as a JSON body, not a
@@ -495,7 +1187,37 @@ async def _run_one(req: RunRequest, thread_id: str) -> RunResponse:
     provider and the class DEFAULT_MODEL. An explicit RunRequest.model
     / RunRequest.provider still wins over the config's — a request
     naming a DIFFERENT provider than the row runs that provider on its
-    own defaults (the row's key/endpoint/model do not leak across)."""
+    own defaults (the row's key/endpoint/model do not leak across).
+
+    THE ``[this is test]`` SELF-TEST (selftest.DummySelfTestRun): a
+    goal carrying the prefix bypasses the whole config resolution — the
+    run loads the offline dummy LLM + the feature tool seam + the
+    recording System One engine, walks the canonical dummy langgraph
+    chain MARKET-WIDE (``market_wide_data`` strips the caller's code
+    scope before the walk), and the response's ANSWER is the
+    auto-triggered assertion battery's PASS/FAIL report (see
+    ``_run_chain``)."""
+    self_test = DummySelfTestRun.detect(req.goal)
+    if self_test is not None:
+        logger.info("[this is test] self-test run (goal head: %r)",
+                    req.goal[:60])
+        # MARKET-WIDE (2026-11-14): the caller's code scope never rides
+        # the self-test walk — dropped before run_thread so no
+        # deep_agent_identities row lands and the history entry shows
+        # under every Summary History subject pick. The MAIN chain is
+        # the SHOWCASE (the fork/spawn routing scripted around the
+        # recording real engine; the scripted sandbox serves the spawn
+        # child's and the grandchild's runs), so the graph the UI opens
+        # holds every scenario kind as nodes.
+        req.data = self_test.market_wide_data(req.data)
+        return await _run_chain(
+            req, thread_id, self_test.build_provider(),
+            mcp=self_test.build_mcp(),
+            sandbox=self_test.build_sandbox(),
+            goal=self_test.effective_goal,
+            model=self_test.model_label,
+            decision_engine=self_test.build_showcase_engine(),
+            self_test=self_test)
     cfg = await load_llm_config()
     if cfg is not None or req.provider:
         label = (req.provider
@@ -517,38 +1239,85 @@ async def _run_one(req: RunRequest, thread_id: str) -> RunResponse:
     model = (req.model
              or (cfg.model_name if row_applies else None)
              or ZhipuChatProvider.DEFAULT_MODEL)
-    mcp = McpToolClient(url=DEFAULT_MCP_URL)
-    async with mcp:
+    async with McpToolClient(url=DEFAULT_MCP_URL) as mcp:
+        return await _run_chain(
+            req, thread_id, provider, mcp=mcp, goal=req.goal,
+            model=model, decision_engine=None, self_test=None)
+
+
+async def _run_chain(
+    req: RunRequest, thread_id: str, provider: ZhipuChatProvider, *,
+    mcp: McpToolClient, goal: str, model: str,
+    decision_engine: Optional[Any], self_test: Optional[DummySelfTestRun],
+    sandbox: Optional[Any] = None,
+) -> RunResponse:
+    """The execute-and-assemble body every run shares (hoisted out of
+    ``_run_one`` so the REAL-MCP context-managed session — the normal
+    path — and the self-test's feature seam don't duplicate it): one
+    ``run_thread`` call, the cancellation settle, and the response
+    assembly. The self-test path passes the duck-typed doubles for
+    *provider* / *mcp* / *decision_engine* (the same seam contract
+    ``run_thread`` declares — the offline double satisfies the one
+    ``chat_complete`` / ``tool_schemas`` + ``call_tool`` face) plus the
+    scripted *sandbox* (the showcase chain's spawn-child and
+    grandchild runs).
+    ``self_test`` set (the ``[this is test]`` path) swaps the
+    response's ANSWER for the assertion battery's rendered report —
+    ``full_report`` runs the showcase chain's battery PLUS every shared
+    walk and the decision battery (their chains kept in the history and
+    their ids riding ``walk_chain_ids``) — a mid-walk exception (a
+    dataset drift) settles as a FAIL report naming the error, never a
+    500: the report IS the assert output."""
+    try:
+        outcome = await run_thread(
+            provider, mcp, goal=goal, data=req.data,
+            model=model, max_steps=req.max_steps,
+            system=req.system, temperature=req.temperature,
+            thread_id=thread_id,
+            plan_template_id=req.plan_template_id,
+            decision_engine=decision_engine, sandbox=sandbox)
+    except asyncio.CancelledError:
+        plan_rows: List[Any] = []
         try:
-            outcome = await run_thread(
-                provider, mcp, goal=req.goal, data=req.data,
-                model=model, max_steps=req.max_steps,
-                system=req.system, temperature=req.temperature,
-                thread_id=thread_id,
-                plan_template_id=req.plan_template_id)
-        except asyncio.CancelledError:
-            plan_rows: List[Any] = []
-            try:
-                # Chain-aware: the stop settle closes every thread the
-                # run minted (plan / custom / result).
-                plan_rows = await runner.settle_thread(
-                    thread_id, failure=STOPPED_FAILURE)
-            except Exception as exc:  # noqa: BLE001 — fail-soft settle
-                logger.warning("stopped-thread settle failed: %s", exc)
-            return RunResponse(
-                answer="", steps=0, n_tool_calls=0,
-                model=model,
-                thread_id=thread_id if plan_rows else None,
-                super_thread_id=thread_id,
-                plan=_plan_states(plan_rows), stopped=True)
+            # Chain-aware: the stop settle closes every thread the
+            # run minted (plan / custom / result).
+            plan_rows = await runner.settle_thread(
+                thread_id, failure=STOPPED_FAILURE)
+        except Exception as exc:  # noqa: BLE001 — fail-soft settle
+            logger.warning("stopped-thread settle failed: %s", exc)
         return RunResponse(
-            answer=outcome.result.answer, steps=outcome.result.steps,
+            answer="", steps=0, n_tool_calls=0,
+            model=model,
+            thread_id=thread_id if plan_rows else None,
+            super_thread_id=thread_id,
+            plan=_plan_states(plan_rows), stopped=True)
+    except Exception as exc:  # noqa: BLE001 — the self-test's FAIL lane
+        if self_test is None:
+            raise
+        report = self_test.failure_report(exc)
+        return RunResponse(
+            answer=report.render(), steps=0, n_tool_calls=0,
+            model=model, thread_id=thread_id,
+            super_thread_id=thread_id, plan=[])
+    if self_test is not None:
+        report = await self_test.full_report(outcome)
+        return RunResponse(
+            answer=report.render(), steps=outcome.result.steps,
             n_tool_calls=outcome.n_tool_calls,
             model=model,
             thread_id=outcome.thread_id,
             super_thread_id=outcome.super_thread_id or outcome.thread_id,
             plan=_plan_states(outcome.plan),
+            walk_chain_ids=self_test.walk_chain_ids,
         )
+    return RunResponse(
+        answer=outcome.result.answer, steps=outcome.result.steps,
+        n_tool_calls=outcome.n_tool_calls,
+        model=model,
+        thread_id=outcome.thread_id,
+        super_thread_id=outcome.super_thread_id or outcome.thread_id,
+        plan=_plan_states(outcome.plan),
+    )
 
 
 @app.post("/run", response_model=RunResponse)
@@ -752,12 +1521,13 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     args = ap.parse_args()
 
-    # Liveness heartbeat for database/stream_watchdog.py — same contract
-    # as llm_agents.mcp: the watchdog starts this service when no
-    # heartbeat row exists and restarts it when the beat goes stale.
-    # Must stay registered for the server's whole life; the exit hooks
-    # record the stop on shutdown.
-    register_service(SERVICE)
+    # Liveness heartbeat — same contract as llm_agents.mcp: a
+    # monitor-area resident now (2026-11 resident migration; the
+    # monitor's supervisor starts/revives it, scope passed explicitly
+    # since the service left MONITORED_SERVICES). Must stay registered
+    # for the server's whole life; the exit hooks record the stop on
+    # shutdown.
+    register_service(SERVICE, scope="database", sub_scope="stream")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 

@@ -37,6 +37,7 @@ import {
 } from "@mui/material";
 import {
   SignalCodeTrendChart,
+  SignalCrowdednessChart,
   SignalHistoryPanel,
   SignalPopulationToggles,
   SignalRulesAskButton,
@@ -251,17 +252,31 @@ export default function SignalTrendPanel({
           />
         )}
       </Paper>
-      <SignalCodeTrendChart
-        secType={secType}
-        code={code}
-        name={name}
-        // undefined→internal fetch would duplicate this panel's request;
-        // null = parent-owned, still loading (markers arrive with it).
-        history={history}
-        population={signals}
-        selectedSignalDate={expandedDate}
-        chartOptions={chartOptions}
-      />
+      {/* The crowdedness family plots its crowdedness TRIGGER SOURCE
+          (the score + ma5 curves from analysis.market_crowdedness), not
+          the plain OHLC code trend — the family's pick swaps the chart;
+          the markers ride the crowdedness curves at the event dates. */}
+      {signalType === "crowdedness" && secType === "index" ? (
+        <SignalCrowdednessChart
+          code={code}
+          name={name}
+          population={signals}
+          selectedSignalDate={expandedDate}
+          onDateClick={handleDateClick}
+        />
+      ) : (
+        <SignalCodeTrendChart
+          secType={secType}
+          code={code}
+          name={name}
+          // undefined→internal fetch would duplicate this panel's request;
+          // null = parent-owned, still loading (markers arrive with it).
+          history={history}
+          population={signals}
+          selectedSignalDate={expandedDate}
+          chartOptions={chartOptions}
+        />
+      )}
       {error ? (
         <Alert severity="error">Failed to load {code} signal history: {error}</Alert>
       ) : history === null ? (

@@ -10,7 +10,7 @@ the SAME ``{code}closeweight.xls`` OSS endpoint
 ``downloads.index.csindex.composition`` downloads. Its fetch/parse/cache
 helpers are reused (never duplicated); this module adds only the BSE
 scope (``BSE_INDEX_CODES``), the ``.BJ`` stock-code suffix, and its own
-external_request_config pacing row (2 requests per monthly pass — the
+external_request_config pacing row (2 requests per quarterly pass — the
 csindex row's 300s cadence covers a ~500-index sweep, this doesn't need
 it).
 
@@ -20,11 +20,11 @@ CSI snapshots (``{code}_closeweight_{YYYYMMDD}.csv``) so
 zero build-side changes (source_type='index', stock_code ``920xxx.BJ``,
 rank by weight desc).
 
-Refresh semantics mirror the csindex runner: per index, a cached CSV
-whose month is before yesterday's month triggers a monthly refresh
-(re-download, stamped with today's date); otherwise any valid cache
-satisfies the run, and ``--force-month-start`` forces the refresh path on
-any day.
+Refresh semantics mirror the csindex runner (quarterly since 2026-11 —
+the downloads_quarterly tier): per index, a cached CSV whose quarter is
+before yesterday's quarter triggers a quarterly refresh (re-download,
+stamped with today's date); otherwise any valid cache satisfies the run,
+and ``--force-quarter-start`` forces the refresh path on any day.
 
 Code motion only (2026-11-07): the former module-level
 ``download_bse_index_composition`` orchestrator is now the method of the
@@ -51,6 +51,7 @@ from downloads._common import (
     sleep_sec_for,
 )
 from downloads._common.exchanges.bjs import BSE_INDEX_CODES
+from downloads._common.monthly import in_same_quarter
 from downloads.index.csindex.composition import (
     CLOSEWEIGHT_URL_TEMPLATE,
     csv_filename_for,
@@ -81,11 +82,11 @@ class BseCompositionRunner:
         out_root: Optional[str] = None,
         skip_cached: bool = True,
         sleep_sec: Optional[float] = None,
-        force_month_start: bool = False,
+        force_quarter_start: bool = False,
     ) -> Dict[str, Any]:
         """Download the 北证50/北证专精特新 composition (closeweight) snapshots.
 
-        Same monthly-refresh contract as the csindex composition runner (see
+        Same quarterly-refresh contract as the csindex composition runner (see
         the module docstring); defaults to ``BSE_INDEX_CODES`` and writes into
         the shared CSI composition directory so the index-composition build
         picks the snapshots up.
@@ -99,10 +100,10 @@ class BseCompositionRunner:
 
         today = date.today()
         yday = today - timedelta(days=1)
-        forced = force_month_start
+        forced = force_quarter_start
         if forced:
             logger.info(
-                "Force-month-start: all indices will be re-downloaded and stamped "
+                "Force-quarter-start: all indices will be re-downloaded and stamped "
                 "with today's date (%s).",
                 today.isoformat(),
             )
@@ -134,34 +135,34 @@ class BseCompositionRunner:
                 name = _index_names.get(code, code)
                 logger.info("== Index %s (%s) ==", code, name)
 
-                # Check cache & determine if monthly refresh is needed for
+                # Check cache & determine if quarterly refresh is needed for
                 # THIS specific index code (same rule as the csindex runner:
-                # cached month < yesterday's month → refresh).
+                # cached quarter before yesterday's quarter → refresh).
                 cached = find_cached_csv(out_dir, code)
                 today_csv = out_dir / f"{code}_closeweight_{today.strftime('%Y%m%d')}.csv"
-                monthly_refresh = forced
-                if not monthly_refresh and cached:
+                quarterly_refresh = forced
+                if not quarterly_refresh and cached:
                     m = re.search(r'_closeweight_(\d{8})\.csv$', cached.name)
                     if m:
-                        cached_month = int(m.group(1)[:6])  # YYYYMM
-                        yday_month = yday.year * 100 + yday.month
-                        if cached_month < yday_month:
-                            monthly_refresh = True
+                        cached_ym = int(m.group(1)[:6])  # YYYYMM
+                        cached_qdate = date(cached_ym // 100, cached_ym % 100, 1)
+                        if not in_same_quarter(cached_qdate, yday):
+                            quarterly_refresh = True
 
-                if monthly_refresh:
-                    # Monthly refresh mode: skip only if already downloaded TODAY
+                if quarterly_refresh:
+                    # Quarterly refresh mode: skip only if already downloaded TODAY
                     if is_valid_file(today_csv, min_bytes=MIN_VALID_BYTES):
-                        logger.info("  [cache] %s monthly-refresh but already done today: %s",
+                        logger.info("  [cache] %s quarterly-refresh but already done today: %s",
                                     code, today_csv.name)
                         stats.skipped_cached += 1
                         results.append({"code": code, "name": name,
                                         "status": "cached", "file": str(today_csv)})
                         continue
-                    log_tag = "force-month-start" if forced else "monthly-refresh"
-                    logger.info("  [%s] %s cache=%s yday_month=%s → refreshing",
+                    log_tag = "force-quarter-start" if forced else "quarterly-refresh"
+                    logger.info("  [%s] %s cache=%s yday_quarter=%s → refreshing",
                                 log_tag, code,
                                 cached.name if cached else "(none)",
-                                f"{yday.year:04d}{yday.month:02d}")
+                                f"{yday.year}Q{(yday.month - 1) // 3 + 1}")
                 elif skip_cached and cached:
                     # Normal mode: any valid cache is good enough
                     logger.info("  [cache] %s already cached: %s", code, cached.name)
@@ -196,12 +197,12 @@ class BseCompositionRunner:
                     results.append({"code": code, "name": name, "status": "empty"})
                     continue
 
-                # Save CSV. On monthly refresh, stamp the CSV with today's
+                # Save CSV. On quarterly refresh, stamp the CSV with today's
                 # date (overriding the xls's snapshot_date, usually the
-                # previous business day) so the new month's snapshot flows to
+                # previous business day) so the new quarter's snapshot flows to
                 # prod (stats.sec_composition) as a fresh (code, date) pair —
                 # the csindex runner's convention.
-                if monthly_refresh:
+                if quarterly_refresh:
                     snapshot_date = today.isoformat()
                     normalized["snapshot_date"] = snapshot_date
                 else:
@@ -219,11 +220,11 @@ class BseCompositionRunner:
                     "file": str(csv_path),
                     "n_constituents": len(normalized),
                     "snapshot_date": snapshot_date,
-                    "monthly_refresh": monthly_refresh,
+                    "quarterly_refresh": quarterly_refresh,
                 })
                 logger.info("  [ok] %s: %d constituents, snapshot=%s → %s%s",
                             code, len(normalized), snapshot_date, csv_name,
-                            " (monthly stamp)" if monthly_refresh else "")
+                            " (quarterly stamp)" if quarterly_refresh else "")
 
         except KeyboardInterrupt:
             logger.warning("Interrupted by user")

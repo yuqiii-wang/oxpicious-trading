@@ -42,11 +42,15 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8789)
     args = ap.parse_args()
 
-    # Liveness heartbeat for database/stream_watchdog.py — same contract
-    # as llm_agents.mcp. Must stay registered for the daemon's whole
-    # life; the exit hooks record the stop on shutdown. Logging is
-    # stderr-only: the stdio transport carries MCP JSON-RPC on stdout.
-    register_service("llm_agents.sandbox")
+    # Liveness heartbeat — same contract as llm_agents.mcp, a
+    # monitor-area resident now (2026-11 resident migration; the
+    # monitor's supervisor starts/revives it, scope passed explicitly
+    # since the service left MONITORED_SERVICES). Must stay registered
+    # for the daemon's whole life; the exit hooks record the stop on
+    # shutdown. Logging is stderr-only: the stdio transport carries MCP
+    # JSON-RPC on stdout.
+    register_service("llm_agents.sandbox", scope="database",
+                     sub_scope="stream")
     SandboxMcpServer(host=args.host, port=args.port).run(
         stdio=args.stdio)
 

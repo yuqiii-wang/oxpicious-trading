@@ -67,6 +67,11 @@ export function useSummaryHistory({
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   // The picked day's per-thread rows (phase 2; empty when nothing open).
   const [dayRuns, setDayRuns] = useState<AiSummaryRun[]>([]);
+  // True while that phase-2 fetch is in flight — the thread graph's
+  // placeholder reads it to spin instead of claiming "No run picked"
+  // during the dot-click window (the default pick resolves only once
+  // these rows land).
+  const [dayRunsLoading, setDayRunsLoading] = useState(false);
   // The Summary History's search-by-thread-id box (the paper header's
   // right side): the typed prefix and its in-flight flag.
   const [threadSearch, setThreadSearch] = useState("");
@@ -175,9 +180,11 @@ export function useSummaryHistory({
   // default pick's source; an indexed one-day read).
   const loadDayRuns = useCallback(
     (date: string) => {
+      setDayRunsLoading(true);
       fetchSummaryRuns({ ...stripFilters(), date })
         .then(setDayRuns)
-        .catch(() => setDayRuns([]));
+        .catch(() => setDayRuns([]))
+        .finally(() => setDayRunsLoading(false));
     },
     [stripFilters],
   );
@@ -556,6 +563,7 @@ export function useSummaryHistory({
   return {
     runDates,
     datesLoading,
+    dayRunsLoading,
     selectedRunDate,
     selectedThreadId,
     setSelectedThreadId,

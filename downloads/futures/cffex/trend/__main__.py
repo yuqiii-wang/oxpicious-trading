@@ -56,6 +56,7 @@ from _common._holidays_and_weekdays import (
 )
 from _common.db_commons import get_db_connection
 from _common.pre_check_and_load.identity import check_identity
+from builds.futures.config import CFFEX_CODE_SCOPE
 
 setup_utf8_stdout()
 
@@ -136,15 +137,23 @@ class CffexFuturesTrendDownload(DownloadJob):
     # -------------------------------------------------------------------
 
     def get_latest_db_date(self) -> Optional[date]:
-        """Query stats.futures_identity for the latest date.
+        """Query stats.futures_identity for the latest CFFEX-family date.
+
+        The table is SHARED with the offshore CN (SGX) / MCA (HKEX) A50
+        families, whose daily rows would otherwise make the latest date
+        look current while this family's own ingestion lags — scope to the
+        CFFEX contract codes (see builds.futures.config.CFFEX_CODE_SCOPE).
 
         Returns:
-            Latest date in the database, or None if table is empty/missing.
+            Latest CFFEX date in the database, or None if table is
+            empty/missing.
         """
         try:
             conn = get_db_connection()
             row = conn.execute(
-                "SELECT MAX(date) as max_date FROM stats.futures_identity"
+                "SELECT MAX(date) as max_date FROM stats.futures_identity "
+                "WHERE code ~ %s",
+                (CFFEX_CODE_SCOPE,),
             ).fetchone()
             conn.close()
             if row and row[0]:
@@ -250,13 +259,17 @@ class CffexFuturesTrendDownload(DownloadJob):
         current_month_missing_from_db: Set[date] = set()
         use_current_month_scan: bool = False
         if start_date is None and start_from.month == today.month:
-            # Query ALL dates in the current month from stats.futures_identity
-            # This returns trading days that are completely absent from the DB
+            # Query the current month's dates missing CFFEX-family rows from
+            # stats.futures_identity. Scoped to the CFFEX contract codes:
+            # the table is SHARED with the offshore CN (SGX) / MCA (HKEX)
+            # A50 families, whose daily rows would make every date look
+            # present and silently stop the downloads (2026-11 gap).
             try:
                 current_month_missing_from_db = check_identity(
                     "stats.futures_identity",
                     start_from,
                     end_date,
+                    code_scope=CFFEX_CODE_SCOPE,
                 )
                 use_current_month_scan = True
             except Exception:

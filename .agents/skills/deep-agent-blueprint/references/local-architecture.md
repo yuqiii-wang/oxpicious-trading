@@ -206,7 +206,7 @@ llm_agents/
   thread_id, plan, stopped}`), `POST /stop` (task cancellation by thread
   or all), `GET /active`, `WS /ws` (event stream), `GET /health`.
 
-## The loop (`core/loop.py::DeepAgent.run`)
+## The loop (`core/loop/run.py::DeepAgent.run`)
 
 ONE message list, ONE provider call per step; tool calls executed via
 `asyncio.gather` (sibling calls of one step run concurrently, per-call
@@ -271,7 +271,7 @@ C.output ──handoff──> R.entry   (the UI draws this as the special edge)
 - Cancellation: server `/stop` cancels the asyncio task; `CancelledError`
   handlers settle node items and thread rows ("stopped by user").
 
-## Subagents (`core/delegation.py`, `core/loop.py::_run_subagent`)
+## Subagents (`core/delegation.py`, `core/loop/spawner.py::_run_subagent`)
 
 - Tools: `spawn_subagent` (goal, max_steps, `background: bool`) and
   `collect_subagents` (run_ids/wait/timeout). Sync spawn awaits the child;
@@ -313,7 +313,7 @@ C.output ──handoff──> R.entry   (the UI draws this as the special edge)
   per tool, mounted as `BuiltinTool` pairs; 2026-11-02 refactor):
   `spawn_subagent`, `collect_subagents` (schemas in
   `tools/delegation_tools.py`; the HANDLERS are loop methods —
-  supervision state lives in `core/loop.py`); `sandbox_write_file` /
+  supervision state lives in the composed `core/loop/` DeepAgent — `core/loop/spawner.py`); `sandbox_write_file` /
   `sandbox_run` / `sandbox_read_file` / `sandbox_list_files`
   (`tools/sandbox_tools.py::SandboxToolSet` over the `core/sandbox.py`
   client — chain: builtin → `llm_agents.sandbox` MCP middleware :8789 →

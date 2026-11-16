@@ -1,0 +1,12 @@
+{
+  "service": "downloads.macro.pboc.stats",
+  "check": "snapshot_fresh",
+  "params": {
+    "dir": "temps/pboc_stats",
+    "pattern": "pboc_stats_*.csv",
+    "min_bytes": 64,
+    "max_age_days": 45
+  },
+  "rerun_args": [],
+  "notes": "PBoC statistics XLSX/CSV snapshots on disk; the module's own missing-target scan fetches gaps on a plain rerun (never --force: it purges + refetches everything)."
+}

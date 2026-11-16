@@ -43,7 +43,8 @@
  *       pipeline process: its service_config freq, last successful exit
  *       (monitor.service_audit is_normal_exit), and whether a force-less
  *       run would be skipped right now (daily = 24h / monthly = 30d /
- *       semiannually = 183d / once = any success; always / occasionally /
+ *       quarterly = 92d / semiannually = 183d / once = any success;
+ *       always / occasionally /
  *       on_demand never skip), plus the cross-service parallel verdict
  *       (included/excluded_parallel_services vs the live services, both
  *       directions). The Run dialog previews this before POSTing.
@@ -62,10 +63,40 @@
  *   POST /api/monitor/orchestration/run  { file, dryRun? }
  *     → start the Orchestration config tab's tier run on the monitor
  *       area (server_cluster/monitor POST /orchestration/run — the
- *       server-side run_steps.sh): steps run one by one through its job
+ *       tier executor; the maintainer's nightly_pipeline chain drives
+ *       these same runs at 16:00 China time on trading days): steps run
+ *       in numeric key order — download tiers in diff-src-parallel
+ *       waves (consecutive steps with distinct src_host run
+ *       concurrently, the whole wave before the next) — through its job
  *       registry, each heartbeating onto Pipeline processes as it
  *       starts. GET /orchestration/runs/:tag polls step statuses;
  *       dryRun=true echoes the plan without executing (smoke only).
+ *
+ *   GET /api/monitor/non-daily
+ *     → the non-daily tasks' completeness monitor (the Non-daily tab):
+ *       every non-daily orchestration tier's tasks (downloads
+ *       monthly/quarterly/semiannually/once, builds monthly/
+ *       semiannually/once, strategy once, monitoring occasionally)
+ *       merged with their check configs (static non_daily_checks tree),
+ *       their current state rows (monitor.non_daily_task_state — the
+ *       identity-grounded verdicts: complete | missing | check_failed,
+ *       state arrives already DECODED via the label_dim join) and their
+ *       service_config cadence (freq + schedule — how the task should
+ *       run). missing_count/missing_detail/attempts/next_check_at
+ *       expose the weekend backfill's charge (Saturday 05:00 China
+ *       time, weekly retry until loaded).
+ *
+ *   POST /api/monitor/non-daily/evaluate
+ *     → one check pass NOW (what the page's Evaluate action fires): the
+ *       monitor area evaluates every configured task against the daily
+ *       data identities and upserts the verdicts.
+ *
+ *   POST /api/monitor/non-daily/backfill  { dryRun? }
+ *     → the weekend drive on demand (what the maintainer's Saturday
+ *       non_daily_backfill job fires): evaluate, re-run each DUE
+ *       missing re-run-eligible task (module + tier args + force args
+ *       via the run registry), re-check, bump attempts + the weekly
+ *       next_check gate. dryRun=true reports the due list only.
  *
  *   POST /api/monitor/health-check
  *     → the monitor area's GET /health-check (database.monitoring's
@@ -133,6 +164,80 @@
  *       Serves the Source Data tab's filterable table (sec_type dropdown +
  *       code/name search); name is JOINed in from stats.sec_classification.
  *
+ *   GET /api/monitor/db/tables?hours=24&order=workload|recent&limit=500
+ *                                     [&source=live|archive]
+ *     → the DB tab's per-table workload panel: MAIN TABLES ONLY — the
+ *       LATEST audit row per table over a trailing window
+ *       (monitor.db_table_audit, written ACTIVITY-SPARSE by the
+ *       database.db_table_audit sampler — a row only when a table's
+ *       pg_stat_user_tables counters moved or its flag changed, so
+ *       absence = idle). hours=0 = the full retained history (no lower
+ *       bound — the sampler's --retain-days prunes the table; surfaces
+ *       tables idle in recent windows whose last active pass is older).
+ *       source=archive swaps the store to the computed daily rollup
+ *       (monitor.db_table_audit_archive — one record per GMT day /
+ *       table / instance, kept indefinitely, database/
+ *       db_table_audit_archive.py) collapsed to a LIFETIME aggregate per
+ *       table: day sums of ins/upd/del added up, peak write/read rates
+ *       the worst day's, write_flag the worst-ever verdict, live/dead tup
+ *       and size the latest archived day's end-of-day snapshots, stamps
+ *       the most recent active day (no window — hours echoes 0). Partition
+ *       children never appear here: each partition FAMILY is folded into
+ *       its parent row — write/read rates and delta counts summed across
+ *       the partitions, flag the max family severity, stamps the latest
+ *       of the family — and the partitions load lazily per family via
+ *       /db/partitions. Write side from the primary (write_rate +
+ *       write_flag, the fixed-threshold amber/red verdict) and read side
+ *       from the replica (where the API reads), FULL OUTER JOINed. order
+ *       (whitelisted) = workload (combined write+read rate, the default)
+ *       | recent (the later last-active stamp), applied before the limit.
+ *       write_flag arrives DECODED (db_write_flag; null = not evaluated).
+ *
+ *   GET /api/monitor/db/partitions?schema=...&table=...&hours=24
+ *                                  [&source=live|archive]
+ *     → the live partition children of ONE partitioned parent (the lazy
+ *       expansion behind a workload-panel family row): every partition
+ *       present with its LATEST audit row in the window when active —
+ *       NULL metrics = idle (activity-sparse, like the panel).
+ *       source=archive swaps to the rollup table's LIFETIME aggregate per
+ *       partition (no window).
+ *
+ *   GET /api/monitor/db/trend?schema=...&table=...&hours=6
+ *                             [&source=live|archive]
+ *     → ONE table's write/read workload trend on the primary over a
+ *       trailing window — the drill-down chart behind a row click
+ *       (activity-sparse: idle gaps have no points). source=archive swaps
+ *       to the rollup table's per-GMT-day series (one point per archived
+ *       day over the FULL archive history; each point carries the GMT
+ *       operational day as `date`). FAMILY-AWARE: a partitioned parent's
+ *       passes aggregate its whole family (its own write-through rows are
+ *       idle zeros) and the response flags family=true; plain tables and
+ *       partitions return their own rows.
+ *
+ *   GET /api/monitor/db/alerts?limit=50
+ *     → the write-heavy alert trail (monitor.db_table_alert): every
+ *       write_flag STATE TRANSITION (raise / downgrade / clear) with
+ *       severity + the tripping rate vs the threshold in effect.
+ *       Severity arrives DECODED (db_write_flag; 0 ok = a clear).
+ *
+ *   GET /api/monitor/db/sql?order=total_ms|calls|recent|avg_ms&limit=100&q=
+ *     → the SQL statement audit (monitor.sql_audit): one row per DISTINCT
+ *       statement executed on the cluster (pg_stat_statements sampled on
+ *       BOTH instances by database/sql_audit.py — every client: pipelines,
+ *       this API, the MCP server, psql), keyed by sha256 of the
+ *       normalized statement text (literals -> $n) with delta-accumulated
+ *       call / total / avg / max exec time / row totals. order maps
+ *       through a route whitelist to the ORDER BY; q narrows to a text
+ *       substring or a sql_hash prefix.
+ *
+ *   GET /api/monitor/db/instances?hours=24
+ *     → the DB tab's instance vitals panel: the LATEST monitor.db_health
+ *       row per instance (the 60s sampler — reachability, latency,
+ *       connections, cache hit, WAL shipping state + replay backlog,
+ *       pg_wal size, container CPU/mem) plus the trailing connections /
+ *       cache-hit / backlog trend. instance + replication_state arrive
+ *       DECODED (db_instance / db_replication_state).
+ *
  * Reads monitor.service_heartbeat / monitor.service_audit /
  * monitor.external_resource_stats / monitor.external_resource_audit /
  * monitor.src_data_audit on
@@ -147,22 +252,26 @@ import { Router } from "express";
 import runsRouter from "./runs.js";
 import runGuardRouter from "./run-guard.js";
 import orchestrationRouter from "./orchestration.js";
+import nonDailyRouter from "./non-daily.js";
 import extResourcesRouter from "./ext-resources.js";
 import srcDataAuditRouter from "./src-data-audit.js";
 import streamAlwaysRouter from "./stream-always.js";
 import streamRouter from "./stream.js";
 import aiAuditRouter from "./ai-audit.js";
+import dbAuditRouter from "./db-audit.js";
 
 const router = Router();
 
 router.use(runsRouter);
 router.use(runGuardRouter);
 router.use(orchestrationRouter);
+router.use(nonDailyRouter);
 router.use(extResourcesRouter);
 router.use(srcDataAuditRouter);
 router.use(streamAlwaysRouter);
 router.use(streamRouter);
 router.use(aiAuditRouter);
+router.use(dbAuditRouter);
 
 // Re-exported for server.ts, which imports the boot auto-start helpers
 // from routes/monitor/index.js.

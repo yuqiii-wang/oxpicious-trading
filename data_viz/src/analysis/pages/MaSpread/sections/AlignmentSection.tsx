@@ -1,64 +1,65 @@
 /**
- * AlignmentSection — the MA-chain alignment row beneath Momentum
- * (analysis.mov_ave_spreads_detail's alignment_score / alignment_state,
- * auto-loaded with the momentum group): the five-leg alignment
+ * AlignmentSection — the MA-chain alignment section beneath the main
+ * plot chart (analysis.mov_ave_spreads_detail's alignment_score /
+ * alignment_state, auto-loaded with the momentum group): the five-leg alignment
  * (close>ma5>ma20>ma60>ma120>ma252) as a step-line trajectory over the
- * half-year window, bull (5) / bear (0) zones shaded, plus the latest
- * day's decoded verdict chip. NULL scores (insufficient MA history) gap
- * the line — they are never a verdict.
+ * half-year window, bull (5) / bear (0) zones shaded. NULL scores
+ * (insufficient MA history) gap the line — they are never a verdict.
+ * The per-date VERDICT (多头排列 / 纠缠 / 空头排列 + score) rides the
+ * chart's hover tooltip (chartOption/alignmentTrend) — the former
+ * latest-day verdict chip was folded into it (2026-11-14).
+ *
+ * No dataZoom slider of its own — `zoom` is the panel's ONE synced
+ * window (types.ChartZoomRange): the main plot's slider drives it and
+ * this chart's inside zoom follows. `onReady`/`onEvents` pass through so
+ * the panel wires the hover crosshair sync (shared/charts/tooltipSync —
+ * hover on either chart raises the vertical axisPointer + tooltip on
+ * both).
  */
 import { useMemo } from "react";
-import { Box, Chip, Typography } from "@mui/material";
+import { Box, Typography } from "@mui/material";
+import type { ECharts } from "echarts";
 import {
   BaseChart,
   useChartThemeMode,
 } from "@/shared/charts/base-chart";
-import type { MaAlignment, MovAveSpreadAlignmentDay } from "@shared/types";
+import type { MovAveSpreadAlignmentDay } from "@shared/types";
 import { SectionLabel } from "../SectionLabel";
-import { PERIOD_GRID_SX, PERIOD_CHIP_SX } from "../constants";
+import { PERIOD_GRID_SX } from "../constants";
+import type { ChartZoomRange } from "../types";
 import { buildAlignmentTrendOption } from "../chartOption/alignmentTrend";
-
-/** The ma_alignment verdict chip's label/color per state. */
-const ALIGNMENT_CHIP: Record<MaAlignment, { label: string; color: "success" | "warning" | "error" }> = {
-  bullish: { label: "多头排列", color: "success" },
-  mixed: { label: "纠缠", color: "warning" },
-  bearish: { label: "空头排列", color: "error" },
-};
 
 interface Props {
   alignmentRows: MovAveSpreadAlignmentDay[] | undefined;
   loading: boolean;
+  /** The panel's shared dataZoom window (main plot's slider drives it). */
+  zoom?: ChartZoomRange | null;
+  /** Instance capture for the panel's cross-chart hover sync. */
+  onReady?: (instance: ECharts) => void;
+  /** Hover/leave sync events forwarded from the panel. */
+  onEvents?: Record<string, (params: unknown) => void>;
 }
 
-export function AlignmentSection({ alignmentRows, loading }: Props) {
+export function AlignmentSection({ alignmentRows, loading, zoom, onReady, onEvents }: Props) {
   const themeMode = useChartThemeMode();
   const option = useMemo(
     () =>
       alignmentRows && alignmentRows.length > 0
-        ? buildAlignmentTrendOption(alignmentRows, themeMode)
+        ? buildAlignmentTrendOption(alignmentRows, themeMode, zoom)
         : null,
-    [alignmentRows, themeMode],
+    [alignmentRows, themeMode, zoom],
   );
   const last = alignmentRows?.at(-1);
-  const verdict =
-    last?.alignment_state != null ? ALIGNMENT_CHIP[last.alignment_state] : null;
   return (
     <>
       <Box sx={{ ...PERIOD_GRID_SX, mt: 1 }}>
         <SectionLabel
           id="alignment"
-          active={!!last?.alignment_score}
+          // A verdict exists whenever the score is non-NULL — score 0 is a
+          // VALID full-bearish verdict, not "no data" (!!0 would miss it).
+          active={last?.alignment_score != null}
           suffix={loading ? " — loading…" : ""}
         />
-        {verdict && (
-          <Chip
-            label={`alignment: ${verdict.label} (${last!.alignment_score}/5)`}
-            size="small"
-            color={verdict.color}
-            variant="outlined"
-            sx={{ gridColumn: "span 3", ...PERIOD_CHIP_SX }}
-          />
-        )}
       </Box>
       {alignmentRows != null && alignmentRows.length > 0 && (
         <>
@@ -70,6 +71,8 @@ export function AlignmentSection({ alignmentRows, loading }: Props) {
             option={option}
             emptyText="No alignment rows for this code"
             height={220}
+            onReady={onReady}
+            onEvents={onEvents}
           />
           <Typography
             variant="caption"

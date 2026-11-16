@@ -13,7 +13,9 @@
  * them), both structurally filtered by the deep-agent serving layer.
  * The underlying list is the SHARED KG table corpus (useKgScopeTables
  * — one session fetch, the same data the Knowledge Graph config page's
- * dropdown renders).
+ * dropdown renders). The selection starts ALL-TICKED: the page seeds
+ * every corpus table once the fetch lands (a user tick beating the
+ * seed stays), so the out-of-box run sections the whole corpus.
  *
  * The panel folds HORIZONTALLY: collapsed it is a slim vertical strip on
  * the far left (icon + rotated title + selected/total count), and a

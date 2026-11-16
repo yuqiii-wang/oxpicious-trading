@@ -1,14 +1,15 @@
 /**
  * RunOrchestrationDialog — both orchestration Run buttons' confirm
  * dialog. Shows exactly what will spawn (one step's `python -m` module
- * with its args, or the tier's whole run_steps.sh serial runner), plus
+ * with its args, or the tier's whole serial step list), plus
  * a Checkbox (default unticked) that, when ticked and confirmed,
  * redirects to the Monitor Services page — where the Pipeline processes
  * table picks the run up via its heartbeat (~60s). Step runs POST
  * /api/monitor/stream/run with force=true (an explicit click means run;
  * the module itself stays incremental-by-default); tier runs POST
- * /api/monitor/orchestration/run (the shared run_steps.sh the tier
- * scripts delegate to — a manual run, so no trading-day/time gate).
+ * /api/monitor/orchestration/run (the monitor area's tier runner the
+ * maintainer's nightly chain also drives — a manual run, so no
+ * trading-day gate).
  */
 import { useCallback, useEffect, useState } from "react";
 import {
@@ -69,7 +70,7 @@ export default function RunOrchestrationDialog({
       ? ""
       : target.kind === "step"
         ? `python -m ${target.script}${target.args.length > 0 ? ` ${target.args.join(" ")}` : ""}`
-        : `bash scripts/run_steps.sh scripts/orchestration/${target.file}`;
+        : `POST /orchestration/run — scripts/orchestration/${target.file}.json`;
 
   const submit = useCallback(async () => {
     if (target == null) return;
@@ -114,7 +115,7 @@ export default function RunOrchestrationDialog({
         <Typography variant="caption" color="text.secondary">
           {target?.kind === "step"
             ? "fire-and-forget: the run shows up as “running” in the Pipeline processes table within ~60s (heartbeat) and lands in its run history on exit."
-            : `runs the file's ${target?.steps ?? 0} step${(target?.steps ?? 0) === 1 ? "" : "s"} one by one, strictly serially (the shared run_steps.sh runner — a manual run, no trading-day/time gate); each step heartbeats onto Pipeline processes as it starts.`}
+            : `runs the file's ${target?.steps ?? 0} step${(target?.steps ?? 0) === 1 ? "" : "s"} one by one, strictly serially (the monitor area's tier runner — a manual run, no trading-day gate); each step heartbeats onto Pipeline processes as it starts.`}
         </Typography>
         <FormControlLabel
           sx={{ alignSelf: "flex-start" }}

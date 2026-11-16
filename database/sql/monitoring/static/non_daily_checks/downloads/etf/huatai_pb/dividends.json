@@ -1,0 +1,12 @@
+{
+  "service": "downloads.etf.huatai_pb.dividends",
+  "check": "snapshot_fresh",
+  "params": {
+    "dir": "temps/huatai_pb_dividends",
+    "pattern": "huatai_pb_dividends_*.csv",
+    "min_bytes": 64,
+    "max_age_days": 190
+  },
+  "rerun_args": [],
+  "notes": "Huatai PB dividend CSVs; the module's 20-day freshness guard already fetches anything the 190-day window flags."
+}

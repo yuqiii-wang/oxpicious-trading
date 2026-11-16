@@ -2,6 +2,14 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Reserve the vertical scrollbar gutter on every page: short pages keep the
+   same content width as scrolling ones, so right-aligned header controls
+   (toggles, refresh) do not shift when a view's height crosses the
+   scroll threshold. */
+html {
+  scrollbar-gutter: stable;
+}
+
 :root {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
   line-height: 1.5;

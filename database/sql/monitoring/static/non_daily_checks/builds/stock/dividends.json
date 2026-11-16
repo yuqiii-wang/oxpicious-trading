@@ -1,0 +1,10 @@
+{
+  "service": "builds.stock.dividends",
+  "check": "db_source_freshness",
+  "params": {
+    "view": "server_cluster/monitor/non_daily/stock_dividends_fresh_any",
+    "max_age_days": 200
+  },
+  "rerun_args": [],
+  "notes": "The dividend LOAD side: stale when BOTH sources' last_updates age out (either source fresh means the pair still works); rebuild is idempotent from the fetched CSVs."
+}

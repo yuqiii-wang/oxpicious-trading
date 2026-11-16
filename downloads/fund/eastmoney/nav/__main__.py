@@ -16,7 +16,7 @@ published by the fund companies and aggregated by eastmoney's fund platform:
 
 One request per fund returns the full inception-to-date series.
 
-Output (monthly cadence — registered in downloads_monthly.sh):
+Output (monthly cadence — registered in scripts/orchestration/downloads_monthly.json):
 
   ``temps/fund_nav/fund_nav_<code>.csv``
       per-fund full history — ``date, code, nav, cum_nav, day_pct`` (asc)

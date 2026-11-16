@@ -6,12 +6,15 @@
 # yuqi-owned). Every WSL boot — after a Windows reboot, `wsl --shutdown`,
 # or the idle-VM shutdown that kills the whole fleet leaving stale
 # heartbeat rows with no stop records — re-runs this script, which starts
-# the stream watchdog; the watchdog's first reconcile pass then respawns
-# every stale MONITORED_SERVICE (the monitor server — which supervises
-# the other seven server_cluster.* servers and, via the downloader area,
-# the five downloads.stream.* pollers, as RESIDENTS — plus
-# database.db_health, llm_agents.mcp, llm_agents.sandbox,
-# llm_agents.deep_agents.server on 127.0.0.1:8766).
+# the stream watchdog; the watchdog's first pass then respawns its ONE
+# scan charge, the monitor server, which supervises every other
+# always-on process as RESIDENTS (the completed 2026-11 resident
+# migration: the seven other server_cluster.* servers, the six infra
+# daemons database.db_health / database.db_table_audit /
+# database.sql_audit / llm_agents.mcp / llm_agents.sandbox /
+# llm_agents.deep_agents.server, and the watchdog itself — the mutual
+# pair: the monitor ADOPTS the boot-started instance and revives it when
+# it dies; via the downloader area, the five downloads.stream.* pollers).
 # Idempotent: stream_watchdog.sh's pgrep guard makes a rerun over a live
 # fleet a no-op, and the spawned services' own max_parallel registration
 # refuses duplicates.

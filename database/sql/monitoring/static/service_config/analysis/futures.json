@@ -4,8 +4,8 @@
   "included_parallel_services": [],
   "excluded_parallel_services": [],
   "freq": "daily",
-  "schedule": "every A-share trading date from 19:00, after builds_daily.sh (analysis_daily.sh loop order)",
+  "schedule": "every A-share trading date, after builds_daily in the 16:00 nightly chain (analysis_daily loop order)",
   "notes": null,
-  "source_ref": "scripts/analysis_daily.sh",
+  "source_ref": "scripts/orchestration/analysis_daily.json",
   "updated_at": "2026-10-12T11:08:57.015Z"
 }

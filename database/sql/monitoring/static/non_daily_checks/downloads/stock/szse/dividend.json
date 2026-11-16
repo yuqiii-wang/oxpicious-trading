@@ -1,0 +1,11 @@
+{
+  "service": "downloads.stock.szse.dividend",
+  "check": "db_source_freshness",
+  "params": {
+    "view": "server_cluster/monitor/non_daily/stock_dividends_fresh",
+    "source": "SZSE",
+    "max_age_days": 200
+  },
+  "rerun_args": [],
+  "notes": "stats.stock_dividends source=SZSE freshness; plain rerun fetches only stale codes."
+}

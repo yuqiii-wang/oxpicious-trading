@@ -27,7 +27,7 @@
 --      'similar_to'     analysis tables that BOTH INDICATE the same
 --                       business concept — sub_relation names what the
 --                       similarity is ABOUT: about_momentum
---                       (rsi ↔ momentum ↔ hot_stock_momentum).
+--                       (rsi ↔ momentum).
 --                       SYMMETRIC: seed one direction, walkers traverse
 --                       either way. relation / sub_relation vocabularies
 --                       are open TEXT.
@@ -74,7 +74,6 @@ FROM (VALUES
     ('analysis.mov_ave_rsi',          'stats.index_basic_stats', 'computed_from', 'for_close'),
     ('analysis.mov_ave_momentum',     'stats.index_basic_stats', 'computed_from', 'for_close'),
     ('analysis.mov_ave_rsi',          'analysis.mov_ave_momentum',   'similar_to', 'about_momentum'),
-    ('analysis.mov_ave_momentum',     'analysis.hot_stock_momentum', 'similar_to', 'about_momentum'),
     ('stats.v_index_daily',           'stats.index_identity',    'computed_from', 'for_identity'),
     ('stats.v_index_daily',           'stats.index_basic_stats', 'computed_from', 'for_ohlcv'),
     ('stats.v_index_daily',           'stats.index_valuation',   'computed_from', 'for_pe'),

@@ -17,14 +17,23 @@ Each server is a light control-plane process: it NEVER imports a
 pipeline package — area cmds run as detached ``python -u -m <module>``
 subprocesses (the ``stream_watchdog._spawn`` shape: session-detached,
 output appended to ``logs/<date>/<module>.log``) — and it takes the
-supervision of its area's resident processes (the stream pollers for
-the downloader) while the stream watchdog supervises the servers
-themselves (two-level supervision; the servers are in
-``_common/service_heartbeat.py`` MONITORED_SERVICES). The FIFTH area
-``llm`` (migrated from ``llm_agents.local_model_host`` 2026-11) is the
-resident local-model host: it serves its OWN model-host app instead of
-the shared jobs surface, so it keeps its own ``create_app`` /
-composition root in ``server_cluster/llm`` and no jobs routers.
+supervision of its area's resident processes. The 2026-11 RESIDENT
+MIGRATION is COMPLETE: the downloader's residents are the five stream
+pollers, and the monitor's residents are everything else always-on —
+the seven other cluster servers (four jobs areas + llm + config +
+maintainer), the six infra daemons (db_health / db_table_audit /
+sql_audit / mcp / sandbox / deep_agents server) and the stream WATCHDOG
+itself (the mutual pair: the WSL boot hook starts the watchdog, the
+monitor's supervisor ADOPTS it and revives it when it dies; the
+watchdog's one scan charge is the monitor — a server cannot supervise
+itself). Restarts EXECUTE on the maintainer (the cluster's ONE
+resident-process executor); the supervisors stay the detectors. The
+maintainer also owns the SCHEDULES: one scheduler thread, per-job fire
+groups — the 03:30 maintenance pass, the 07:00 fleet bring-up, and the
+16:00 (A-share trading days) nightly pipeline chain (the sh tier's
+successor: the ``scripts/orchestration/*.json`` tiers driven serially
+through the monitor area's orchestration runner —
+``maintainer/pipeline.py``).
 
 Shared logic lives in ``server_cluster._common`` (config, catalog,
 process manager, run registry, resident supervisor, app factory,

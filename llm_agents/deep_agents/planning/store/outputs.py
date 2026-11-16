@@ -17,7 +17,7 @@ from llm_agents.deep_agents import events
 
 from llm_agents.deep_agents.planning.store.base import _StoreBase
 from llm_agents.deep_agents.planning.store.models import (
-    CRITICAL_KEY, RESULT_NODE, SUPERVISOR_NODE, _NOTE_MAX,
+    CRITICAL_KEY, RESULT_NODE, SUPERVISOR_NODE, _NOTE_MAX, _kind,
     extract_critical,
 )
 
@@ -29,6 +29,7 @@ class OutputStoreMixin(_StoreBase):
         thread_id: str, *,
         answer: Optional[str] = None,
         error: Optional[str] = None,
+        replace: bool = False,
     ) -> Optional[int]:
         """The run's FINAL RESULT — the HARDCODED result node's fixed output:
         one context row of kind final-result whose payload is the run's
@@ -39,7 +40,15 @@ class OutputStoreMixin(_StoreBase):
         contract) is parsed out here and flags the row. Keyed to the result
         node (no state row, no chained context — the node does no LLM
         work). Returns the context id, or None when there was neither an
-        answer nor an error to record (nothing written)."""
+        answer nor an error to record (nothing written).
+
+        ``replace=True`` — the REFRESH lane (2026-11-16): the run-node
+        fork off the chain's LAST output seat continues the final
+        answer's conversation, so its completed answer REPLACES the
+        thread's existing final-result row(s) first (purge + insert in
+        ONE transaction — one live final-result row per thread; every
+        reader of "the" result sees the refreshed document, never a
+        stale first write)."""
         payload: Optional[Dict[str, Any]] = None
         if answer:
             critical, clean = extract_critical(str(answer))
@@ -52,10 +61,18 @@ class OutputStoreMixin(_StoreBase):
             return None
         conn = await self._connect()
         try:
-            context_id = await self._insert_context(
-                conn, thread_id, "final-result",
-                json.dumps(payload, ensure_ascii=False),
-                node=RESULT_NODE)
+            async with conn.transaction():
+                if replace:
+                    write = render_sql_write(
+                        "llm_agents/deep_agents/planning/store/"
+                        "deep_agent_contexts/purge_final_result",
+                        thread_id, _kind("final-result"),
+                    )
+                    await conn.execute(write.sql, *write.params)
+                context_id = await self._insert_context(
+                    conn, thread_id, "final-result",
+                    json.dumps(payload, ensure_ascii=False),
+                    node=RESULT_NODE)
         finally:
             await conn.close()
         events.publish(events.DeepAgentEvent(

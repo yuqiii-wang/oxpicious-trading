@@ -177,6 +177,13 @@ export interface AgentThreadDetail {
   /** The chain's segments in order (single "single" entry when the run
    *  predates the three-graph refactor). */
   segments?: AgentThreadSegment[];
+  /** THE SERVER-COMPUTED LIVE FLAG (2026-11-13) — the same predicate
+   *  threadIsActive derives, computed once server-side over the MERGED
+   *  chain. Preferred when present (a client-side derivation could
+   *  transiently read "settled" inside an inter-graph handoff window
+   *  and stop the poll loop forever); the derivation below stays the
+   *  fallback for an older payload without the flag. */
+  live?: boolean;
   states: AgentThreadState[];
   contexts: AgentThreadContext[];
   node_states: AgentNodeState[];
@@ -246,8 +253,12 @@ const PENDING_OR_RUNNING = new Set(["pending", "in_progress"]);
 
 /** A thread is still running while any of its states (steps OR spawned
  *  subagents) is pending/in_progress, or a runner-lane node state (the
- *  LangGraph store's real statuses) is running — the poll-on condition. */
+ *  LangGraph store's real statuses) is running — the poll-on condition.
+ *  The server-computed `live` flag (the same predicate over the merged
+ *  chain, see AgentThreadDetail.live) is preferred when present; this
+ *  derivation stays the fallback for an older payload. */
 export function threadIsActive(detail: AgentThreadDetail): boolean {
+  if (typeof detail.live === "boolean") return detail.live;
   return (
     detail.states.some((s) => PENDING_OR_RUNNING.has(s.status)) ||
     detail.node_states.some((s) => s.status === "running")
@@ -283,4 +294,164 @@ export async function fetchStateAgentSteps(
     throw new Error(`task agent-steps fetch failed (HTTP ${res.status})`);
   }
   return (await res.json()) as AgentStateSteps;
+}
+
+/** One runner-lane node's agent-steps payload (the state-less seats —
+ *  the output node — keyed by their node item's chain). */
+export interface AgentNodeSteps {
+  node: string;
+  steps: AgentStep[];
+}
+
+/** Fetch one runner-lane node's AGENT STEPS by node name (the output
+ *  node has no state row; its store item's chain is the key).
+ *  null = unknown node / no chain stamped (404). */
+export async function fetchNodeAgentSteps(
+  threadId: string,
+  node: string,
+): Promise<AgentNodeSteps | null> {
+  const res = await fetch(
+    `/api/ai/threads/${encodeURIComponent(threadId)}/nodes/${encodeURIComponent(node)}/agent-steps`,
+    { cache: "no-store" },
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new Error(`node agent-steps fetch failed (HTTP ${res.status})`);
+  }
+  return (await res.json()) as AgentNodeSteps;
+}
+
+/** The daemon's node-action response — the background delegation's
+ *  registration (the child state row exists; the UI polls the detail
+ *  until it settles). */
+export interface NodeActionResult {
+  kind: "spawn" | "fork";
+  state_id: number | null;
+  context_id: string | null;
+  thread_id: string | null;
+  parent_state_id: number | null;
+  status: string;
+}
+
+/** POST one UI SPAWN action — a fresh-context child under the clicked
+ *  node's state. The daemon registers the child row synchronously and
+ *  runs the child conversation as a background task. */
+export async function runNodeSpawn(
+  threadId: string,
+  stateId: number,
+  goal: string,
+  maxSteps?: number,
+): Promise<NodeActionResult> {
+  const res = await fetch(
+    `/api/ai/threads/${encodeURIComponent(threadId)}/states/${stateId}/spawn`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(
+        maxSteps ? { goal, max_steps: maxSteps } : { goal },
+      ),
+    },
+  );
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null) as
+      | { detail?: string; error?: string }
+      | null;
+    throw new Error(
+      detail?.detail ?? detail?.error ?? `spawn failed (HTTP ${res.status})`,
+    );
+  }
+  return (await res.json()) as NodeActionResult;
+}
+
+/** POST one RUN-NODE SPAWN action — a fresh-context child hanging off
+ *  a runner-lane SEAT (the output node: no state row to parent from).
+ *  nodeKey = the canvas node id (s<k>:-prefixed for k>0 segments); the
+ *  daemon resolves the owning segment and parents the child under the
+ *  chain root's plan state row. */
+export async function runNodeSpawnOnNode(
+  threadId: string,
+  nodeKey: string,
+  goal: string,
+  maxSteps?: number,
+): Promise<NodeActionResult> {
+  const res = await fetch(
+    `/api/ai/threads/${encodeURIComponent(threadId)}/nodes/${encodeURIComponent(nodeKey)}/spawn`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(
+        maxSteps ? { goal, max_steps: maxSteps } : { goal },
+      ),
+    },
+  );
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null) as
+      | { detail?: string; error?: string }
+      | null;
+    throw new Error(
+      detail?.detail ?? detail?.error ?? `spawn failed (HTTP ${res.status})`,
+    );
+  }
+  return (await res.json()) as NodeActionResult;
+}
+
+/** POST one RUN-NODE FORK action — a continuation child hanging off a
+ *  runner-lane SEAT (the output node): the fork point rides the seat's
+ *  own chain, the child parents under the chain root's plan state row. */
+export async function runNodeForkOnNode(
+  threadId: string,
+  nodeKey: string,
+  goal: string,
+  requestId: string,
+  maxSteps?: number,
+): Promise<NodeActionResult> {
+  const res = await fetch(
+    `/api/ai/threads/${encodeURIComponent(threadId)}/nodes/${encodeURIComponent(nodeKey)}/fork`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(
+        maxSteps
+          ? { goal, request_id: Number(requestId), max_steps: maxSteps }
+          : { goal, request_id: Number(requestId) },
+      ),
+    },
+  );
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null) as
+      | { detail?: string; error?: string }
+      | null;
+    throw new Error(
+      detail?.detail ?? detail?.error ?? `fork failed (HTTP ${res.status})`,
+    );
+  }
+  return (await res.json()) as NodeActionResult;
+}
+
+/** POST one UI FORK action — a continuation child from the clicked
+ *  agent step's recorded conversation (requestId = the inference row's
+ *  request id). */
+export async function runNodeFork(
+  threadId: string,
+  stateId: number,
+  goal: string,
+  requestId: string,
+): Promise<NodeActionResult> {
+  const res = await fetch(
+    `/api/ai/threads/${encodeURIComponent(threadId)}/states/${stateId}/fork`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal, request_id: Number(requestId) }),
+    },
+  );
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null) as
+      | { detail?: string; error?: string }
+      | null;
+    throw new Error(
+      detail?.detail ?? detail?.error ?? `fork failed (HTTP ${res.status})`,
+    );
+  }
+  return (await res.json()) as NodeActionResult;
 }

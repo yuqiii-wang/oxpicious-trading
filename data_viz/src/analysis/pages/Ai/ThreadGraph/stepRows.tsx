@@ -12,11 +12,14 @@ import {
   Button,
   Chip,
   CircularProgress,
+  IconButton,
+  TextField,
   ToggleButton,
   ToggleButtonGroup,
+  Tooltip,
   Typography,
 } from "@mui/material";
-import { ExpandLess, ExpandMore } from "@mui/icons-material";
+import { CallSplit, ExpandLess, ExpandMore } from "@mui/icons-material";
 import { alpha } from "@mui/material/styles";
 import {
   fetchStateAgentSteps,
@@ -24,6 +27,16 @@ import {
 } from "@/lib/api-client/aiThreads";
 import { formatTokensK, INITIAL_REQUEST_ROWS } from "./format";
 import { ChatMessage, ContextBlock } from "./payloadViews";
+
+/** The fork affordance's shared props — `onForkRequest` opens THAT
+ *  row's inline composer (the UI node action, 2026-11-15). */
+export interface ForkAffordance {
+  forkRequest: string | null;
+  forkBusy: boolean;
+  onForkRequest: (requestId: string) => void;
+  onForkSubmit: (goal: string) => void;
+  onForkCancel: () => void;
+}
 
 /** One recorded request/response pair of an expanded task row: a meta
  *  line (id · time · model · duration · outcome · tokens) with a
@@ -35,7 +48,17 @@ import { ChatMessage, ContextBlock } from "./payloadViews";
  *  payload: the thread view re-renders on every live poll tick and
  *  WS-event push — without the memo each tick re-parsed and re-mounted
  *  every expanded row's markdown (the panel's freeze). */
-export const RequestRow = memo(function RequestRow({ req }: { req: AgentStep & { request_id: string; prev_request_id: string | null } }) {
+export const RequestRow = memo(function RequestRow({
+  req,
+  fork,
+}: {
+  req: AgentStep & { request_id: string; prev_request_id: string | null };
+  /** The UI FORK affordance (2026-11-15): every inference row carries a
+   *  fork button — the child continues THIS step's recorded conversation
+   *  and hands its result back; the composer opens INLINE beneath the
+   *  clicked row. */
+  fork?: Pick<ForkAffordance, "onForkRequest">;
+}) {
   const [view, setView] = useState<"content" | "raw">("content");
   // Token counts: the request-log columns first, the response payload's
   // usage block as the fallback for rows recorded before the columns.
@@ -149,6 +172,20 @@ export const RequestRow = memo(function RequestRow({ req }: { req: AgentStep & {
             raw
           </ToggleButton>
         </ToggleButtonGroup>
+        {fork !== undefined && (
+          // THE FORK BUTTON — embedded in every inference step: the
+          // child continues this step's recorded conversation (the
+          // daemon's fork lane; 2026-11-15).
+          <Tooltip title="fork from this step — a child continues this conversation from here and hands its result back">
+            <IconButton
+              size="small"
+              onClick={() => fork.onForkRequest(req.request_id)}
+              sx={{ p: 0.25 }}
+            >
+              <CallSplit sx={{ fontSize: 15, color: "primary.main" }} />
+            </IconButton>
+          </Tooltip>
+        )}
       </Box>
       {view === "raw" ? (
         <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5, mt: 0.5 }}>
@@ -591,15 +628,20 @@ export const TokenStepRow = memo(function TokenStepRow({ step }: { step: AgentSt
  *  INITIAL_REQUEST_ROWS rows only until expanded — a busy task can
  *  hold 30+ recorded steps, and mounting every row's markdown at once
  *  froze the panel. `threadId` rides down so spawn rows can expand
- *  their child node's own steps in place. */
+ *  their child node's own steps in place. `fork` — the UI node action's
+ *  affordances (2026-11-15): every inference row carries a fork button
+ *  and the clicked row's inline composer renders beneath it. */
 export function AgentStepList({
   steps,
   threadId,
+  fork,
 }: {
   steps: AgentStep[];
   threadId: string;
+  fork?: ForkAffordance;
 }) {
   const [showAll, setShowAll] = useState(false);
+  const shown = showAll ? steps : steps.slice(-INITIAL_REQUEST_ROWS);
   return (
     <>
       {steps.length > INITIAL_REQUEST_ROWS && (
@@ -615,28 +657,114 @@ export function AgentStepList({
         </Button>
       )}
       <Box sx={{ display: "flex", flexDirection: "column", gap: 0.75, mt: 0.5 }}>
-        {(showAll ? steps : steps.slice(-INITIAL_REQUEST_ROWS)).map(
-          (step) =>
-            step.step_type === 1 || step.step_type === 4 ? (
-              // step_type 1 spawn | 4 fork (the inherit-context twin) —
-              // the same collapsed-child row; the chip names the kind.
-              <SpawnStepRow key={step.step_id} step={step} threadId={threadId} />
-            ) : step.step_type === 2 ? (
-              <DecisionStepRow key={step.step_id} step={step} />
-            ) : step.step_type === 3 ? (
-              <TokenStepRow key={step.step_id} step={step} />
-            ) : (
-              <RequestRow
-                key={step.step_id}
-                req={{
-                  ...step,
-                  request_id: step.step_id,
-                  prev_request_id: null,
-                }}
-              />
-            ),
-        )}
+        {shown.map((step) => {
+          const isRequest = step.step_type !== 1 && step.step_type !== 4
+            && step.step_type !== 2 && step.step_type !== 3;
+          return (
+            <Box key={step.step_id}>
+              {step.step_type === 1 || step.step_type === 4 ? (
+                // step_type 1 spawn | 4 fork (the inherit-context twin) —
+                // the same collapsed-child row; the chip names the kind.
+                <SpawnStepRow key={step.step_id} step={step} threadId={threadId} />
+              ) : step.step_type === 2 ? (
+                <DecisionStepRow key={step.step_id} step={step} />
+              ) : step.step_type === 3 ? (
+                <TokenStepRow key={step.step_id} step={step} />
+              ) : (
+                <RequestRow
+                  key={step.step_id}
+                  req={{
+                    ...step,
+                    request_id: step.step_id,
+                    prev_request_id: null,
+                  }}
+                  fork={
+                    fork !== undefined
+                      ? { onForkRequest: fork.onForkRequest }
+                      : undefined
+                  }
+                />
+              )}
+              {isRequest && fork !== undefined
+                && fork.forkRequest === step.step_id && (
+                // THE INLINE FORK COMPOSER — directly beneath the
+                // forked row (the child continues THIS conversation).
+                <ForkComposer
+                  busy={fork.forkBusy}
+                  onSubmit={fork.onForkSubmit}
+                  onCancel={fork.onForkCancel}
+                />
+              )}
+            </Box>
+          );
+        })}
       </Box>
     </>
+  );
+}
+
+/** The inline goal composer the fork affordance opens beneath its row —
+ *  the continuation directive the child inherits the conversation up
+ *  to this step's reply with. */
+function ForkComposer({
+  busy,
+  onSubmit,
+  onCancel,
+}: {
+  busy: boolean;
+  onSubmit: (goal: string) => void;
+  onCancel: () => void;
+}) {
+  const [goal, setGoal] = useState("");
+  const valid = goal.trim().length > 0;
+  return (
+    <Box
+      sx={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 0.75,
+        mt: 0.5,
+        ml: 2,
+        border: 1,
+        borderColor: "divider",
+        borderRadius: 1,
+        p: 0.75,
+      }}
+    >
+      <TextField
+        size="small"
+        multiline
+        minRows={2}
+        fullWidth
+        autoFocus
+        placeholder="the continuation directive — the child inherits the conversation UP TO this step's reply and hands its result back"
+        value={goal}
+        onChange={(e) => setGoal(e.target.value)}
+        sx={{ "& .MuiInputBase-input": { fontSize: "0.75rem" } }}
+      />
+      <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
+        <Button
+          size="small"
+          variant="contained"
+          color="primary"
+          disabled={!valid || busy}
+          startIcon={<CallSplit sx={{ fontSize: 15 }} />}
+          onClick={() => valid && onSubmit(goal.trim())}
+          sx={{ textTransform: "none", fontSize: "0.72rem" }}
+        >
+          fork from this step
+        </Button>
+        <Button
+          size="small"
+          variant="text"
+          disabled={busy}
+          onClick={onCancel}
+          sx={{ textTransform: "none", fontSize: "0.72rem" }}
+        >
+          cancel
+        </Button>
+        {busy && <CircularProgress size={12} />}
+      </Box>
+    </Box>
   );
 }

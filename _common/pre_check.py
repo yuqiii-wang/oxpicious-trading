@@ -4,8 +4,8 @@ Every ``__main__.py`` imports and runs :func:`pre_check` at the very top
 (before any heavy import) so a doomed run exits immediately instead of
 OOMing mid-pipeline:
 
-- System RAM (WSL VM limit / host RAM when native) must be >= 36 GiB.
-- NVIDIA GPU free VRAM (best device) must be >= 24 GiB.
+- System RAM (WSL VM limit / host RAM when native) must be >= 24 GiB.
+- NVIDIA GPU free VRAM (best device) must be >= 16 GiB.
 
 Usage::
 
@@ -29,8 +29,8 @@ import sys
 import time
 from typing import Optional
 
-MIN_SYS_GB: float = 36.0   # GiB of system memory required
-MIN_GPU_FREE_GB: float = 24.0  # GiB of free VRAM on best GPU required
+MIN_SYS_GB: float = 24.0   # GiB of system memory required
+MIN_GPU_FREE_GB: float = 16.0  # GiB of free VRAM on best GPU required
 
 # Cooldown before the single retry when the first check fails — a
 # concurrent finishing job may be about to release VRAM/RAM.

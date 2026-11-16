@@ -1,18 +1,15 @@
 /**
  * Full classification universe — the shared row sources behind the
- * full-universe navs of the placeholder-pipeline analysis services
- * (market-crowdedness, hot-stock-momentum).
+ * full-universe navs of the analysis services (market-crowdedness).
  *
  * DELIBERATE DEVIATION from the pe / mov-ave-spread pattern: those navs
- * are restricted to codes that already have analysis rows. These
- * pipelines are placeholders (their analysis tables are empty — see
- * database/sql/analysis/29_market_crowdedness.sql /
- * 30_hot_stock_momentum.sql), so a data-restricted nav would render the
- * pages dead. The nav/codes universe here is the FULL classification
- * universe instead (stats.sec_classification type='index' + the
- * stats.industry_identity entities) — the chart endpoints read the
- * (empty) analysis tables and the UI shows its "no data" state per code
- * until the pipelines fill them.
+ * are restricted to codes that already have analysis rows. The nav/codes
+ * universe here is the FULL classification universe instead
+ * (stats.sec_classification type='index' + the stats.industry_identity
+ * entities — see database/sql/analysis/market_crowdedness.sql), so the
+ * page stays browsable for codes whose analysis rows don't exist yet —
+ * the chart endpoints read the analysis tables per code and the UI
+ * shows its "no data" state until rows exist for the code.
  */
 import { cachedRows, listClassificationMetaRows } from "@api/services/infra/classification-cache";
 import { querySqlView } from "@api/lib/sql-views";

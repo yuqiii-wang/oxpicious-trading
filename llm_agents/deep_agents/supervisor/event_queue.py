@@ -92,7 +92,7 @@ class RepairWindow:
         self.id = uuid.uuid4().hex[:12]
         self.failures = tuple(failures)
         self.future: "asyncio.Future[Dict[int, Verdict]]" = (
-            asyncio.get_event_loop().create_future())
+            asyncio.get_running_loop().create_future())
 
     def resolve(self, verdicts: Dict[int, "Verdict"]) -> None:
         """Wake the waiting lane (a done/cancelled future — the lane

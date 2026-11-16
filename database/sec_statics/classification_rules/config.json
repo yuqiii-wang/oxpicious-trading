@@ -6,6 +6,7 @@
     "industry_label": "未分类"
   },
   "strategy_sector_ids": [
+    "ACTIVE",
     "BROAD",
     "DIV",
     "OVERSEAS",

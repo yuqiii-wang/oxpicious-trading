@@ -214,3 +214,9 @@ Standard React + Vite project — write idiomatic React, not ad-hoc DOM code.
   chrome, option preambles, or theme reads.
 - If a page file has grown too large, refactor it into a directory of smaller
   files (page dir with subcomponents/hooks), reusing shared components as you go.
+- ANY control that loads new data on click (refresh, window / order / sort /
+  filter toggles) shows a spinner while the fetch is in flight — also during a
+  refetch where stale rows stay on screen (never a silent reload): surface
+  `useChartData`'s `loading` as a MUI `CircularProgress` beside the control or
+  in the panel header, or pass `loading` through to `BaseChart` for chart
+  panels (its mounted-chart corner spinner handles the overlay).

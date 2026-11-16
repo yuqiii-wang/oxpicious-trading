@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 DIGESTIONS_TABLE = "text.news_digestions"
 DIGESTION_COLUMNS = ("news_id", "date", "industry_id", "summary",
-                     "sentiment_level", "llm_model")
+                     "sentiment_level", "is_fake_news", "llm_model")
 
 
 async def fetch_pending_articles(
@@ -86,6 +86,10 @@ async def upsert_digestions(conn,
     if not rows:
         return 0
     rows = [{c: r.get(c) for c in DIGESTION_COLUMNS} for r in rows]
+    # is_fake_news is NOT NULL: a row that skipped the detector pass (no
+    # key / None) lands as False, never a NULL the column would reject.
+    for r in rows:
+        r["is_fake_news"] = bool(r.get("is_fake_news"))
     n = await bulk_upsert_async(conn, DIGESTIONS_TABLE, rows, ["news_id"])
     # search_tsv (TSV_SPECS): summary B. Unconditional — a
     # re-digestion rewrites the summary, so the tsvector must follow.
@@ -106,8 +110,8 @@ async def fetch_digestions(
     """Newest-first digestion listing (joined with the article title)."""
     rows = await conn.fetch(
         f'SELECT d.news_id, d.date, d.industry_id, d.summary, '
-        f'       d.sentiment_level, d.llm_model, d.created_at, '
-        f'       n.title, n.source '
+        f'       d.sentiment_level, d.is_fake_news, d.llm_model, '
+        f'       d.created_at, n.title, n.source '
         f'FROM {DIGESTIONS_TABLE} d '
         f'JOIN {NEWS_TABLE} n ON n.news_id = d.news_id '
         f'WHERE ($1::text IS NULL OR d.industry_id = $1) '

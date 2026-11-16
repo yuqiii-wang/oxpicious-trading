@@ -6,7 +6,8 @@
  * spawning local WSL commands (the 2026-11 hard cut): the fleet health
  * check (the former `python -m database.monitoring` spawn), resident
  * aggregation + ensure-up (the former keeper session + pgrep pass), and
- * the orchestration tier runner (the former run_steps.sh spawn).
+ * the orchestration tier runner (the former run_steps.sh sh spawn,
+ * retired with the rest of the sh tier).
  */
 
 const MONITOR_BASE = "http://127.0.0.1:8773";
@@ -107,6 +108,7 @@ export interface MonitorOrchestrationStep {
   num: string;
   script: string;
   args: string[];
+  src_host: string | null;
   can_be_parallel: boolean;
   note: string | null;
 }
@@ -130,6 +132,58 @@ export interface MonitorOrchestrationStatus {
   file: string;
   state: "running" | "done" | "failed";
   steps: MonitorOrchestrationStepStatus[];
+}
+
+// Non-daily tasks (server_cluster/monitor/non_daily.py — mirrors of the
+// data_definitions.py payload models)
+
+export interface MonitorNonDailyTask {
+  service: string;
+  tier: string;
+  step: string;
+  script: string;
+  args: string[];
+  check: string | null;
+  rerun_args: string[];
+  rerun_eligible: boolean;
+  state: "unknown" | "complete" | "missing" | "check_failed";
+  state_code: number;
+  missing_count: number;
+  missing_detail: Record<string, unknown> | null;
+  attempts: number;
+  last_check_at: string | null;
+  last_rerun_at: string | null;
+  next_check_at: string | null;
+}
+
+export interface MonitorNonDailyInventory {
+  tasks: MonitorNonDailyTask[];
+}
+
+export interface MonitorNonDailyEvaluate {
+  evaluated: number;
+  complete: number;
+  missing: number;
+  check_failed: number;
+}
+
+export interface MonitorNonDailyRerun {
+  service: string;
+  tier: string;
+  module: string;
+  args: string[];
+  dry_run: boolean;
+  submitted: boolean;
+  exit_code: number | null;
+  state_after: string | null;
+}
+
+export interface MonitorNonDailyBackfill {
+  evaluated: number;
+  missing: number;
+  due: string[];
+  reruns: MonitorNonDailyRerun[];
+  detail: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -202,5 +256,46 @@ export function monitorOrchestrationPlan(
   return monitorFetch(
     `/orchestration/${encodeURIComponent(file)}`, { method: "GET" },
     TIMEOUT_MS,
+  );
+}
+
+// ---------------------------------------------------------------------------
+//  Non-daily tasks (the completeness checks + weekend backfill face)
+// ---------------------------------------------------------------------------
+
+/** A check pass / backfill drive can take a while (one SQL check per
+ *  task; the drive re-runs modules) — generous bounds. */
+const NON_DAILY_EVALUATE_TIMEOUT_MS = 120_000;
+const NON_DAILY_BACKFILL_TIMEOUT_MS = 3_600_000;
+
+/** GET /non-daily — every non-daily tier's tasks with their check
+ *  configs and current completeness state. */
+export function monitorNonDailyInventory(): Promise<MonitorNonDailyInventory> {
+  return monitorFetch<MonitorNonDailyInventory>(
+    "/non-daily", { method: "GET" }, TIMEOUT_MS,
+  );
+}
+
+/** POST /non-daily/evaluate — one check pass; the per-task verdicts
+ *  land in monitor.non_daily_task_state. */
+export function monitorNonDailyEvaluate(): Promise<MonitorNonDailyEvaluate> {
+  return monitorFetch<MonitorNonDailyEvaluate>(
+    "/non-daily/evaluate", { method: "POST" }, NON_DAILY_EVALUATE_TIMEOUT_MS,
+  );
+}
+
+/** POST /non-daily/backfill — the weekend drive: evaluate, re-run each
+ *  due missing task, re-check, schedule the weekly retry. */
+export function monitorNonDailyBackfill(
+  dryRun: boolean,
+): Promise<MonitorNonDailyBackfill> {
+  return monitorFetch<MonitorNonDailyBackfill>(
+    "/non-daily/backfill",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dry_run: dryRun }),
+    },
+    NON_DAILY_BACKFILL_TIMEOUT_MS,
   );
 }
