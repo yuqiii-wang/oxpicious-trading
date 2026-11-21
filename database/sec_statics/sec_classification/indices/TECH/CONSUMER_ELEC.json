@@ -41,19 +41,5 @@
       }
     ],
     "is_industry_not_strategy": true
-  },
-  "DUMMY_CONSUMER_ELEC": {
-    "name": "消费电子综合指数",
-    "exchange": null,
-    "sector_id": "TECH",
-    "industry_id": "CONSUMER_ELEC",
-    "tags": [
-      {
-        "sector_id": "TECH",
-        "industry_id": "CONSUMER_ELEC"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
   }
 }

@@ -26,6 +26,14 @@ SELECT ld.code,
     "rsi10_3pct": {
       "meaning": "The shallow 3% tail episode — the widest net, excluding deeper claims",
       "trigger": "rsi_10days in its own 3% tail band (nested under the 2% carve)"
+    },
+    "rsi14_fswing": {
+      "meaning": "The Wilder failure swing (2026-11-19, the RSI canon study's graduate: +1.78% pooled, hit 73%) — the capitulation that FAILS to make a new price-extreme in RSI space",
+      "trigger": "inside an rsi_14days tail3 episode: trough (min RSI within 40 rows) -> bounce high (max RSI within the next 20 rows) -> re-dip HOLDING above the trough -> BUY the first RSI cross back above the bounce high (within 60 rows, min segment 5); BUY-only — rides the same per-code adaptive trailing-10y 3% quantile bar (shift 1)"
+    },
+    "rsi10_fswing": {
+      "meaning": "The Wilder failure swing on the measured-best buy window (2026-11-19: +2.14% pooled, hit 75%)",
+      "trigger": "inside an rsi_10days tail3 episode: trough -> bounce high -> re-dip holding above the trough -> BUY the first cross back above the bounce high; BUY-only — same pattern constants and adaptive bars as rsi14_fswing"
     }
   }
 }$json$::jsonb,

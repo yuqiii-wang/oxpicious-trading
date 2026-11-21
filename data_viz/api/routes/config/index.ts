@@ -10,7 +10,13 @@
  *   Service tab — database/sql/monitoring/static/service_config/ (one
  *   file per service; default.json is the tree-root fallback). Writes
  *   one entry per call; deleting a service's file lets the fallback
- *   apply again.
+ *   apply again. The tab's Server cluster view (the header toggle)
+ *   instead lists the RESIDENT FastAPI area servers (server_cluster/,
+ *   area→port from server_cluster/cluster_config.json) with each
+ *   server's heartbeat state (monitor.service_heartbeat, service =
+ *   server_cluster.<area>); GET /cluster/:area/openapi serves the
+ *   expanded row — the server's exposed API surface parsed from its
+ *   FastAPI /openapi.json (tag-grouped, like the /docs page).
  *
  *   External Resources tab — database/sql/monitoring/static/
  *   external_request_config/ (one file per service holding its
@@ -73,6 +79,7 @@
 
 import { Router } from "express";
 import serviceRouter from "./service.js";
+import clusterRouter from "./cluster.js";
 import extRequestRouter from "./ext-request.js";
 import deepAgentRouter from "./deep-agent.js";
 import secStaticsRouter from "./sec-statics.js";
@@ -84,6 +91,7 @@ import secretsRouter from "./secrets.js";
 const router = Router();
 
 router.use(serviceRouter);
+router.use(clusterRouter);
 router.use(extRequestRouter);
 router.use(deepAgentRouter);
 router.use(secStaticsRouter);

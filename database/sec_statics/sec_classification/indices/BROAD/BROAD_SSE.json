@@ -353,19 +353,5 @@
       }
     ],
     "is_industry_not_strategy": false
-  },
-  "DUMMY_BROAD_SSE": {
-    "name": "上证综合指数",
-    "exchange": null,
-    "sector_id": "BROAD",
-    "industry_id": "BROAD_SSE",
-    "tags": [
-      {
-        "sector_id": "BROAD",
-        "industry_id": "BROAD_SSE"
-      }
-    ],
-    "is_industry_not_strategy": false,
-    "is_dummy": true
   }
 }

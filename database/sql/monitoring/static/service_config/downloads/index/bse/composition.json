@@ -3,9 +3,11 @@
   "max_parallel": 1,
   "included_parallel_services": [],
   "excluded_parallel_services": [],
+  "is_resident": false,
   "freq": "quarterly",
+  "priority": 140,
   "schedule": "calendar-quarterly pass (cron-scheduled; in-runner quarterly-refresh guard: cached quarter < yesterday's quarter)",
-  "notes": "\u5317\u8bc150/\u5317\u8bc1\u4e13\u7cbe\u7279\u65b0 composition via the CSI co-published closeweight autofile; writes into temps/csi_index_composition so builds.index.composition ingests it.",
+  "notes": "北证50/北证专精特新 composition via the CSI co-published closeweight autofile; writes into temps/csi_index_composition so builds.index.composition ingests it.",
   "source_ref": "scripts/orchestration/downloads_quarterly.json",
-  "updated_at": "2026-10-12T03:40:53.558127+00:00"
+  "updated_at": "2026-11-20T15:25:15.716730+00:00"
 }

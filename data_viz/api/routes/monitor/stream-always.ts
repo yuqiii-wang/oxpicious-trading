@@ -10,8 +10,20 @@
  * stream-always keeper session, the pgrep liveness pass) are gone.
  * The monitor area's own daily 07:00 Asia/Shanghai scheduler is the
  * recurring supervision; this file is the manual + boot recovery path.
+ *
+ * 2026-11-19 bootstrap exception to the no-spawn cut: when the monitor
+ * area itself is unreachable, ensure-up has nothing to proxy to — and
+ * the monitor is exactly the service it cannot revive. The stream-always
+ * handler then bootstraps the dead fleet from the Windows side (the ONE
+ * sanctioned spawn in the API): wake the WSL distro so its /etc/wsl.conf
+ * [boot] hook (scripts/wsl_boot_hook.sh → scripts/wsl_boot_services.sh)
+ * runs the fleet starter, and — only if the monitor still never answers —
+ * run that starter (scripts/stream_watchdog.sh, pgrep-guarded and
+ * idempotent) directly. No pipeline is ever spawned here; the revived
+ * fleet supervises itself, and the ensure-up proxy is retried once.
  */
 
+import { execFile, exec } from "child_process";
 import { Router, type Request, type Response } from "express";
 import { wrapAsync } from "../../lib/http.js";
 import {
@@ -22,6 +34,101 @@ import {
 } from "../../services/infra/monitor-client.service.js";
 
 const router = Router();
+
+// ---------------------------------------------------------------------------
+// monitor-area bootstrap — the one service ensure-up cannot revive
+// ---------------------------------------------------------------------------
+
+/** The WSL distro the cluster lives in (the boot hook's registration
+ *  target and the conventions' run env). */
+const WSL_DISTRO = "Ubuntu-22.04";
+
+/** Cold-boot budget for waking the distro (a dead VM takes seconds to
+ *  boot; the [boot] hook itself runs detached). */
+const WAKE_TIMEOUT_MS = 15_000;
+
+/** Poll window after the wake: the boot chain is wake → [boot] hook
+ *  (mount wait + conda + starter) → watchdog's first pass → monitor
+ *  uvicorn binds — tens of seconds end to end. Also covers the "VM and
+ *  watchdog alive, monitor dead" shape: the watchdog's next ≤60s pass
+ *  revives the monitor on its own. */
+const WAKE_POLL_MS = 75_000;
+
+/** Budget for the direct fleet-starter run (pgrep-guarded, exits
+ *  immediately after nohup'ing the watchdog). */
+const STARTER_TIMEOUT_MS = 15_000;
+
+/** Poll window after the starter: watchdog first pass → monitor up. */
+const STARTER_POLL_MS = 75_000;
+
+const MONITOR_POLL_INTERVAL_MS = 5_000;
+
+/** One WSL execFile call with a hard timeout (no shell involved — only
+ *  single-token commands go through here). */
+function execWsl(args: string[], timeoutMs: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "wsl.exe",
+      ["-d", WSL_DISTRO, ...args],
+      { timeout: timeoutMs, windowsHide: true },
+      (err) => (err ? reject(err) : resolve()),
+    );
+  });
+}
+
+/** Wait (bounded) for the monitor area to answer /health-check — the
+ *  same proxy call the route serves, reused as the liveness probe. */
+async function waitForMonitorArea(pollMs: number): Promise<boolean> {
+  const deadline = Date.now() + pollMs;
+  while (Date.now() < deadline) {
+    try {
+      await monitorHealthCheck();
+      return true;
+    } catch {
+      await new Promise((r) => setTimeout(r, MONITOR_POLL_INTERVAL_MS));
+    }
+  }
+  return false;
+}
+
+/** Bring the monitor area back from a dead fleet. Three dead shapes,
+ *  one bounded sequence:
+ *  1. VM dead (idle shutdown / reboot): the wake call boots the distro —
+ *     its [boot] hook starts the watchdog, whose first pass spawns the
+ *     monitor.
+ *  2. VM alive, watchdog alive, monitor dead: the wake call is a no-op
+ *     and the watchdog's own next pass revives the monitor — the first
+ *     poll window covers it.
+ *  3. VM alive, watchdog ALSO dead (the mutual pair's only
+ *     unrecoverable shape): run the pgrep-guarded fleet starter
+ *     (scripts/stream_watchdog.sh) once through the conventions' WSL
+ *     invocation; the starter's nohup'd watchdog then spawns the monitor
+ *     as always.
+ *  Returns null when the monitor answers again, else the failure
+ *  description for the route's 502 body. */
+async function bootstrapMonitorArea(): Promise<string | null> {
+  try {
+    await execWsl(["--exec", "true"], WAKE_TIMEOUT_MS);
+  } catch (err) {
+    return `WSL wake failed: ${err instanceof Error ? err.message : String(err)}`;
+  }
+  if (await waitForMonitorArea(WAKE_POLL_MS)) return null;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      exec(
+        `wsl.exe -d ${WSL_DISTRO} -- bash -lc `
+          + `"source ~/miniconda3/etc/profile.d/conda.sh && conda activate base `
+          + `&& cd /mnt/e/oxpicious-trading && bash scripts/stream_watchdog.sh"`,
+        { timeout: STARTER_TIMEOUT_MS, windowsHide: true },
+        (err) => (err ? reject(err) : resolve()),
+      );
+    });
+  } catch (err) {
+    return `fleet starter failed: ${err instanceof Error ? err.message : String(err)}`;
+  }
+  if (await waitForMonitorArea(STARTER_POLL_MS)) return null;
+  return "monitor area still unreachable after the full bootstrap window";
+}
 
 /** POST /api/monitor/health-check — the point-in-time fleet health check
  *  (replica sync + replay backlog + slot WAL retention + pg_wal dir size
@@ -58,19 +165,39 @@ router.post("/health-check", wrapAsync(async (_req: Request, res: Response) => {
  *  crash-loop backoff), and a stale stream watchdog is spawned. Idempotent
  *  by contract — over a healthy fleet every row answers already-up.
  *  Recurring supervision stays the stream watchdog's own job (every ~60s)
- *  plus the monitor area's daily 07:00 China-time pass. */
+ *  plus the monitor area's daily 07:00 China-time pass.
+ *  When the monitor area itself is unreachable, the handler first
+ *  bootstraps the dead fleet (see bootstrapMonitorArea) and retries the
+ *  proxy once — the button stays a real recovery path instead of
+ *  surfacing HTTP 502 over a dead fleet. */
 router.post("/stream-always", wrapAsync(async (_req: Request, res: Response) => {
   let result: MonitorEnsureUp;
+  let bootstrapped = false;
   try {
     result = await monitorEnsureUp();
   } catch (err) {
-    res.status(502).json({
-      success: false,
-      started: false,
-      message: `monitor area unreachable — nothing started: `
-        + (err instanceof Error ? err.message : String(err)),
-    });
-    return;
+    const bootstrapFail = await bootstrapMonitorArea();
+    if (bootstrapFail != null) {
+      res.status(502).json({
+        success: false,
+        started: false,
+        message: `monitor area unreachable — bootstrap failed: ${bootstrapFail}`
+          + ` (first ensure-up error: ${err instanceof Error ? err.message : String(err)})`,
+      });
+      return;
+    }
+    bootstrapped = true;
+    try {
+      result = await monitorEnsureUp();
+    } catch (retryErr) {
+      res.status(502).json({
+        success: false,
+        started: false,
+        message: `monitor area came back but ensure-up failed: `
+          + (retryErr instanceof Error ? retryErr.message : String(retryErr)),
+      });
+      return;
+    }
   }
   const started = result.actions.filter((a) => a.action === "started");
   const failed = result.actions.filter((a) => !a.ok);
@@ -79,9 +206,10 @@ router.post("/stream-always", wrapAsync(async (_req: Request, res: Response) => 
     started: started.length > 0,
     broughtUp: result.brought_up,
     actions: result.actions,
-    message: started.length > 0
-      ? `started ${started.map((a) => a.service).join(", ")} — first beats within ~60s`
-      : "all resident services already up (ensure-up is idempotent)",
+    message: (bootstrapped ? "monitor area was down — bootstrap revived it; " : "")
+      + (started.length > 0
+        ? `started ${started.map((a) => a.service).join(", ")} — first beats within ~60s`
+        : "all resident services already up (ensure-up is idempotent)"),
   });
 }));
 

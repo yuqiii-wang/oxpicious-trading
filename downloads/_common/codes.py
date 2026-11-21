@@ -395,8 +395,17 @@ def load_classification_indices() -> Dict[str, Dict[str, Any]]:
             "industry_id": str,
             "tags": List[Dict[str, str]],
         }
+
+    DUMMY indices (``is_dummy`` — synthetic parents for orphan ETFs) are
+    dropped: they exist only in the DB for ETF parent resolution and have
+    no exchange files to download (a regressed cache write once persisted
+    them, and downloaders 404'd fetching their composition CSVs).
     """
-    return classification_store.load_indices()
+    return {
+        code: info
+        for code, info in classification_store.load_indices().items()
+        if not info.get("is_dummy")
+    }
 
 
 def load_classification_index_names() -> Dict[str, str]:

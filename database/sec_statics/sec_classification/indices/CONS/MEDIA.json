@@ -33,20 +33,6 @@
     ],
     "is_industry_not_strategy": true
   },
-  "DUMMY_MEDIA": {
-    "name": "传媒综合指数",
-    "exchange": null,
-    "sector_id": "CONS",
-    "industry_id": "MEDIA",
-    "tags": [
-      {
-        "sector_id": "CONS",
-        "industry_id": "MEDIA"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
-  },
   "H30365": {
     "name": "文娱传媒",
     "exchange": "HK",

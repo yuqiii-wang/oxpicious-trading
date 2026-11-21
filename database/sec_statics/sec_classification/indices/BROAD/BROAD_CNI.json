@@ -37,19 +37,5 @@
       }
     ],
     "is_industry_not_strategy": false
-  },
-  "DUMMY_BROAD_CNI": {
-    "name": "国证综合指数",
-    "exchange": null,
-    "sector_id": "BROAD",
-    "industry_id": "BROAD_CNI",
-    "tags": [
-      {
-        "sector_id": "BROAD",
-        "industry_id": "BROAD_CNI"
-      }
-    ],
-    "is_industry_not_strategy": false,
-    "is_dummy": true
   }
 }

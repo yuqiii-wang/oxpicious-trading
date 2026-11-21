@@ -30,6 +30,7 @@ import {
   UP_COLOR,
   DOWN_COLOR,
   axisColors,
+  commonDataZoom,
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
 import type { MarginAnalytics, PivotResult } from "./types";
@@ -250,8 +251,11 @@ export function buildTrendChartOption(args: TrendChartArgs): EChartsOption | nul
   return baseChartOption(themeMode, {
     grid: [
       { left: 64, right: 24, top: 32, height: "38%" },
-      { left: 64, right: hasVol ? 56 : 24, top: "54%", bottom: 28 },
+      // bottom leaves room for the x-labels AND the dataZoom slider below
+      { left: 64, right: hasVol ? 56 : 24, top: "54%", bottom: 44 },
     ],
+    // Time slider + wheel zoom — both grids stay windowed together.
+    dataZoom: commonDataZoom({ xAxisIndex: [0, 1] }),
     axisPointer: {
       link: [{ xAxisIndex: "all" }],
     },
@@ -261,7 +265,7 @@ export function buildTrendChartOption(args: TrendChartArgs): EChartsOption | nul
         ...retBarSeries.map((s) => s.name),
         ...volSeries.map((s) => s.name),
       ],
-      textStyle: { color: c.textColor, fontSize: 10 },
+      textStyle: { fontSize: 10 }, // colors inherit from commonLegend
       top: 0,
       type: "scroll",
     },

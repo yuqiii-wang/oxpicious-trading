@@ -3,9 +3,11 @@
   "max_parallel": 1,
   "included_parallel_services": [],
   "excluded_parallel_services": [],
+  "is_resident": false,
   "freq": "quarterly",
+  "priority": 140,
   "schedule": "calendar-quarterly pass (cron-scheduled; in-runner current-quarter snapshot guard)",
   "notes": "E Fund fund-site data: quarterly 基金概况 intro snapshot for the listed-ETF universe (per-fund detail page GET + fundlist fallbacks).",
   "source_ref": "scripts/orchestration/downloads_quarterly.json",
-  "updated_at": "2026-11-14T00:00:00.000000+00:00"
+  "updated_at": "2026-11-20T15:25:15.716730+00:00"
 }

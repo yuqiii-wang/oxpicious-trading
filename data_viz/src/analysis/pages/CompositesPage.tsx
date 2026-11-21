@@ -49,6 +49,16 @@ export const COMPOSITE_ANALYSES: CompositeAnalysis[] = [
       "market-description keyword families (下跌/上涨, 放量/缩量, 利空/利好) " +
       "with 10y rarity ranks.",
   },
+  {
+    slug: "news-audit",
+    title: "News Audit (新闻审计)",
+    description:
+      "The 5-day provider/content audits of the news corpus: per window " +
+      "per origin (provider or author) — items, digested share, average " +
+      "sentiment, fake-news pct, blocked flag; per window per industry — " +
+      "the same metrics plus the keyword hit rollup (distinct keywords, " +
+      "mentions, articles hit).",
+  },
 ];
 
 export default function CompositesPage() {

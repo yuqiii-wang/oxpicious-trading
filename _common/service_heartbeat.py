@@ -507,10 +507,71 @@ class HeartbeatThread(threading.Thread):
 # Exit recording — stop_reason / is_normal_exit / stopped_at
 # ---------------------------------------------------------------------------
 
+# A max_parallel / parallel-services refusal exits with THIS code (not 1):
+# the orchestration tier runner treats it as "already running elsewhere —
+# deduped, counted OK" instead of a step failure (a re-started tier racing
+# its own surviving children, 2026-11-20). Any other exit code stays a
+# failure for every consumer.
+EXIT_ALREADY_RUNNING = 10
+
+# PLANNED-STOP MARKERS — a supervisor (resident_supervisor / registry stop /
+# stream watchdog stale-restart) SIGTERMs a process ON PURPOSE: it writes
+# <locks>/planned-stop-<pid> right before the signal, and the dying
+# process's SIGTERM handler consumes it. A planned stop still records its
+# normal stop row (reason stays 'signal SIGTERM' — the stream watchdog's
+# audit-override SQL matches that string), but does NOT raise the
+# per-service "stopped abnormally" caution: the SUPERVISOR already logs the
+# restart on its own caution trail, and the duplicate error-severity row
+# per restart was pure noise (2026-11-20: 15+ open rows from one code-change
+# restart wave). Cross-process by design; best effort throughout.
+_PLANNED_STOP_MAX_AGE_S = 120.0  # a marker older than this is stale (pid reuse)
+
+
+def mark_planned_stop(pid: int, reason: str = "supervisor restart") -> None:
+    """Flag ``pid``'s upcoming SIGTERM as PLANNED (see above). Best effort —
+    a failed marker write only means the stop logs like an abnormal one."""
+    try:
+        import tempfile
+
+        marker_dir = Path(tempfile.gettempdir()) / "oxpicious-trading-locks"
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        (marker_dir / f"planned-stop-{pid}.marker").write_text(
+            f"{reason}\n{time.time()}", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _consume_planned_stop(pid: int) -> str | None:
+    """The planned-stop reason for THIS pid, if a fresh marker exists.
+
+    Consumes the marker (unlink) either way; a marker older than
+    ``_PLANNED_STOP_MAX_AGE_S`` is ignored — the stop it announced never
+    happened and the pid may have been reused.
+    """
+    import tempfile
+
+    marker = (Path(tempfile.gettempdir()) / "oxpicious-trading-locks"
+              / f"planned-stop-{pid}.marker")
+    try:
+        rows = marker.read_text(encoding="utf-8").splitlines()
+        stamped = float(rows[1]) if len(rows) > 1 else 0.0
+    except (OSError, ValueError):
+        return None
+    finally:
+        try:
+            marker.unlink(missing_ok=True)
+        except OSError:
+            pass
+    if time.time() - stamped > _PLANNED_STOP_MAX_AGE_S:
+        return None
+    return rows[0] if rows else "planned stop"
+
+
 _threads: dict[str, HeartbeatThread] = {}
 _exit_info: dict[str, tuple[str, bool]] = {}
 _audit_ids: dict[str, int] = {}
 _slots_claimed: dict[str, bool] = {}  # service → live_parallel slot taken
+_planned_stop_reason: str | None = None  # set by _on_sigterm (this process)
 _prev_sigterm: signal._HANDLER_TYPE | None = None
 _prev_excepthook = None
 _hooks_installed = False
@@ -542,6 +603,29 @@ def _write_stop(service: str) -> None:
     # the always-on services; ad-hoc/batch services would else land as
     # 'unknown' on the no-row-yet INSERT path.
     reg_scope, reg_sub = thread._scope, thread._sub_scope
+    global _planned_stop_reason
+    planned = _planned_stop_reason
+    _planned_stop_reason = None
+    if not normal and not planned:
+        # An ABNORMAL stop is a caution (monitor.caution_log, the
+        # Cautions tab's working set): every pipeline / batch / daemon
+        # run that died non-zero, on a signal, or on an unhandled
+        # exception lands here with its exit reason as context. A
+        # PLANNED stop (supervisor restart — marker consumed by
+        # _on_sigterm) is exempt: the supervisor logs the restart
+        # itself, this row would only duplicate it at error severity.
+        # Flush synchronously — this is the exit path, the daemon writer
+        # would not survive interpreter shutdown.
+        from _common.caution_log import flush as _caution_flush
+        from _common.caution_log import record_service_error
+        record_service_error(
+            f"{service} stopped abnormally: {reason}",
+            dedupe_key=f"abnormal-stop:{reason.split(':')[0]}",
+            detail={"scope": reg_scope, "sub_scope": reg_sub,
+                    "pid": os.getpid(), "stop_reason": reason},
+            service=service,
+        )
+        _caution_flush(timeout_s=5.0)
     try:
         conn = get_db_connection()
         try:
@@ -592,6 +676,8 @@ def _install_exit_hooks() -> None:
         atexit.register(_write_all_stops)
 
         def _on_sigterm(signum, frame):  # noqa: ANN001, ARG001
+            global _planned_stop_reason
+            _planned_stop_reason = _consume_planned_stop(os.getpid())
             _note_all(f"signal {signal.Signals(signum).name}", False)
             if callable(_prev_sigterm):
                 _prev_sigterm(signum, frame)
@@ -623,9 +709,12 @@ def _install_exit_hooks() -> None:
 # service_config/ — a per-service DIRECTORY TREE like
 # external_request_config/: the dotted service name is the path, each file
 # one object {service, max_parallel, included_parallel_services,
-# excluded_parallel_services, freq, schedule, notes, source_ref,
-# updated_at}; the tree-root default.json is the FALLBACK carrying the
-# repo-wide cap and the repo-wide parallel lists), read at registration;
+# excluded_parallel_services, is_resident, freq, priority, schedule,
+# notes, source_ref, updated_at} — is_resident true marks an ALWAYS-LIVE
+# service (freq null: cadence does not apply); false marks a one-time
+# task whose freq orchestrates when it starts; the tree-root default.json
+# is the FALLBACK carrying the repo-wide cap and the repo-wide parallel
+# lists), read at registration;
 # the COUNTER (live_parallel) lives on the service's monitor.service_heartbeat
 # row — the current-state row the claim's conditional UPDATE serializes on.
 # Registration claims a slot past the cap and auto-exits the newcomer; a
@@ -705,6 +794,130 @@ def stale_check_for(service: str) -> bool:
             if isinstance(flag, bool):
                 return flag
     return DEFAULT_STALE_PROCESS_CHECK
+
+
+# --- resident / freq / priority (the orchestration give-way rank) ----------
+#
+# Higher integer = higher priority: the orchestration runner's give-way
+# board (server_cluster.monitor.orchestration) holds back / stops a step
+# while a STRICTLY higher-priority step of another run is in flight. The
+# rank encodes the two house rules: the DOWNLOADS domain outranks every
+# non-downloads service regardless of cadence (a build gives way to a
+# download), and within a domain the more frequent the cadence the higher
+# the priority (a RESIDENT outranks daily; daily outranks weekly
+# outranks monthly ...; an unknown freq ranks last, with on_demand).
+
+# The always-live band: is_resident services (the 2026-11-20 flag that
+# replaced the former freq "always" labeling) rank here — the number the
+# residents' config files already carried explicitly.
+RESIDENT_PRIORITY = 80
+
+FREQ_PRIORITY: dict[str, int] = {
+    "daily": 70,
+    "weekly": 60,
+    "monthly": 50,
+    "quarterly": 40,
+    "semiannually": 30,
+    "once": 20,
+    "occasionally": 10,
+    "on_demand": 0,
+}
+
+DOWNLOADS_PRIORITY_BONUS = 100
+DEFAULT_PRIORITY = 0
+
+DEFAULT_IS_RESIDENT = False
+
+
+def is_resident_for(service: str) -> bool:
+    """Whether the service is a RESIDENT (``is_resident`` true in its
+    service_config/ file): an always-live daemon the resident supervisor
+    / ensure-up path keeps up — no cadence, ``freq`` does not apply
+    (null in the file). Same file-then-default.json chain and fail-soft
+    contract as :func:`max_parallel_for`: a config problem never changes
+    behavior — the fallback treats an unknown service as a one-time
+    task."""
+    for file in _service_config_files(service):
+        try:
+            doc = json.loads(file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(doc, dict):
+            flag = doc.get("is_resident")
+            if isinstance(flag, bool):
+                return flag
+    return DEFAULT_IS_RESIDENT
+
+
+def freq_for(service: str) -> str | None:
+    """The service's effective freq from the static service_config/ tree
+    — None for a RESIDENT (is_resident true — an always-live service has
+    no cadence) or when unknown; same file-then-default.json chain and
+    fail-soft contract as :func:`priority_for` (a config problem just
+    yields None: no cadence known, so the arrangement runs the service,
+    never silently skips it)."""
+    if is_resident_for(service):
+        return None
+    for file in _service_config_files(service):
+        try:
+            doc = json.loads(file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(doc, dict) and isinstance(doc.get("freq"), str):
+            return doc["freq"]
+    return None
+
+
+def has_own_service_config(service: str) -> bool:
+    """Whether the service has its OWN file in the service_config/ tree
+    (not the tree-root default.json fallback). The arranger's safeguard:
+    a tier step without its own config is always arranged due — an
+    unconfigured step keeps the run-every-pass behavior instead of being
+    silently skipped off the default.json ``on_demand`` freq."""
+    return _service_config_files(service)[0].is_file()
+
+
+def derive_priority(service: str, freq: object,
+                    is_resident: bool = False) -> int:
+    """The canonical priority of ``service`` — the resident band when it
+    always lives (``is_resident``), else the freq rank; plus the
+    downloads-domain bonus (keyed off the service NAME's first segment,
+    so a config-less ``downloads.*`` ad-hoc run still ranks in the
+    downloads band). An unknown freq ranks with on_demand."""
+    base = (RESIDENT_PRIORITY if is_resident
+            else FREQ_PRIORITY.get(freq) if isinstance(freq, str) else None)
+    return (
+        (base if base is not None else FREQ_PRIORITY["on_demand"])
+        + (DOWNLOADS_PRIORITY_BONUS
+           if service.startswith("downloads.") else 0)
+    )
+
+
+def priority_for(service: str) -> int:
+    """The service's orchestration priority from the static
+    service_config/ tree — same file-then-default.json chain and
+    fail-soft contract as max_parallel_for. The file's explicit
+    ``priority`` int wins (a hand override — keep it in sync with the
+    file's is_resident/freq when editing); else the value DERIVED from
+    that same file's ``is_resident``/``freq`` plus the service name's
+    domain; else the next file in the chain; else DEFAULT_PRIORITY (a
+    config problem never changes behavior, it just ranks the service
+    last)."""
+    for file in _service_config_files(service):
+        try:
+            doc = json.loads(file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(doc, dict):
+            prio = doc.get("priority")
+            if isinstance(prio, int) and prio >= 0:
+                return prio
+            if isinstance(doc.get("is_resident"), bool) or isinstance(
+                    doc.get("freq"), str):
+                return derive_priority(
+                    service, doc.get("freq"),
+                    is_resident=doc.get("is_resident") is True)
+    return DEFAULT_PRIORITY
 
 
 def _clean_parallel_entries(value: object) -> tuple[str, ...]:
@@ -1056,14 +1269,22 @@ def _enforce_parallel_policy(service: str) -> None:
     exit hook is installed: it leaves no trace but its stderr line, and no
     slot to release. The "skipped" claim state (DB unreachable) skips the
     cross-check too — admitted uncounted, healed by the watchdog.
+
+    The refusal exits with EXIT_ALREADY_RUNNING (10), NOT 1: the work IS
+    proceeding in the surviving run, so the orchestration tier runner
+    counts the step OK ("deduped") instead of failing it — exit 1 made a
+    re-started tier racing its own surviving children mark itself failed
+    (2026-11-20 downloads_quarterly).
     """
     state, live, cap = _claim_parallel_slot(service)
     if state == "refused":
-        raise SystemExit(
+        print(
             f"[service_heartbeat] {service}: max_parallel={cap} reached "
             f"(live_parallel={live}) — already running; auto-exiting "
-            "without starting"
+            "without starting",
+            file=sys.stderr, flush=True,
         )
+        raise SystemExit(EXIT_ALREADY_RUNNING)
     if state == "claimed":
         # The claim is owned from here on — mark it BEFORE the cross-check
         # so a conflict's release actually fires (the release pops this
@@ -1072,11 +1293,13 @@ def _enforce_parallel_policy(service: str) -> None:
         conflicts = _parallel_conflicts(service)
         if conflicts:
             _release_parallel_slot(service)
-            raise SystemExit(
+            print(
                 f"[service_heartbeat] {service}: parallel-services "
                 f"conflict — {'; '.join(conflicts)}; auto-exiting without "
-                "starting"
+                "starting",
+                file=sys.stderr, flush=True,
             )
+            raise SystemExit(EXIT_ALREADY_RUNNING)
 
 
 def register_service(

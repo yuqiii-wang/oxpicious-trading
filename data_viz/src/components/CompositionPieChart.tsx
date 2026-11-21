@@ -231,11 +231,9 @@ export default function CompositionPieChart({
             orient: "vertical",
             right: 0,
             top: "middle",
-            textStyle: { color: c.textColor, fontSize: 9 },
+            textStyle: { fontSize: 9 }, // colors inherit from commonLegend
             itemWidth: 8,
             itemHeight: 6,
-            pageIconColor: c.textColor,
-            pageTextStyle: { color: c.textColor },
           },
           series: [
             {

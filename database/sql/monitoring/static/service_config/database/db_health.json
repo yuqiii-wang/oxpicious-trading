@@ -1,11 +1,14 @@
 {
   "service": "database.db_health",
   "max_parallel": 1,
+  "max_parallel_runs": null,
   "included_parallel_services": [],
   "excluded_parallel_services": [],
-  "freq": "always",
+  "is_resident": true,
+  "freq": null,
+  "priority": 80,
   "schedule": "always-on sampler, a monitor-area resident like the pollers; the resident supervisor restarts it when its beat goes stale",
   "notes": "DB health sampler (replica state, replay backlog, slot WAL retention, pg_wal dir size); grouped under the stream sub-scope (the always-on services).",
   "source_ref": "database/db_health.py;database/stream_watchdog.py",
-  "updated_at": "2026-10-10T06:29:48.410435+00:00"
+  "updated_at": "2026-11-20T15:25:15.716730+00:00"
 }

@@ -34,6 +34,7 @@ database/sql/text/01_news.sql; llm_qa_refs DDL: 02_llm_qa_refs.sql).
 from __future__ import annotations
 
 import datetime
+import hashlib
 import logging
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -60,8 +61,12 @@ class OnlineSearchSummaryStore:
     NEWS_TABLE = "text.news"
     REFS_TABLE = "llm.llm_qa_refs"
     QA_TABLE = "llm.llm_qa"
-    _NEWS_COLUMNS = ("title", "content", "date", "source", "url", "author",
-                     "industry_id", "sector_id", "word_count", "votes")
+    # title_hash (md5(title)) is the PK's title member — writer-computed
+    # like builds.text.build_news_rows (pk_news is hashed: raw-title btree
+    # entries cap at ~2704 bytes).
+    _NEWS_COLUMNS = ("title", "title_hash", "content", "date", "source",
+                     "url", "author", "industry_id", "sector_id",
+                     "word_count", "votes")
 
     def __init__(self, conn) -> None:
         self._conn = conn
@@ -95,6 +100,7 @@ class OnlineSearchSummaryStore:
             seen.add(key)
             rows.append({
                 "title": h.title,
+                "title_hash": hashlib.md5(h.title.encode("utf-8")).hexdigest(),
                 "content": h.content,
                 "date": date,
                 "source": source,
@@ -131,7 +137,7 @@ class OnlineSearchSummaryStore:
         self._fill_taxonomy(rows, industry_id)
         rows = [{c: r.get(c) for c in self._NEWS_COLUMNS} for r in rows]
         await bulk_upsert_async(self._conn, self.NEWS_TABLE, rows,
-                                ["title", "source", "date"])
+                                ["title_hash", "source", "date"])
         keys = await self._conn.fetch(
             f'SELECT news_id, title, source, date FROM {self.NEWS_TABLE} '
             f'WHERE (title, source, date) IN ('
@@ -191,7 +197,7 @@ class OnlineSearchSummaryStore:
         self._fill_taxonomy(rows, industry_id)
         row = {c: rows[0].get(c) for c in self._NEWS_COLUMNS}
         await bulk_upsert_async(self._conn, self.NEWS_TABLE, [row],
-                                ["title", "source", "date"])
+                                ["title_hash", "source", "date"])
         nid = await self._conn.fetchval(
             f'SELECT news_id FROM {self.NEWS_TABLE} '
             f'WHERE title = $1 AND source = $2 AND date = $3',

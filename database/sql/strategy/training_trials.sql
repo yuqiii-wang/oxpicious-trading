@@ -1,12 +1,17 @@
 
 -- ----------------------------------------------------------------------------
 --  Table: strategy.training_trials — one row per evaluated point.
---    loss_type separates the TWO regime losses for display:
+--    loss_type separates the regime losses for display:
 --      'set_a_omega'  — Stage A TPE trials (trial_no = Optuna number,
 --                       grid_idx fixed 0). metrics: omega, loss,
 --                       positive_month_fraction, n_trades, ...
+--      'set_c_calmar' — Stage C comb-grid cells, MIXED-mode training
+--                       (trial_no = the cell index, grid_idx fixed 0;
+--                       params carry the full comb block + threshold).
+--                       metrics: calmar, loss, total_return,
+--                       max_dd_pct, risk_score, ...
 --      'set_b_calmar' — Stage B grid points (trial_no = the candidate's
---                       Stage A trial number, grid_idx = 1..grid_size).
+--                       Stage A/C trial number, grid_idx = 1..grid_size).
 --                       metrics: calmar, loss, total_return, max_dd_pct, ...
 -- ----------------------------------------------------------------------------
 -- kg entity (ns0 db_semantics_tables reads the payload below):
@@ -17,7 +22,7 @@ CREATE TABLE IF NOT EXISTS strategy.training_trials (
     run_id          BIGINT      NOT NULL REFERENCES strategy.training_runs(run_id)
                                 ON DELETE CASCADE,
     loss_type       TEXT        NOT NULL
-        CHECK (loss_type IN ('set_a_omega', 'set_b_calmar')),
+        CHECK (loss_type IN ('set_a_omega', 'set_c_calmar', 'set_b_calmar')),
     trial_no        INTEGER     NOT NULL,
     grid_idx        INTEGER     NOT NULL DEFAULT 0,
     params          JSONB       NOT NULL DEFAULT '{}'::jsonb,
@@ -40,10 +45,10 @@ CREATE INDEX IF NOT EXISTS idx_training_trials_run
     ON strategy.training_trials (run_id, loss_type, loss);
 
 COMMENT ON TABLE  strategy.training_trials IS
-    'Per-point training log: every Stage A TPE trial and every Stage B grid evaluation, tagged by loss_type.';
+    'Per-point training log: every Stage A TPE trial / Stage C comb cell and every Stage B grid evaluation, tagged by loss_type.';
 COMMENT ON COLUMN strategy.training_trials.loss_type IS
-    'set_a_omega = Stage A signal loss (Omega ratio); set_b_calmar = Stage B execution loss (Calmar ratio).';
+    'set_a_omega = Stage A signal loss (Omega ratio); set_c_calmar = mixed-mode Stage C comb-grid cell (Calmar on IS); set_b_calmar = Stage B execution loss (Calmar ratio).';
 COMMENT ON COLUMN strategy.training_trials.trial_no IS
-    'Stage A: the Optuna trial number. Stage B: the candidate''s Stage A trial number.';
+    'Stage A: the Optuna trial number. Stage C: the comb-cell index. Stage B: the candidate''s Stage A/C trial number.';
 COMMENT ON COLUMN strategy.training_trials.grid_idx IS
-    'Stage B: the 1..N grid-point sequence within the candidate''s grid. Stage A: fixed 0.';
+    'Stage B: the 1..N grid-point sequence within the candidate''s grid. Stage A / Stage C: fixed 0.';

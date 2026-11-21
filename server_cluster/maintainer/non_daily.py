@@ -23,16 +23,14 @@ fire time for testing.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field
 
+from _common.internal_request import InternalRequestError, post_json
 from server_cluster.maintainer.bring_up import monitor_base_url
 from server_cluster.maintainer.jobs import JobResult, MaintenanceJob, PassAudit
 
@@ -112,18 +110,14 @@ class NonDailyBackfillJob(MaintenanceJob):
         return [], detail
 
     def _drive_monitor(self) -> dict:
-        """POST the monitor area's backfill drive (stdlib urllib — the
-        fleet's no-new-dependency rule; the drive is minutes-long, so
-        the timeout only bounds the CONNECT, not the drive)."""
+        """POST the monitor area's backfill drive (the request rides
+        _common.internal_request; the drive is minutes-long, so the
+        timeout only bounds the CONNECT, not the drive). A failed
+        drive is this pass's error summary — never fatal to the job."""
         url = f"{monitor_base_url()}/non-daily/backfill"
-        req = urllib.request.Request(
-            url, method="POST",
-            data=json.dumps({"dry_run": False}).encode("utf-8"),
-            headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(
-                    req, timeout=3600.0) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except (urllib.error.URLError, OSError, ValueError) as exc:
+            return post_json(url, json_body={"dry_run": False},
+                             timeout_s=3600.0)
+        except InternalRequestError as exc:
             logger.exception("non-daily backfill drive failed")
             return {"error": f"{type(exc).__name__}: {exc}"}

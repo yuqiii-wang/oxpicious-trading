@@ -33,8 +33,72 @@ import {
   fetchTrainInfo,
   type TrainConfigRow,
   type TrainInfoResponse,
+  type TrainRunRow,
 } from "@/lib/api-client";
 import type { MaSpreadSecType } from "@shared/types";
+
+/** Shape of the 2026-11-19 train-gate block inside the run's report
+ *  bundle (training_runs.full_series_metrics.gate — written by
+ *  training_store when the run carried a gate comparison). */
+interface GateBlock {
+  passed?: boolean;
+  winner?: { metrics?: Record<string, unknown> };
+  default?: { metrics?: Record<string, unknown> };
+}
+
+/** Shape of the CSCV-lite PBO diagnostic block (report.pbo). */
+interface PboBlock {
+  pbo?: number;
+  n_pairs?: number;
+  spearman_rho?: number;
+}
+
+function fmtNum(v: unknown, digits = 3): string {
+  return typeof v === "number" ? v.toFixed(digits) : "n/a";
+}
+
+/** The latest run's gate verdict + PBO line (plain text — the train-gate
+ *  ship decision is the headline: was the trained config shipped, or did
+ *  the untrained default win on the untouched tail?). */
+function LatestRunGate({ run }: { run: TrainRunRow | undefined }) {
+  if (!run || run.status !== "completed") return null;
+  const report = run.report;
+  const gate: GateBlock | undefined = report?.gate as GateBlock | undefined;
+  const pbo: PboBlock | undefined = report?.pbo as PboBlock | undefined;
+  if (!gate && !pbo) return null;
+  const w = gate?.winner?.metrics ?? {};
+  const d = gate?.default?.metrics ?? {};
+  return (
+    <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1.5, px: 1.5, py: 1, mb: 1.5 }}>
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+        <Typography variant="caption" color="text.secondary">
+          run #{run.run_id}
+        </Typography>
+        {gate && (
+          <Chip
+            size="small"
+            color={gate.passed ? "success" : "warning"}
+            label={gate.passed
+              ? "GATE PASSED · trained config shipped"
+              : "GATE RETAINED DEFAULT"}
+          />
+        )}
+        {pbo && typeof pbo.pbo === "number" && (
+          <Typography variant="caption" sx={{ fontFamily: "monospace" }}>
+            PBO ≈ {pbo.pbo.toFixed(2)} ({pbo.n_pairs ?? "?"} pairs,
+            ρ {fmtNum(pbo.spearman_rho, 2)}) — coarse overfit diagnostic
+          </Typography>
+        )}
+      </Box>
+      {gate && (
+        <Typography variant="caption" sx={{ display: "block", mt: 0.5, fontFamily: "monospace" }}>
+          gate segment: trained calmar {fmtNum(w.calmar)} / risk {fmtNum(w.risk_score)}
+          {"  vs  "}default calmar {fmtNum(d.calmar)} / risk {fmtNum(d.risk_score)}
+        </Typography>
+      )}
+    </Box>
+  );
+}
 
 export interface TrainConfigsDialogProps {
   open: boolean;
@@ -47,6 +111,11 @@ export interface TrainConfigsDialogProps {
 function fmtVal(v: unknown): string {
   if (typeof v === "number") {
     return Number.isInteger(v) ? String(v) : v.toFixed(6);
+  }
+  if (v !== null && typeof v === "object") {
+    // nested param payloads (e.g. the comb config block) — render as
+    // JSON instead of "[object Object]"
+    return JSON.stringify(v);
   }
   return String(v);
 }
@@ -139,12 +208,15 @@ export function TrainConfigsDialog(props: TrainConfigsDialogProps) {
   const [error, setError] = useState<string | null>(null);
 
   // Fetch on open (+ manual refresh). Plain-fetch client — always fresh.
+  // `strategyName` is the FT-LESS config key the trainer writes under
+  // (family name / "portfolio:…") — passed through verbatim so the
+  // dialog shows the rows for the ACTUAL selection.
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
-    fetchTrainInfo(code, secType)
+    fetchTrainInfo(code, secType, strategyName)
       .then((res) => {
         if (!cancelled) setData(res);
       })
@@ -169,7 +241,7 @@ export function TrainConfigsDialog(props: TrainConfigsDialogProps) {
             onClick={() => {
               setLoading(true);
               setError(null);
-              fetchTrainInfo(code, secType)
+              fetchTrainInfo(code, secType, strategyName)
                 .then(setData)
                 .catch((e) => setError(String(e instanceof Error ? e.message : e)))
                 .finally(() => setLoading(false));
@@ -188,6 +260,7 @@ export function TrainConfigsDialog(props: TrainConfigsDialogProps) {
         {error && <Alert severity="error">{error}</Alert>}
         {!loading && !error && data && (
           <>
+            <LatestRunGate run={data.runs[0]} />
             {data.default ? (
               <ConfigCard
                 label="Default (algo DEFAULT_PARAMS)"

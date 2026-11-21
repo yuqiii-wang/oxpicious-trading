@@ -1,0 +1,14 @@
+{
+  "1": {
+    "script": "strategy.singleton_trading",
+    "args": ["--algo", "bollinger,crowdedness,ma_cross,macd,momentum,mov_rsi,options_vix,options_wall,rebound,rf_break", "--sec-type", "index"],
+    "can_be_parallel": false,
+    "note": "nightly singleton strategy: the ALL-families mixed portfolio (comb stack ON by default) + its sub-algos over the index universe. Incremental by the natural key: codes whose (strategy, code, period) seq already exists are skipped, so only codes with newly arrived dates recompute. Runs after analysis_daily so the analysis horizon the runner caps at is fresh. Needs step 8 of analysis_daily (analysis_signals) to have produced the signal history it picks up."
+  },
+  "2": {
+    "script": "strategy.forecast_next_day",
+    "args": ["--sec-type", "index"],
+    "can_be_parallel": false,
+    "note": "next-day ±kσ scenario forecast (the forecast register): per study index the 20d return σ projects ±1/2/3σ closes and registers which strategy signal would trigger under each scenario (strategy.forecast_next_day). Auto-linked to step 1 — its self-heal spawns the strategy run when the latest active portfolio run is behind the bar horizon (a no-op here, step 1 just ran). Incremental: codes whose registered anchor matches the OHLCV horizon are skipped. Also runnable standalone from the Strategy → Forecast page."
+  }
+}

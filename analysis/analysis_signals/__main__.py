@@ -36,7 +36,10 @@ universe — the sec_type's option underlyings from stats.options_terms
 (fetch/inputs.resolve_options_universe; options_wall drops the SSE ETF
 underlyings, whose chain OI is an accumulated-volume estimator) —
 crowdedness runs the codes with crowdedness rows at the sec_type
-(fetch/inputs.resolve_crowdedness_universe; index only), and
+(fetch/inputs.resolve_crowdedness_universe; index only),
+volatility runs the codes with realized-vol rows at the sec_type
+(fetch/inputs.resolve_volatility_universe; index only while the vol
+panel's run scope is the study indices), and
 hedge_pairs runs the ALL-INDUSTRY-PAIRS universe
 (fetch/inputs.resolve_hedge_pair_universe; --codes is ignored for
 all three).
@@ -64,6 +67,7 @@ from analysis.analysis_signals.fetch import (
 )
 from analysis.analysis_signals.run import (
     HISTORY_TABLE,
+    NO_ACTION_TABLE,
     PERF_TABLE,
     RULES_TABLE,
     run_family,
@@ -87,20 +91,25 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--families", default=",".join(SIGNAL_FAMILY_ENTRIES),
                    help="comma-separated family labels (default: all)")
     p.add_argument("--codes", default="all",
-                   help="comma-separated codes, or 'all' (default): the "
-                        "sec_type's full universe resolved from its base "
-                        "stats table (close IS NOT NULL) — the daily run "
-                        "covers every index since 2026-11-07 (was the 10 "
-                        "study indices); ignored for the options families "
-                        "(stats.options_terms), crowdedness (the codes "
-                        "with crowdedness rows) and hedge_pairs (its "
-                        "all-industry-pairs universe resolves from the "
-                        "composites + offsets)")
+                    help="comma-separated codes, or 'all' (default): the "
+                         "sec_type's full universe resolved from its base "
+                         "stats table (close IS NOT NULL) — the daily run "
+                         "covers every index since 2026-11-07 (was the 10 "
+                         "study indices); ignored for the options families "
+                         "(stats.options_terms), crowdedness (the codes "
+                         "with crowdedness rows), volatility (the codes "
+                         "with realized-vol rows) and hedge_pairs (its "
+                         "all-industry-pairs universe resolves from the "
+                         "composites + offsets)")
     p.add_argument("--analyze", action="store_true",
                    help="run ANALYZE on the two tables after the writes")
     p.add_argument("--no-boost", action="store_true",
                    help="force the ohlcv boost off (the A/B switch; "
                         "default = each family's OHLCV_BOOST class flag)")
+    p.add_argument("--no-no-action", action="store_true",
+                   help="disable the NO-ACTION overlay tier (the A/B "
+                        "isolation switch; default ON — with it off "
+                        "the positive tables must stay bit-identical)")
     return p.parse_args()
 
 
@@ -147,6 +156,18 @@ async def amain() -> None:
                 fam_codes = await resolve_crowdedness_universe(
                     conn, args.sec_type,
                 )
+            elif label == "volatility":
+                # the volatility universe is DATA-DRIVEN (the codes
+                # with realized-vol rows at the sec_type — index while
+                # the vol panel's run scope is the study indices;
+                # etf/stock have no vol rows yet, the family skips) —
+                # --codes is ignored
+                from analysis.analysis_signals.fetch import (
+                    resolve_volatility_universe,
+                )
+                fam_codes = await resolve_volatility_universe(
+                    conn, args.sec_type,
+                )
             elif label == "hedge_pairs":
                 # the pair universe is DATA-DRIVEN (the offsets table's
                 # disjoint offset-opposite industry pairs) — the codes
@@ -165,12 +186,29 @@ async def amain() -> None:
             n_rules, n_hist = await run_family(
                 conn, label, args.sec_type, fam_codes, force=args.force,
                 boost=False if args.no_boost else None,
+                no_action=not args.no_no_action,
             )
             totals["rules"] += n_rules
             totals["history"] += n_hist
-        if args.analyze and (totals["rules"] or totals["history"]):
+        # the SIGNAL AMPLIFICATION tier (2026-11-18) — runs AFTER the
+        # families: its evidence measures the amplifier days against
+        # the families' own fresh history_signals events
+        from analysis.analysis_signals.signal_amplification.run import (
+            HISTORY_TABLE as AMP_HISTORY_TABLE,
+            RULES_TABLE as AMP_RULES_TABLE,
+            run_amplification,
+        )
+        amp_rules, amp_history = await run_amplification(
+            conn, args.sec_type, codes, force=args.force,
+        )
+        totals["amplification_rules"] = amp_rules
+        totals["amplification_history"] = amp_history
+        if args.analyze and (totals["rules"] or totals["history"]
+                             or amp_rules or amp_history):
             await analyze_tables_async(
-                conn, [RULES_TABLE, HISTORY_TABLE, PERF_TABLE])
+                conn, [RULES_TABLE, HISTORY_TABLE, PERF_TABLE,
+                       NO_ACTION_TABLE, AMP_RULES_TABLE,
+                       AMP_HISTORY_TABLE])
         logger.info(f"done: {totals['rules']} rule cells, "
                     f"{totals['history']} history events")
     finally:

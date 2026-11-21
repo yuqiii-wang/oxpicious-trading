@@ -80,19 +80,5 @@
       }
     ],
     "is_industry_not_strategy": true
-  },
-  "DUMMY_AGRI": {
-    "name": "农业综合指数",
-    "exchange": null,
-    "sector_id": "CONS",
-    "industry_id": "AGRI",
-    "tags": [
-      {
-        "sector_id": "CONS",
-        "industry_id": "AGRI"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
   }
 }

@@ -168,3 +168,40 @@ WHERE NOT EXISTS (
       AND x.sub_relation IS NOT DISTINCT FROM e.sub_relation
       AND x.entity_ids = ARRAY[a.entity_id, b.entity_id]::BIGINT[]
 );
+
+
+-- ----------------------------------------------------------------------------
+--  2026-11-18: the SIGNAL AMPLIFICATION guide (06_signals' biz_guide —
+--  teaches reading the analysis_signals.signal_amplification pair: the
+--  per-(code, family) binding config + the amplifier-day record keeper,
+--  the six 'signal_amplifier' anatomy codes and the amplify_bp sign
+--  semantics). Edge grounding: the same static/ai_prompts/ seed-file
+--  family as the signals guides, and its subject IS the signal families'
+--  per-day evidence — the amplification guide teaches reading the
+--  families' OHLCV-confirmed days, the families guide the cells
+--  themselves (about_signal_rule_cells, the rf-break/hedge-pairs
+--  precedent).
+INSERT INTO llm.kg_entities (namespace, name, entity_type, tags, description) VALUES
+    (1, 'signal-amplification-guide', 'skill',
+     ARRAY['biz_guide', 'signal amplification', 'amplifier', 'volume confirmation',
+           'gap reclaim', 'flush washout', 'dry rebound', 'blowoff',
+           'ohlcv anatomy', '信号放大', '量价确认', '放量'],
+     'How to read the signal amplification pair — the OHLCV-anatomy amplifiers (gap/wick/volume day shapes) bound to the signal families, their measured evidence and the per-day amplify_bp.')
+ON CONFLICT (namespace, entity_type, name) DO UPDATE
+    SET description = EXCLUDED.description,
+        tags        = EXCLUDED.tags;
+
+INSERT INTO llm.kg_edges (namespace, relation, sub_relation, entity_ids)
+SELECT 1, e.relation, e.sub_relation, ARRAY[a.entity_id, b.entity_id]::BIGINT[]
+FROM (VALUES
+    ('signal-amplification-guide', 'signals-families-guide', 'similar_to', 'about_signal_rule_cells')
+) AS e(subject, object, relation, sub_relation)
+JOIN llm.kg_entities a ON a.namespace = 1 AND a.name = e.subject
+JOIN llm.kg_entities b ON b.namespace = 1 AND b.name = e.object
+WHERE NOT EXISTS (
+    SELECT 1 FROM llm.kg_edges x
+    WHERE x.namespace = 1
+      AND x.relation  = e.relation
+      AND x.sub_relation IS NOT DISTINCT FROM e.sub_relation
+      AND x.entity_ids = ARRAY[a.entity_id, b.entity_id]::BIGINT[]
+);

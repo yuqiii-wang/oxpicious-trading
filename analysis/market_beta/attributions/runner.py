@@ -96,12 +96,16 @@ async def run_attributions(
     ``work_mem`` / ``maintenance_work_mem`` bumps are session-level
     (a plain SET inside a transaction would revert at its commit).
 
-    PLAIN INSERT, NO ON CONFLICT: incremental target dates are pruned
-    (find_missing_attribution_dates) to dates genuinely absent from the
-    table before any write, so upserts are unnecessary. Already-covered
-    dates (e.g. --with-corr window-end dates the table already has) are
-    skipped — their stored values are deterministic functions of the same
-    source data, so refreshing them would be a no-op anyway.
+    PLAIN INSERT + ON CONFLICT DO NOTHING (incremental): incremental
+    target dates are pruned (find_missing_attribution_dates) to dates
+    genuinely absent from the table before any write. The incremental
+    INSERT variants additionally carry ON CONFLICT DO NOTHING on the PK:
+    a racing writer (a stopped-but-still-committing previous run — its
+    pending SIGTERM does not fire while asyncpg awaits a long INSERT) or
+    a killed run's partially-committed batches can already hold a
+    target-date row, and the stored values are deterministic functions
+    of the same source data, so skipping is a no-op refresh
+    (2026-11-20 UniqueViolation incident).
 
     INCREMENTAL LOOKBACK CAP (B-A5, implemented 2026-08-30): the merged
     INSERT's stock/benchmark history scans read only LOOKBACK_TRADING_DAYS
@@ -309,7 +313,14 @@ async def run_attributions(
     t_member = time.time()
     logger.info("\n[a6/6] Member-index INSERT (map populate + expansion, "
           "all-at-once)...")
-    status_map = await conn.execute(MEMBER_INDEX_MAP_POPULATE_SQL)
+    # AUTHORITATIVE map rebuild: TRUNCATE + repopulate in one transaction
+    # (both modes — the map is ~235 rows, so the rebuild is cheap). A
+    # stale pair (an index that left the industry, or a code that became
+    # a broad-market benchmark) would otherwise keep re-inserting
+    # member-grain rows the broad-market INSERT now owns.
+    async with conn.transaction():
+        await truncate_table_async(conn, MAP_TABLE)
+        status_map = await conn.execute(MEMBER_INDEX_MAP_POPULATE_SQL)
     n_total_map = _parse_insert_count(status_map)
     n_total_member = 0
     for batch in _date_batches(phase_dates, _MEMBER_DATE_BATCH):

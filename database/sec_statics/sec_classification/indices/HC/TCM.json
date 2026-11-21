@@ -15,19 +15,5 @@
       }
     ],
     "is_industry_not_strategy": true
-  },
-  "DUMMY_TCM": {
-    "name": "中药综合指数",
-    "exchange": null,
-    "sector_id": "HC",
-    "industry_id": "TCM",
-    "tags": [
-      {
-        "sector_id": "HC",
-        "industry_id": "TCM"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
   }
 }

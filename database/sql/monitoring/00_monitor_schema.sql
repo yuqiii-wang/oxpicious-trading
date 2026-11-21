@@ -49,6 +49,13 @@
 --        row per db_table_audit.write_flag STATE TRANSITION (raise /
 --        downgrade / clear, severity + tripping rate + threshold),
 --        written by database/db_table_audit.py.
+--    monitor.caution_log — the cross-service caution trail: one OPEN row
+--        per issue per service (deduped on (service, dedupe_key) over
+--        open rows) — service errors, AI-found suspicions, manually-noted
+--        pending bugs; severity-tagged and resolvable from the Monitor
+--        UI's Cautions tab. Written fire-and-forget by
+--        _common/caution_log.py + the data_viz API's
+--        caution-log.service.ts.
 --    monitor.sql_audit — one row per DISTINCT SQL statement executed on
 --        the cluster, keyed by sha256 of the normalized text
 --        (pg_stat_statements, delta-accumulated: calls / total / avg /

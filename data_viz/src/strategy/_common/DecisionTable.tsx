@@ -30,6 +30,26 @@
  * neutral (=100). On a SELL, Norm > Mean Buy ⇒ winning trade; Norm < Mean
  * Buy ⇒ losing trade (the P&L column shows the magnitude).
  *
+ * Row click → chart spotlight
+ * ---------------------------
+ * When `onSelectDecision` is passed, rows are clickable: clicking a row
+ * selects its decision (`decision_no`) — the singleton code trend's
+ * marker for it draws with the inherited grow+glow emphasis (and the
+ * chart pans to reveal it when off-screen, via focusDateRequest).
+ * Clicking the selected row again deselects (toggle-off). The selected
+ * row carries a subtle action.selected background (theme-aware, wins
+ * over the last-day-sell purple tint).
+ *
+ * Visible-window mirror
+ * ---------------------
+ * The page may slice `decisions` to the chart's visible window (the
+ * in-chart dataZoom, reported by the SingletonStrategyCodeTrendChart's
+ * onVisibleRangeChange). When it does, it passes `windowInfo` — the
+ * window's [start, end] dates and the run's TOTAL decision count — so
+ * that when the slice hides rows, a muted caption names the active
+ * window (e.g. "slider window 2024-11-20 → 2026-11-18 · 5 of 23") and
+ * the count chips read as a window filter rather than a data loss.
+ *
  * Reason column + mixed-mode tooltip
  * -----------------------------------
  * For BINARY runs (single algo), signal_reason is the algo's own reason text
@@ -55,53 +75,7 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import type { StrategyDecision } from "@shared/types";
 import { SignalActionChip } from "@/shared/components/signal-action";
-
-// ---------------------------------------------------------------------------
-// Mixed-mode signal_reason parser
-// ---------------------------------------------------------------------------
-// signal_reason for mixed mode = "__MIX__<json>__<human-readable>"
-// The JSON carries per-algo contributions so the UI can render a structured
-// tooltip. Binary mode (no prefix) is returned as-is.
-
-interface MixContribution {
-  a: string;     // abbreviation (bb/macd/ma)
-  algo: string;  // full algo name
-  w: number;     // weight (0-1)
-  c: number;     // raw signal_confidence (signed, -100..100)
-  n: number;     // net contribution = w * c (signed)
-}
-
-interface MixData {
-  algos: MixContribution[];
-  blended: number;  // sum of contributions = blended signal
-  netted: boolean;  // some algos BUY, some SELL on this bar
-  side: string;     // BUY or SELL (the netted side)
-}
-
-const MIX_PREFIX = "__MIX__";
-
-function parseMixReason(reason: string | null | undefined): {
-  mix: MixData | null;
-  human: string;
-} {
-  if (!reason || !reason.startsWith(MIX_PREFIX)) {
-    return { mix: null, human: reason ?? "" };
-  }
-  // Strip "__MIX__" prefix, then find the closing "__" that ends the JSON.
-  const rest = reason.slice(MIX_PREFIX.length);
-  const endIdx = rest.indexOf("__");
-  if (endIdx < 0) {
-    return { mix: null, human: reason };
-  }
-  const jsonStr = rest.slice(0, endIdx);
-  const human = rest.slice(endIdx + 2);
-  try {
-    const mix = JSON.parse(jsonStr) as MixData;
-    return { mix, human };
-  } catch {
-    return { mix: null, human };
-  }
-}
+import { parseMixReason, type MixData } from "./mixReason";
 
 /** Build a structured tooltip ReactNode for a mixed-mode decision. Shows
  *  each algo's weight, raw signal_confidence, and net contribution as
@@ -171,6 +145,16 @@ function renderMixTooltip(mix: MixData, theme: Theme): ReactNode {
   );
 }
 
+/** Time-slider mirror context (see the doc comment's "Time-slider
+ *  mirror" section): the [start, end] dates of the chart's dataZoom
+ *  window that `decisions` was sliced to, plus the run's TOTAL decision
+ *  count before the slice. */
+export interface DecisionWindowInfo {
+  start: string;
+  end: string;
+  total: number;
+}
+
 interface DecisionTableProps {
   decisions: StrategyDecision[];
   /** Accordion expanded state. Defaults to false (collapsed). */
@@ -180,6 +164,17 @@ interface DecisionTableProps {
    *  When >0, the Conf cell tooltip shows the baseline vs stressed
    *  confidence comparison. */
   faultTolerance?: number;
+  /** When `decisions` is a slice of the run's full list (the chart's
+   *  dataZoom window), the window's dates + the unfiltered total. Shown
+   *  as a muted caption only while the slice actually hides rows. */
+  windowInfo?: DecisionWindowInfo;
+  /** decision_no of the currently-selected row (null = none). Drives the
+   *  selected-row background; pairs with onSelectDecision. */
+  selectedDecisionNo?: number | null;
+  /** Row-click callback — the selected decision_no, or null when the
+   *  selected row is clicked again (toggle-off). Omitted = rows are not
+   *  clickable. */
+  onSelectDecision?: (decisionNo: number | null) => void;
 }
 
 /** Light purple accent for the last-day sell (final liquidation at the
@@ -194,6 +189,9 @@ export default function DecisionTable({
   defaultExpanded = false,
   maxHeight = 400,
   faultTolerance = 0,
+  windowInfo,
+  selectedDecisionNo = null,
+  onSelectDecision,
 }: DecisionTableProps) {
   // Before the early return — hooks must run unconditionally.
   const theme = useTheme();
@@ -221,6 +219,11 @@ export default function DecisionTable({
           <Chip label={`${decisions.length}`} size="small" sx={{ fontSize: "0.7rem" }} />
           <Chip label={`${nBuys} BUY`} size="small" color="success" variant="outlined" sx={{ fontSize: "0.7rem" }} />
           <Chip label={`${nSells} SELL`} size="small" color="error" variant="outlined" sx={{ fontSize: "0.7rem" }} />
+          {windowInfo && windowInfo.total > decisions.length && (
+            <Typography variant="caption" sx={{ color: "text.secondary" }}>
+              slider window {windowInfo.start} → {windowInfo.end} · {decisions.length} of {windowInfo.total}
+            </Typography>
+          )}
         </Box>
       </AccordionSummary>
       <AccordionDetails sx={{ p: 1 }}>
@@ -250,6 +253,14 @@ export default function DecisionTable({
                 top: 0,
                 bgcolor: "background.paper",
                 zIndex: 1,
+              },
+              // Clickable rows (when onSelectDecision is wired): pointer +
+              // hover tint so the chart-link affordance reads.
+              "& tbody tr": {
+                cursor: onSelectDecision ? "pointer" : "default",
+              },
+              "& tbody tr:hover": {
+                bgcolor: "action.hover",
               },
             }}
           >
@@ -323,7 +334,22 @@ export default function DecisionTable({
                   : `Post-BUY weighted-avg cost basis: ${d.normalized_mean_buy_price.toFixed(2)} (${meanBuyDelta >= 0 ? "+" : ""}${meanBuyDelta.toFixed(2)} from entry)`;
                 return (
                   <Fragment key={d.decision_no}>
-                    <tr style={isLastDaySell(d) ? { backgroundColor: LAST_DAY_SELL_ROW_BG } : undefined}>
+                    <tr
+                      onClick={onSelectDecision
+                        ? () => onSelectDecision(
+                            selectedDecisionNo === d.decision_no ? null : d.decision_no,
+                          )
+                        : undefined}
+                      style={{
+                        // The selected row's tint wins over the last-day-sell
+                        // purple — selection feedback must not be ambiguous.
+                        backgroundColor: selectedDecisionNo === d.decision_no
+                          ? theme.palette.action.selected
+                          : isLastDaySell(d)
+                            ? LAST_DAY_SELL_ROW_BG
+                            : undefined,
+                      }}
+                    >
                       <td>{d.decision_no}</td>
                       <td>
                         <SignalActionChip
@@ -539,13 +565,16 @@ export default function DecisionTable({
                           }
                           // Binary mode: wrap reason in a tooltip when FT is
                           // active; otherwise show plain text (no tooltip).
+                          // ``human`` === the raw reason for prefix-less
+                          // (binary) rows; __ADHOC__ rows show their parsed
+                          // human tail instead of the JSON payload.
                           if (hasFt) {
                             return (
                               <Tooltip
                                 title={(
                                   <Box>
                                     <Typography variant="caption" sx={{ display: "block", whiteSpace: "pre-wrap" }}>
-                                      {d.signal_reason}
+                                      {human}
                                     </Typography>
                                     {ftBlock}
                                   </Box>
@@ -556,12 +585,12 @@ export default function DecisionTable({
                               >
                                 <span style={{ cursor: "help", borderBottom: "1px dotted rgba(0,0,0,0.3)" }}>
                                   {ftDot}
-                                  {d.signal_reason}
+                                  {human}
                                 </span>
                               </Tooltip>
                             );
                           }
-                          return d.signal_reason;
+                          return human;
                         })()}
                       </td>
                     </tr>

@@ -41,23 +41,5 @@
       }
     ],
     "is_industry_not_strategy": true
-  },
-  "DUMMY_INFRA_CONSTR": {
-    "name": "建筑/基建综合指数",
-    "exchange": null,
-    "sector_id": "INFRA",
-    "industry_id": "INFRA_CONSTR",
-    "tags": [
-      {
-        "sector_id": "INFRA",
-        "industry_id": "INFRA_CONSTR"
-      },
-      {
-        "sector_id": "BROAD",
-        "industry_id": "BROAD_SSE"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
   }
 }

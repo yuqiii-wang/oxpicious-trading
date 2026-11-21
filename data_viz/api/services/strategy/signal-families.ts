@@ -26,7 +26,7 @@ export interface SignalFamilyRow {
 }
 
 // The SELECT lives in the sql view
-// data_viz/api/services/strategy/signal-families/signal_families.
+// strategy/signal-families/signal_families.
 
 /**
  * Fetch the selectable signal families for one sec_type — the families
@@ -40,7 +40,7 @@ export async function fetchSignalFamilies(
   // contract) — the filter carries the codes, the response decodes the
   // family name back to the label the UI / Python algo names speak.
   const rows = await querySqlView<SignalFamilyRow>(
-    "data_viz/api/services/strategy/signal-families/signal_families",
+    "strategy/signal-families/signal_families",
     {
       signal_type_decode: sqlFrag(
         labelDecodeSql("signal_type", "h.signal_type")),

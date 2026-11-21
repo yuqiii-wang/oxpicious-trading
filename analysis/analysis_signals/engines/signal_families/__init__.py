@@ -3,6 +3,9 @@ signal_families) — the detection families, each a set of RuleEntry
 subclasses (engines/rule_base.py).
 
   mov_rsi       RSI percentile tails (per-code adaptive quantile bars)
+                + the Wilder failure-swing pattern entries (2026-11-19:
+                trough → bounce → re-dip holding → cross of the bounce
+                high, BUY-only, riding the same tail3 bars)
   bollinger     fixed-±kσ band breach (z computed in-engine)
   ma_cross      price-vs-MA events: the conditioned reclaim, the
                 failed-rally retest, the raw-gap breach (buy-only) +
@@ -41,6 +44,19 @@ subclasses (engines/rule_base.py).
                 the ma5 ONLINE read) x the nested tail grid, per-code
                 adaptive quantile bars; data-driven universe (the
                 codes with crowdedness rows — index only)
+  volatility    the realized-volatility leverage-effect tail family
+                (2026-11-18): the analysis.volatility panel as rule
+                cells — spike BUY when a vol axis (hv_20 / ewma_vol)
+                pierces its own trailing top-q adaptive tail with
+                price below its 5-rows-ago close (the fear leg — vol
+                peaks cluster at price troughs, the capitulation
+                washout), crush SELL when it sinks below its bottom
+                tail with price within 2% of its trailing-60-row high
+                (complacency at the top, exit timing); per-code
+                adaptive quantile bars, nested tail carving;
+                data-driven universe (the codes with volatility rows
+                — index only while the panel's run scope is the study
+                indices)
   hedge_pairs   the PORTFOLIO family (fresh 2026-10-24): the typical
                 negative-correlation trio — two offset-opposite leg
                 curves + the broad market, all three in their own RSI
@@ -88,6 +104,7 @@ from analysis.analysis_signals.engines.signal_families.momentum import (
     MomentumTailEntry,
 )
 from analysis.analysis_signals.engines.signal_families.mov_rsi import (
+    RsiFailureSwing,
     RsiTailEntry,
 )
 from analysis.analysis_signals.engines.signal_families.options_vix import (
@@ -105,11 +122,14 @@ from analysis.analysis_signals.engines.signal_families.rf_break import (
 from analysis.analysis_signals.engines.signal_families.rebound import (
     ReboundEntry,
 )
+from analysis.analysis_signals.engines.signal_families.volatility import (
+    VolatilityTailEntry,
+)
 
 # registry order = pipeline order (the signal_type label's canonical
 # ordering); each family's entries run over ONE shared fetch
 SIGNAL_FAMILY_ENTRIES: dict[str, list[type[RuleEntry]]] = {
-    "mov_rsi": [RsiTailEntry],
+    "mov_rsi": [RsiTailEntry, RsiFailureSwing],
     "bollinger": [BollBandEntry],
     "ma_cross": [MaCrossReclaimEntry, MaRetestEntry, MaGdepthEntry,
                  MaBreadthEntry],
@@ -121,6 +141,7 @@ SIGNAL_FAMILY_ENTRIES: dict[str, list[type[RuleEntry]]] = {
     "rebound": [ReboundEntry],
     "macd": [MacdCrossEntry],
     "crowdedness": [CrowdTailEntry],
+    "volatility": [VolatilityTailEntry],
     "hedge_pairs": [HedgePairTrioEntry],
 }
 

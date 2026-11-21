@@ -117,6 +117,26 @@ RISK_GRADE_ELEVATED_BOUND = 6.0  # < 6.0 → ELEVATED; else HIGH
 
 
 # ---------------------------------------------------------------------------
+#  ORACLE mode — structural LITTLE grade
+# ---------------------------------------------------------------------------
+# The oracle mode's strategy_name carries the 'oracle' prefix ('oracle',
+# 'oracle_ft10' — the _ft{N} suffix is the fault-tolerance variant; portfolio
+# names always start with 'portfolio:', so the prefix match is unambiguous).
+# The oracle replays the PERFECT-FORESIGHT upper bound (hindsight local-min/
+# max pivots from analysis.oracle_signals) — by construction it carries NO
+# forecasting risk, so it is structurally the risk floor and grades LITTLE
+# regardless of the computed score (2026-11-20, user-directed "the oracle
+# should have the lowest risk"). The score + factor rows STAY computed: the
+# oracle's residual losses (graded partial exits, the flat-book sell skips
+# before the code's first buy, the full-size frontier replay near the data
+# end) are replay artifacts, and the factor rows remain the per-component
+# diagnostic of where that residual comes from (the 2026-11-20 attribution:
+# the MODERATE label was entirely the losing-month streak's +1.0 — two
+# adjacent replay-artifact losing months crossing the LOW bound at 1.0).
+ORACLE_STRATEGY_PREFIX = "oracle"
+
+
+# ---------------------------------------------------------------------------
 #  LITTLE risk grade — criteria-based, below LOW
 # ---------------------------------------------------------------------------
 # LITTLE is a STRUCTURAL grade for the safest strategies: almost no losing

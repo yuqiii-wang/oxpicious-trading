@@ -18,17 +18,21 @@ import type { Theme } from "@mui/material";
 export const MIN_CONF_ALPHA = 0.55;
 
 /** Map confidence (1..100) to a border/text alpha. Linear ramp, clamped
- *  at MIN_CONF_ALPHA on the low end. */
+ *  at MIN_CONF_ALPHA on the low end. A NEGATIVE confidence (the REJECT
+ *  tier, 2026-11-16) ramps on its MAGNITUDE — the chip component
+ *  relabels the action "NO BUY"/"NO SELL"; the intensity still reads
+ *  "how strong the claim", sign-independent. */
 export function confAlpha(confidence: number): number {
-  const c = Math.max(1, Math.min(100, confidence));
+  const c = Math.max(1, Math.min(100, Math.abs(confidence)));
   return MIN_CONF_ALPHA + (c / 100) * (1 - MIN_CONF_ALPHA);
 }
 
 /** Map confidence (1..100) to border width in px. Linear ramp: 1px at 1,
  *  2px at 100 — the thicker outline is the "intensity" signal when no
- *  fill is present. */
+ *  fill is present. NEGATIVE confidence ramps on its magnitude (the
+ *  REJECT tier — see confAlpha). */
 export function confBorderWidth(confidence: number): number {
-  const c = Math.max(1, Math.min(100, confidence));
+  const c = Math.max(1, Math.min(100, Math.abs(confidence)));
   return 1 + (c / 100); // 1.00 → 2.00
 }
 

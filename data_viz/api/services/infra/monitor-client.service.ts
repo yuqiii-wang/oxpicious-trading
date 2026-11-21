@@ -122,9 +122,20 @@ export interface MonitorOrchestrationRun {
 export interface MonitorOrchestrationStepStatus {
   num: string;
   script: string;
-  state: "pending" | "running" | "done" | "failed";
+  /** waiting_priority = held back while a strictly higher-priority run
+   *  is in flight (the service_config priority give-way);
+   *  skipped_not_due = the arrangement's verdict (the freq window
+   *  holds — the arranged run never spawned the step). */
+  state:
+    | "pending"
+    | "waiting_priority"
+    | "running"
+    | "done"
+    | "failed"
+    | "skipped_not_due";
   tag: string | null;
   exit_code: number | null;
+  priority: number;
 }
 
 export interface MonitorOrchestrationStatus {
@@ -184,6 +195,34 @@ export interface MonitorNonDailyBackfill {
   due: string[];
   reruns: MonitorNonDailyRerun[];
   detail: string;
+}
+
+// Orchestration arrangement (server_cluster/monitor/arrangement.py —
+// mirrors of the data_definitions.py payload models)
+
+export interface MonitorArrangementTask {
+  service: string;
+  tier: string;
+  step: string;
+  freq: string;
+  priority: number;
+  state: "unknown" | "due" | "not_due";
+  state_code: number;
+  last_success_at: string | null;
+  due_at: string | null;
+  arranged_at: string | null;
+}
+
+export interface MonitorArrangementInventory {
+  tasks: MonitorArrangementTask[];
+}
+
+export interface MonitorArrangementRefresh {
+  tiers: number;
+  services: number;
+  due: number;
+  not_due: number;
+  not_due_services: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -256,6 +295,26 @@ export function monitorOrchestrationPlan(
   return monitorFetch(
     `/orchestration/${encodeURIComponent(file)}`, { method: "GET" },
     TIMEOUT_MS,
+  );
+}
+
+// ---------------------------------------------------------------------------
+//  Orchestration arrangement (the freq-window run / don't-run face)
+// ---------------------------------------------------------------------------
+
+/** One arrangement pass is a grouped read + bounded upsert batch over
+ *  the tier universe — generous but not open-ended. */
+const ARRANGEMENT_REFRESH_TIMEOUT_MS = 120_000;
+
+/** POST /arrangement/refresh — one pass over every orchestration tier
+ *  file: upsert each service's freq-window verdict into
+ *  monitor.orchestration_task_state (what the nightly chain's per-tier
+ *  arrange side does; the UI's Arrange now action). */
+export function monitorArrangementRefresh(): Promise<MonitorArrangementRefresh> {
+  return monitorFetch<MonitorArrangementRefresh>(
+    "/arrangement/refresh",
+    { method: "POST" },
+    ARRANGEMENT_REFRESH_TIMEOUT_MS,
   );
 }
 

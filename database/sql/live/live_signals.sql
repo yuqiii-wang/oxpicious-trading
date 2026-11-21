@@ -94,7 +94,7 @@ COMMENT ON COLUMN live.live_signals.signal_excess IS 'Signed excess of the breac
 COMMENT ON COLUMN live.live_signals.signal IS 'The value that breached the threshold: the live price at this tick for mov_std rows, the current RSI (analysis.mov_ave_rsi latest row) for mov_rsi rows — RSI thresholds live on the 0-100 scale, so an RSI-vs-threshold breach is recorded in indicator space.';
 COMMENT ON COLUMN live.live_signals.signal_threshold IS 'The threshold the value crossed, denormalized from analysis_signals.signal_strategies.signal_threshold of the config''s active row — the record pins the value it was compared against.';
 
-COMMENT ON COLUMN live.live_signals.confidence IS 'The breached strategy''s expected-move confidence (integer, basis points) = ROUND(10000 × analysis_signals.signal_strategies.confidence) — the chosen rung''s sign-aligned blended mean forward change (dir_ave, a fractional expected move) scaled to bp, copied from the active strategy row at breach time; column DEFAULT 100 only fills legacy rows. (Was the 0-100 percent scale of the removed reverse_prob until 2026-09-25 — pre-rewrite rows keep their old-scale values.)';
+COMMENT ON COLUMN live.live_signals.confidence IS 'The breached strategy''s expected-move confidence (integer, basis points) = ROUND(10000 × analysis_signals.signal_strategies.confidence) — the chosen rung''s sign-aligned blended mean forward change (dir_ave, a fractional expected move) scaled to bp, copied from the active strategy row at breach time; column DEFAULT 100 only fills legacy rows. NEGATIVE (2026-11-16) = the breached cell is a REJECT cell (is_valid FALSE, negative measured dir_ave): the action is advised AGAINST at this price — do NOT buy / do NOT sell, never the inverse action. (Was the 0-100 percent scale of the removed reverse_prob until 2026-09-25 — pre-rewrite rows keep their old-scale values.)';
 COMMENT ON COLUMN live.live_signals.is_day_close_trigger IS 'TRUE = day-close observation (time 15:00:00): written by the on-demand --date mode (python -m live.live_signals --date D) when the selected date has no intraday bar for the code — the official daily close from stats.{sec_type}_basic_stats, value sources bounded to rows at-or-before D (plus remaining rows of the retired --live day-close mirror writer; the historical record lives in analysis_signals.history_signals); FALSE (default) = intraday-bar breach (live monitor, or the --date mode''s last-intraday-bar replay). The trigger kind of the observation.';
 COMMENT ON COLUMN live.live_signals.regime_state IS 'The breach bar''s DATE regime as its static.label_dim (''regime'' domain) SMALLINT code (0 calm / 1 hot / 2 panic / 3 quiet — the stats.market_regimes day label), resolved per check by (code, date), so as-of --date replays see exactly the D verdict (daily states are static historical labels, no peeking; shift-1 trailing inputs make every label known at its own day''s close). RECORD, never a gate: the breach still fires; the label marks which regime produced the event and matches the strategy''s own regime split. Replaces the retired is_market_hyped boolean.';
 COMMENT ON COLUMN live.live_signals.created_at IS 'Row insertion timestamp (record audit).';
@@ -104,9 +104,13 @@ COMMENT ON COLUMN live.live_signals.confidence_selection IS 'The SAME bucket''s 
 
 -- ----------------------------------------------------------------------------
 --  Data-quality gates (shared helpers, see 00_partition_utils.sql): the
---  0-10000 basis-point confidence scale (mirroring
+--  -10000..10000 basis-point confidence scale (mirroring
 --  analysis_signals.history_signals, the structural twin this table
---  clones) and the excess-sign convention (sell breaches above
+--  clones — the NEGATIVE half is the REJECT tier since 2026-11-16: a
+--  reject cell breached its bar and the cell's measured evidence says
+--  the action LOSES at this price, so the live row carries negative
+--  confidence = do NOT take the action now, never the inverse action)
+--  and the excess-sign convention (sell breaches above
 --  the bar → excess >= 0; buy below → excess <= 0). The sign requirement
 --  carries a 0.0001 rounding tolerance: signal stores 4dp while the bar
 --  stores 6dp, so a genuine breach can sit within half a 4dp ulp of the
@@ -117,7 +121,7 @@ COMMENT ON COLUMN live.live_signals.confidence_selection IS 'The SAME bucket''s 
 SELECT public.ensure_check_constraint(
     'live.live_signals',
     'chk_live_signals_confidence',
-    $chk$confidence BETWEEN 0 AND 10000$chk$);
+    $chk$confidence BETWEEN -10000 AND 10000$chk$);
 -- 2026-09-28 cohort add-on columns: the 0-10000 bp gates on the
 -- denormalized cohort confidences. NULL passes (CHECK semantics) —
 -- non-mov_rsi rows legitimately carry no cohort values.

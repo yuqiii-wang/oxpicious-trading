@@ -372,6 +372,9 @@ export async function fetchTradingSignalHistory(
       signal_sub_type_decode: sqlFrag(labelDecodeSql("signal_sub_type", "s.signal_sub_type")),
       action_decode: sqlFrag(labelDecodeSql("action", "r.action")),
       regime_decode: sqlFrag(labelDecodeSql("regime", "r.regime_state")),
+      no_action_reason_decode: sqlFrag(
+        labelDecodeSql("no_action_reason", "s.reason_code"),
+      ),
       action_wait: sqlFrag(`${LABEL_CODE.action.wait}`),
       name_code: sqlFrag("$2"),
     }).sql,
@@ -425,15 +428,21 @@ export interface SignalRuleRow {
   regime_state: string;
   /** buy / sell / wait — decoded. */
   action: string;
-  /** The per-cell GATE VERDICT (the unified dir_ave test): TRUE iff
-   *  the cell's measured future returns cleared its side's dir_ave bar
+  /** The per-cell GATE VERDICT (the unified dir_ave test), a
+   *  signal_rules PK member since 2026-11-18: TRUE iff the cell's
+   *  measured future returns cleared its side's dir_ave bar
    *  (buy >= 0.25% / sell >= 0%). The sample floor is NOT part of the
    *  verdict since 2026-10-19 — a cell under its floor trades at the
    *  starvation confidence scale (min(n/floor, 1), recomputed by
    *  readers from the latest snapshot's n_episodes + the rule's
-   *  gate.sample_floor). FALSE = observational (the ungated VRP twin)
-   *  — negative-future-return evidence is discouraged: it never
-   *  validates, never trades, never fires live. */
+   *  gate.sample_floor). FALSE comes in two independent kinds:
+   *  observational (the ungated VRP twin, action wait — never trades,
+   *  never fires live; negative-future-return evidence is
+   *  discouraged), and since 2026-11-16 the REJECT tier's verdict
+   *  (engines/reject.py, REAL action: the cell's best candidate
+   *  measured below the deep-negative bar) — that row carries the
+   *  negative confidence independently (negative-bp history + live
+   *  rows), which is why the flag joined the PK. */
   is_valid: boolean;
   /** Whether the cell belongs to the PORTFOLIO tier (a signal_rules PK
    *  member since 2026-10-23): an existing signal rule SOURCED by a
@@ -1185,4 +1194,176 @@ export async function fetchTrendSpans(
     });
   }
   return { sec_type: st, code: c, window_days: days, spans };
+}
+
+// ----------------------------------------------------------------------------
+//  fetchSignalAmplificationRules / fetchSignalAmplificationHistory —
+//  the SIGNAL AMPLIFICATION pair (2026-11-18): the close-only families'
+//  OHLCV-anatomy strengthener. analysis_signals.signal_amplification_rules
+//  holds ONE ROW PER (code, sec_type, signal_type) whose rule_params
+//  JSONB carries the binding config (which amplifiers bind, action
+//  side, base_bp, depth scale, bars + the measured per-amplifier
+//  evidence); signal_amplification_history is the ORIGINAL RECORD
+//  KEEPER — one row per amplifier day with the day's anatomy facts +
+//  the per-binding amplification applied (bindings JSONB).
+// ----------------------------------------------------------------------------
+
+/** One binding-config row (the rules panel's row): the amplified family
+ *  + the config payload (parsed JSONB). */
+export interface SignalAmplificationRuleRow {
+  code: string;
+  sec_type: string;
+  /** The AMPLIFIED family, decoded (static.label_dim 'signal_type'). */
+  signal_type: string;
+  rule_params: Record<string, unknown>;
+  is_valid: boolean;
+  rule_entry: string;
+  created_at: string;
+}
+
+/** The code's amplification binding configs — one row per amplified
+ *  family (only families the code's own history actually fires). */
+export async function fetchSignalAmplificationRules(
+  secType: string | null | undefined,
+  code: string,
+): Promise<SignalAmplificationRuleRow[]> {
+  const st = assertSecType(secType);
+  const c = (code ?? "").trim();
+  if (!c) {
+    throw Object.assign(new Error("code is required"), { status: 400 });
+  }
+  // The SELECT lives in the sql view data_viz/api/services/
+  // trading-signals/signal_amplification_rules.
+  return querySqlView<SignalAmplificationRuleRow & QueryResultRow>(
+    "data_viz/api/services/trading-signals/signal_amplification_rules",
+    {
+      code: c,
+      sec_type_decode: sqlFrag(labelDecodeSql("sec_type", "r.sec_type")),
+      signal_type_decode: sqlFrag(
+        labelDecodeSql("signal_type", "r.signal_type")),
+      sec_type_code: sqlFrag(String(LABEL_CODE.sec_type[st])),
+    },
+  );
+}
+
+/** One amplifier-day record (the history table's row): the day's
+ *  anatomy facts + the per-bound-family amplification results. */
+export interface SignalAmplificationHistoryRow {
+  code: string;
+  sec_type: string;
+  /** The amplifier PARENT TYPE, decoded (static.label_dim
+   *  'signal_amplifier_type': ohlcv / margin). */
+  amplifier_type: string;
+  /** The amplifier's specific pattern (SUB TYPE) — decoded via the
+   *  per-parent mirror ('signal_amplifier' when ohlcv,
+   *  'signal_amplifier_margin' when margin). */
+  sub_type: string;
+  /** 'YYYY-MM-DD' — the amplifier day. */
+  date: string;
+  gap_pct: number | null;
+  wick_pct: number | null;
+  amt_ratio: number | null;
+  close_pos: number | null;
+  /** The margin amplifiers' qualifying fact: the balance vs its own
+   *  trailing quantile bar (NULL for the ohlcv amplifiers). */
+  margin_vs_bar: number | null;
+  depth: number | null;
+  /** Per bound family: [{signal_type, action, base_bp, amplify_bp,
+   *  fired, fired_n}] (parsed JSONB). */
+  bindings: Record<string, unknown>[];
+  /** bar_def + the day's extra facts (parsed JSONB). */
+  amplifier_params: Record<string, unknown>;
+}
+
+/** The per-parent amplifier SUB-TYPE vocabularies (the two-level
+ *  amplifier axis): a sub label resolves against its parent's mirror. */
+const AMP_SUB_VOCABULARIES: Record<string, Record<string, number>> = {
+  ohlcv: LABEL_CODE.signal_amplifier,
+  margin: LABEL_CODE.signal_amplifier_margin,
+};
+
+/** Decode a sub label from its parent type label + the raw sub code
+ *  (undefined when the pair is not in the vocabulary). */
+function ampSubLabel(
+  parentLabel: string,
+  subCode: number,
+): string | undefined {
+  const vocab = AMP_SUB_VOCABULARIES[parentLabel];
+  if (!vocab) return undefined;
+  return Object.keys(vocab).find((k) => vocab[k] === subCode);
+}
+
+/** Resolve an amplifier filter label to its (parent type code, optional
+ *  sub code): a PARENT TYPE label (ohlcv / margin) filters the parent
+ *  axis only; a SUB label pins both (the sub vocabularies are
+ *  per-parent, so both branches are probed). Undefined = unknown label
+ *  (filters to nothing). */
+function ampFilterCodes(
+  label: string,
+): { typeCode: number; subCode?: number } | undefined {
+  const typeCode = LABEL_CODE.signal_amplifier_type[label];
+  if (typeCode !== undefined) {
+    return { typeCode };
+  }
+  for (const [parent, vocab] of Object.entries(AMP_SUB_VOCABULARIES)) {
+    const parentType = LABEL_CODE.signal_amplifier_type[parent];
+    const subCode = vocab[label];
+    if (parentType !== undefined && subCode !== undefined) {
+      return { typeCode: parentType, subCode };
+    }
+  }
+  return undefined;
+}
+
+/** One code's amplifier days, newest first (optionally narrowed by the
+ *  two-level amplifier axis — a PARENT type label (ohlcv / margin) or a
+ *  SUB label — and/or a since date; the UI's records table). An unknown
+ *  label filters to nothing (never a fuzzy match). */
+export async function fetchSignalAmplificationHistory(
+  secType: string | null | undefined,
+  code: string,
+  amplifierType?: string | null,
+  since?: string | null,
+): Promise<SignalAmplificationHistoryRow[]> {
+  const st = assertSecType(secType);
+  const c = (code ?? "").trim();
+  if (!c) {
+    throw Object.assign(new Error("code is required"), { status: 400 });
+  }
+  const ampPair = amplifierType ? ampFilterCodes(amplifierType) : undefined;
+  if (amplifierType && !ampPair) {
+    // the documented contract: an unknown label filters to
+    // NOTHING (never a fuzzy match, never the unfiltered set)
+    return [];
+  }
+  const sinceClean = typeof since === "string" && /^\d{4}-\d{2}-\d{2}$/.test(since)
+    ? since : null;
+  // The SELECT lives in the sql view data_viz/api/services/
+  // trading-signals/signal_amplification_history.
+  const rows = await querySqlView<
+    SignalAmplificationHistoryRow & QueryResultRow
+  >(
+    "data_viz/api/services/trading-signals/signal_amplification_history",
+    {
+      code: c,
+      sec_type_decode: sqlFrag(labelDecodeSql("sec_type", "h.sec_type")),
+      amplifier_decode: sqlFrag(
+        labelDecodeSql("signal_amplifier_type", "h.amplifier_type")),
+      sec_type_code: sqlFrag(String(LABEL_CODE.sec_type[st])),
+      amp_filter: sqlFrag(ampPair
+        ? `AND h.amplifier_type = ${ampPair.typeCode}`
+          + (ampPair.subCode !== undefined
+            ? ` AND h.sub_type = ${ampPair.subCode}` : "")
+        : ""),
+      since_filter: sqlFrag(sinceClean
+        ? `AND h.date >= '${sinceClean}'::date` : ""),
+    },
+  );
+  // decode the SUB label host-side via the per-parent mirror (the
+  // boundary-decode convention — the SQL decodes only the parent)
+  for (const r of rows) {
+    const subLabel = ampSubLabel(r.amplifier_type, Number(r.sub_type));
+    r.sub_type = subLabel ?? String(r.sub_type);
+  }
+  return rows;
 }

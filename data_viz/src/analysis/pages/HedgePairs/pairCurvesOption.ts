@@ -79,8 +79,16 @@ export const NO_PAIR_SIGNAL_EVENTS: readonly PairSignalEvent[] = [];
 
 /** The marker classes' legend names (the vol-index "Signal Buy /
  *  Signal Sell / Signal No-Action" convention; wait IS this family's
- *  no-action word). */
-const MARKER_CLASS_NAMES = ["Signal Buy", "Signal Sell", "Signal Wait"] as const;
+ *  no-action word; the trailing no-buy/no-sell REJECT classes complete
+ *  the shared five-class vocabulary — the portfolio tier emits none,
+ *  the names keep the legend contract uniform). */
+const MARKER_CLASS_NAMES = [
+  "Signal Buy",
+  "Signal Sell",
+  "Signal Wait",
+  "Signal No-Buy",
+  "Signal No-Sell",
+] as const;
 
 /** Map one series' values onto the union date axis (null elsewhere). */
 function closeOnUnion(

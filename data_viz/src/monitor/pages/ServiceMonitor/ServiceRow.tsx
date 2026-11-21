@@ -14,7 +14,7 @@ import { ExpandLess, ExpandMore } from "@mui/icons-material";
 import { fmtTimeShanghai } from "@/shared/datetime";
 import type { ResidentProcessStatus, StreamRestartEntry } from "@/lib/api-client/monitor";
 import { STATE_CHIP } from "./constants";
-import { fmtAge, liveAge } from "./fmt";
+import { fmtAge, liveAge } from "@/monitor/fmt";
 
 export default function ServiceRow({
   svc,

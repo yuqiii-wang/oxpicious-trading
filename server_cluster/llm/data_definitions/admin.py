@@ -11,12 +11,14 @@ from pydantic import BaseModel, Field
 
 class ModelStatus(BaseModel):
     """One model's lifecycle state — the admin API's answer body and the
-    ``local`` extension on GET /v1/models/{id}."""
+    ``local`` extension on GET /v1/models/{id}. ``offloaded`` = weights
+    in RAM off the GPU (tier 1), ``unloaded`` = no weights in memory,
+    next use cold-loads (tier 2)."""
 
     model_id: str
     kind: str
     state: Literal["not_loaded", "loading", "loaded", "offloaded",
-                   "error"] = "not_loaded"
+                   "unloaded", "error"] = "not_loaded"
     device: Optional[str] = None
     dtype: Optional[str] = None
     idle_for_s: Optional[float] = None
@@ -31,8 +33,18 @@ class ModelStatusList(BaseModel):
 
 class LoadOffloadResult(BaseModel):
     model_id: str
-    action: Literal["load", "offload"]
+    action: Literal["load", "offload", "unload"]
     status: ModelStatus
+
+
+class OffloadAllResult(BaseModel):
+    """POST /v1/models/offload-all — the manual save-memory action's
+    answer: only the models that were ``loaded`` and got offloaded now
+    (already-offloaded/unloaded ones are skipped, a failing model is
+    logged + skipped so the rest still offload)."""
+
+    action: Literal["offload-all"] = "offload-all"
+    offloaded: list[ModelStatus]
 
 
 class SegmentRequest(BaseModel):

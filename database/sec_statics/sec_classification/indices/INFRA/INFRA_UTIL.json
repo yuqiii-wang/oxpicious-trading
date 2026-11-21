@@ -71,23 +71,5 @@
       }
     ],
     "is_industry_not_strategy": true
-  },
-  "DUMMY_INFRA_UTIL": {
-    "name": "公用事业综合指数",
-    "exchange": null,
-    "sector_id": "INFRA",
-    "industry_id": "INFRA_UTIL",
-    "tags": [
-      {
-        "sector_id": "INFRA",
-        "industry_id": "INFRA_UTIL"
-      },
-      {
-        "sector_id": "BROAD",
-        "industry_id": "BROAD_SSE"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
   }
 }

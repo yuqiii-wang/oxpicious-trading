@@ -2356,6 +2356,184 @@ export interface MarketCrowdednessHotTechResponse {
 }
 
 // ----------------------------------------------------------------------------
+//  Volatility — GET /api/analysis/volatility/*. The per-(sec_type,
+//  code, date) realized-volatility panel from analysis.volatility,
+//  built by analysis.volatility (structured for all securities; run
+//  scope = index only for now — the 10 study indices). All *vol*
+//  fields are PERCENT ANNUALIZED (daily vol × √252 × 100 — 23.45 means
+//  23.45%/year) except atr_14 (price level, index points) and
+//  vol_ratio_20_252 (a ratio). Estimator warm-ups leave early rows NULL
+//  (hv_W from row W+1 on; percentiles/z from ~60 obs); the 5-min
+//  realized-vol leg is NULL outside the intraday-bar retention window
+//  (~90 days).
+
+/** One daily volatility row (analysis.volatility + the joined raw
+ *  close from the sec_type's bars source). */
+export interface VolatilityRow {
+  /** Trading date (YYYY-MM-DD). */
+  date: string;
+  /** Raw session close (index points / price level — feeds the UI's
+   *  price overlay line on every vol chart). */
+  close: number | null;
+  /** Close-to-close historical vol, std of daily log returns (ddof=1)
+   *  over the trailing W rows, % annualized. */
+  hv_5: number | null;
+  hv_10: number | null;
+  hv_20: number | null;
+  hv_60: number | null;
+  hv_120: number | null;
+  hv_252: number | null;
+  /** RiskMetrics EWMA vol (λ=0.94, contemporaneous), % annualized. */
+  ewma_vol: number | null;
+  /** Parkinson estimator (20-row mean of daily ln(H/L)²/(4·ln2)),
+   *  % annualized. */
+  parkinson_vol_20: number | null;
+  /** Garman-Klass estimator (OHLC), % annualized. */
+  garman_klass_vol_20: number | null;
+  /** Rogers-Satchell estimator (drift-robust), % annualized. */
+  rogers_satchell_vol_20: number | null;
+  /** Yang-Zhang estimator (gap + drift robust), % annualized. */
+  yang_zhang_vol_20: number | null;
+  /** Overnight-gap vol (std of ln(O/C_prev), 20 rows), % annualized. */
+  overnight_vol_20: number | null;
+  /** Open-to-close intraday vol (std of ln(C/O), 20 rows), %
+   *  annualized. */
+  intraday_vol_20: number | null;
+  /** Wilder ATR(14) — price level (index points), NOT annualized. */
+  atr_14: number | null;
+  /** NATR(14) = ATR/close × 100 (percent of level). */
+  natr_14: number | null;
+  /** Bollinger band width: 4·σ_price20 / ma20 × 100 (price-level σ). */
+  boll_bw_20: number | null;
+  /** Vol-of-vol: std of the hv_20 series over 20 rows (vol points). */
+  vol_of_vol_20: number | null;
+  /** Short/long vol ratio hv_20 / hv_252 (> 1 expanding). */
+  vol_ratio_20_252: number | null;
+  /** Trailing-252-row percentile of hv_20 (0..1, >= 60 obs). */
+  hv_20_pct_rank_252: number | null;
+  /** Trailing-252-row percentile of ewma_vol (0..1). */
+  ewma_vol_pct_rank_252: number | null;
+  /** Trailing-252-row percentile of yang_zhang_vol_20 (0..1). */
+  yang_zhang_vol_20_pct_rank_252: number | null;
+  /** Trailing-252-row percentile of natr_14 (0..1). */
+  natr_14_pct_rank_252: number | null;
+  /** z-score of hv_20 vs its trailing-252 moments (shifted 1 row). */
+  hv_20_z_252: number | null;
+  /** z-score of ewma_vol vs its trailing-252 moments (shifted 1 row). */
+  ewma_vol_z_252: number | null;
+  /** 5-minute realized vol (Σ intra-session r² × 252, sqrt), %
+   *  annualized; NULL where stats.index_intraday_5min has no bars. */
+  rv_5min: number | null;
+  /** Realized-variance jump gauge max(0, RV/BPV − 1) (bipower
+   *  variation); > 0 flags jump-dominated sessions. */
+  jump_ratio_5min: number | null;
+  /** The day's 5-min bar count (quality gauge, ~48/session). */
+  rv_bar_count: number | null;
+}
+
+/** Response for GET /api/analysis/volatility/series — one security's
+ *  full history (the UI slices via dataZoom). */
+export interface VolatilitySeriesResponse {
+  code: string;
+  name: string;
+  rows: VolatilityRow[];
+}
+
+/** One row of the Volatility codes list (the codes with vol rows —
+ *  the 10 study indices for now). */
+export interface VolatilityCodeRow {
+  code: string;
+  name: string;
+}
+
+/** Response for GET /api/analysis/volatility/codes. */
+export interface VolatilityCodesResponse {
+  codes: VolatilityCodeRow[];
+}
+
+// ----------------------------------------------------------------------------
+//  Oracle — GET /api/analysis/oracle/*. The hindsight ORACLE tier from
+//  analysis.oracle_signals (DECOUPLED from the rule tier; run scope =
+//  index only for now — the 10 study indices): v2 pivot grammar — one
+//  row per ORDER-5 local extreme: buy at every local minimum, sell at
+//  every local maximum (close[date] is the min/max of the +-5-row
+//  window; definition study 2026-11-19). Each row's ext_* legs carry
+//  the next OPPOSITE pivot — the hindsight swing target (NULL at the
+//  frontier, where that opposite pivot is not confirmed yet). The
+//  trail ends 5 bars before the data frontier.
+// ----------------------------------------------------------------------------
+
+/** The oracle action (static.label_dim 'oracle_action'): v2 emits buy
+ *  (a local min) / sell (a local max); no_action was the v1 era's
+ *  stand-down row, decode-only. */
+export type OracleAction = "buy" | "sell" | "no_action";
+
+/** One oracle pivot row (analysis.oracle_signals + the joined raw
+ *  close of the pivot date, for the UI's price overlay + marker
+ *  placement). */
+export interface OracleRow {
+  /** The PIVOT date (YYYY-MM-DD) — the local extreme itself; the
+   *  action executes AT it. */
+  date: string;
+  /** The hindsight action (decoded 'oracle_action' label): buy at a
+   *  local min, sell at a local max. */
+  action: OracleAction;
+  /** The pivot's confirmation window (the order K — close[date] is
+   *  the extreme of the +-K-row window; 5). */
+  window_days: number | null;
+  /** The NEXT OPPOSITE pivot — the row's hindsight swing target (a
+   *  buy's target = the next local max, where the hindsight holder
+   *  sells); NULL at the frontier. */
+  ext_date: string | null;
+  /** Traded-row distance pivot -> swing target (>= 1); NULL at the
+   *  frontier. */
+  ext_offset: number | null;
+  /** The swing target's close (the hindsight exit / re-entry price);
+   *  NULL at the frontier. */
+  ext_price: number | null;
+  /** The v4 forward-trend grade 0-100: the linear ramp of the
+   *  pivot's forward-60d favorable move (buy: biggest rise / sell:
+   *  biggest drop; 2% no-action floor / 10% full — below the floor
+   *  the pivot is not in the table at all). NULL while the window is
+   *  unrealized (frontier pivots). */
+  confidence: number | null;
+  /** Raw session close of the pivot date (the UI's price overlay +
+   *  the marker's y anchor). */
+  close: number | null;
+}
+
+/** One point of the oracle page's FULL daily close series (every
+ *  session of the bars source — the price-overlay line runs on the
+ *  whole history; the hindsight markers land on extremum dates between
+ *  decision dates). */
+export interface OracleCloseRow {
+  date: string;
+  close: number | null;
+}
+
+/** Response for GET /api/analysis/oracle/series — one security's full
+ *  decision history (the UI slices via dataZoom) + the full daily
+ *  close series. */
+export interface OracleSeriesResponse {
+  code: string;
+  name: string;
+  rows: OracleRow[];
+  closes: OracleCloseRow[];
+}
+
+/** One row of the Oracle codes list (the codes with decisions — the
+ *  10 study indices for now). */
+export interface OracleCodeRow {
+  code: string;
+  name: string;
+}
+
+/** Response for GET /api/analysis/oracle/codes. */
+export interface OracleCodesResponse {
+  codes: OracleCodeRow[];
+}
+
+// ----------------------------------------------------------------------------
 //  Security baseline bundle — GET /api/sec-baseline?sec_type=&code=
 //  The ONE shared endpoint behind the shared baseline-plot component
 //  (useSecBaselineBundle → IndexPanel / EtfMarginPanel / StockPanel). The
@@ -2933,6 +3111,107 @@ export interface IndustryCorrOffsetIndustry {
 export interface IndustryCorrOffsetIndustriesResponse {
   industries: IndustryCorrOffsetIndustry[];
 }
+
+// ----------------------------------------------------------------------------
+//  News Audit (composite analysis) — the 5-day window audits of the news
+//  corpus built by `python -m analysis.news_audit`:
+//    text.news_provider_audit — one row per window per ORIGIN (source +
+//      author; author "" is the provider-level row), with items /
+//      digested / fake share / avg sentiment / avg word count / industry
+//      spread, joined with the text.news_providers registry row
+//      (is_blocked + seen-date span).
+//    text.news_content_audit — the content twin per INDUSTRY
+//      ("" = untagged): the same window metrics plus the keyword rollup
+//      (distinct keywords hit, total mentions, articles with any hit).
+//
+//  Windows are 5-calendar-day non-overlapping tiles (stride 5d, anchored
+//  2000-01-03); the newest window is PARTIAL (is_complete false) and
+//  recomputes on every audit run. Sentiment/fake verdicts exist only on
+//  digested rows — their denominators are num_digested, while num_items
+//  counts every article.
+//
+//  Drives the Composites → "News Audit" page (Provider ↔ Content toggle).
+// ----------------------------------------------------------------------------
+/** One provider-audit row — a 5-day window's metrics for one news origin. */
+export interface NewsProviderAuditRow {
+  /** Window start on the 5-day grid (YYYY-MM-DD). */
+  window_start: string;
+  /** Window end = window_start + 4 days (YYYY-MM-DD). */
+  window_end: string;
+  /** Provider (= text.news.source: gov, zhihu, ndrc, pboc_*, ai_daily). */
+  source: string;
+  /** Author when captured (zhihu AuthorName, gov 来源); "" = the
+   *  provider-level row. */
+  author: string;
+  /** False for the trailing partial window (recomputed every run). */
+  is_complete: boolean;
+  /** ALL of the origin's articles dated in the window. */
+  num_items: number;
+  /** Articles with an LLM digestion row (sentiment/fake denominator). */
+  num_digested: number;
+  /** Digested articles flagged fake (disingenuous tomorrow-question). */
+  num_fake: number;
+  /** num_fake / num_digested as a 0..1 fraction; null when nothing was
+   *  digested. */
+  fake_pct: number | null;
+  /** Average digestion sentiment_level in [-5, +5]; null when none. */
+  avg_sentiment: number | null;
+  /** Average word_count over all items; null when no counts. */
+  avg_word_count: number | null;
+  /** COUNT(DISTINCT industry_id) over the window's items. */
+  num_industries: number | null;
+  /** Registry blocklist flag (text.news_providers.is_blocked). */
+  is_blocked: boolean;
+  /** Registry seen-date span (text.news_providers). */
+  first_seen_date: string | null;
+  last_seen_date: string | null;
+  /** When this row was computed. */
+  computed_at: string;
+}
+
+/** Response for GET /api/analysis/news-audit/providers?limit=&source= */
+export interface NewsProviderAuditResponse {
+  /** Clamped number of most recent distinct windows returned. */
+  limit_windows: number;
+  /** Provider filter applied ("" = all). */
+  source: string;
+  /** Backend arg for the shared ExpandedTable header filters. */
+  enable_filters: boolean;
+  rows: NewsProviderAuditRow[];
+}
+
+/** One content-audit row — a 5-day window's metrics for one industry. */
+export interface NewsContentAuditRow {
+  window_start: string;
+  window_end: string;
+  /** Industry tag; "" = untagged articles (broad-market recaps, gov). */
+  industry_id: string;
+  /** Display label (from stats.sec_classification; falls back to the id). */
+  industry_label: string;
+  is_complete: boolean;
+  num_items: number;
+  num_digested: number;
+  num_fake: number;
+  fake_pct: number | null;
+  avg_sentiment: number | null;
+  /** Different keywords hit across the window's content (0 = none). */
+  distinct_keywords: number | null;
+  /** Total affirmative keyword mentions (negated readings never count). */
+  keyword_mentions: number | null;
+  /** Articles that hit at least one keyword. */
+  articles_with_keywords: number | null;
+  computed_at: string;
+}
+
+/** Response for GET /api/analysis/news-audit/content?limit=&industry_id= */
+export interface NewsContentAuditResponse {
+  limit_windows: number;
+  /** Industry filter applied ("" = all). */
+  industry_id: string;
+  enable_filters: boolean;
+  rows: NewsContentAuditRow[];
+}
+
 
 // ----------------------------------------------------------------------------
 //  Pair Pct-Change Ratios — the subject's daily pct change as a multiple
@@ -3892,6 +4171,46 @@ export interface StrategyBacktestResponse {
   };
   /** Fault tolerance percentage (0-20) applied to this run. 0 = baseline. */
   fault_tolerance: number;
+  /** The displayed run's strategy_identity.seq_id (null = no run found).
+   *  A non-latest value means the run-history selector picked this run. */
+  seq_id: number | null;
+  /** Display counter of the displayed run (null = no run found). */
+  seq_no: number | null;
+  /** The displayed run's stored config (params JSONB: trading keys + the
+   *  comb block + params_version on portfolio runs). null = no run found. */
+  params: Record<string, unknown> | null;
+}
+
+// ----------------------------------------------------------------------------
+//  Strategy — run history (GET /api/strategy/singleton/run-history)
+//  Recent strategy_identity runs for one (sec_type, code, strategy_name),
+//  newest first. Old runs are retained with is_active=FALSE, so each row
+//  is a selectable past run with its stored params config.
+// ----------------------------------------------------------------------------
+/** One past run in the history list. */
+export interface RunHistoryItem {
+  seq_id: number;
+  seq_no: number;
+  strategy_name: string;
+  sec_type: MaSpreadSecType;
+  code: string;
+  start_date: string | null;
+  end_date: string | null;
+  /** The run's stored config (params JSONB: trading keys + the comb block
+   *  + params_version on portfolio runs). */
+  params: Record<string, unknown>;
+  scenario: string | null;
+  status: string | null;
+  fault_tolerance: number;
+  is_active: boolean;
+  created_at: string | null;
+}
+
+export interface RunHistoryResponse {
+  code: string;
+  sec_type: MaSpreadSecType;
+  strategy_name: string;
+  runs: RunHistoryItem[];
 }
 
 // ----------------------------------------------------------------------------
@@ -4112,6 +4431,18 @@ export interface NewsItem {
   /** LLM digestion sentiment in [-5, 5] (text.news_digestions; jev or the
    *  chat digestion pipeline). NULL while the article is not digested yet. */
   sentiment_level: number | null;
+  /** Discourse category of the digested article (text.news_digestions.
+   *  category, decoded server-side from the news_category label codes):
+   *  discussion | analysis | opinion | statement | other. NULL while the
+   *  article is not digested yet; "other" = the detector's read was not
+   *  confident enough to classify. */
+  category: string | null;
+  /** The disingenuous tomorrow-question verdict (text.news_digestions.
+   *  is_fake_news): the title asks about the next day's move while the
+   *  same origin's earlier items already made explicit directional
+   *  statements — opinions/sentiments never trigger it. NULL while the
+   *  article is not digested yet. */
+  is_fake_news: boolean | null;
   /** First ~200 chars of the article body (or null when not crawled). */
   snippet: string | null;
 }
@@ -4507,4 +4838,57 @@ export interface SecBoardMapResponse {
   boards: SecBoardTag[];
   /** Composition snapshot the mix was computed from (null for stocks). */
   snapshot_date: string | null;
+}
+
+// ---------------------------------------------------------------------------
+//  Forecast next day (strategy.forecast_next_day) — the Strategy → Forecast
+//  page's σ-ladder scenario register
+// ---------------------------------------------------------------------------
+
+/** One strategy.forecast_next_day row (labels decoded SQL-side through
+ *  static.label_dim). trigger_no 0 is the scenario SUMMARY row (no
+ *  signal fired — the signal columns null); 1..n carry one fired rule
+ *  cell each, with the scenario constants denormalized on every row. */
+export interface ForecastNextDayRow {
+  /** The real bar date the forecast is anchored on. */
+  anchor_date: string;
+  code: string;
+  /** "down" | "up" — the scenario's side of the σ move. */
+  direction: string;
+  /** The σ multiplier k ∈ {1, 2, 3}. */
+  sigma_mult: number;
+  trigger_no: number;
+  base_close: number;
+  /** Population std of the trailing 20 daily returns, PERCENT. */
+  sigma_20d_pct: number;
+  forecast_close: number;
+  forecast_change_pct: number;
+  /** The fired cell's family (null on the summary row). */
+  signal_type: string | null;
+  signal_sub_type: string | null;
+  /** "buy" | "sell" — the fired cell's own action. */
+  action: string | null;
+  signal_value: number | null;
+  signal_threshold: number | null;
+  signal_excess_pct: number | null;
+  /** The projected confidence (the live tier's breach formula), bp. */
+  confidence_bp: number | null;
+  trend_state: string | null;
+  regime_state: string | null;
+  /** The strategy pickup reading's inputs (sell executes only with a
+   *  position open past min_holding_period). */
+  position_open: boolean | null;
+  would_execute: boolean | null;
+  /** The strategy the reading applies to (the nightly portfolio). */
+  strategy_name: string;
+}
+
+/** Response for GET /api/strategy/forecast. */
+export interface ForecastNextDayResponse {
+  sec_type: string;
+  /** The code filter (null = all codes served, latest anchor each). */
+  code: string | null;
+  /** The explicit anchor filter when given (null = latest per code). */
+  anchor_date: string | null;
+  rows: ForecastNextDayRow[];
 }

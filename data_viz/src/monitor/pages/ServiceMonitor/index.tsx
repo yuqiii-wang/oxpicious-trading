@@ -14,6 +14,8 @@
  * carries every restart life of the day) and expand to their watchdog
  * restart trail via the chevron (the dead lives' 'watchdog restart: …'
  * rows in monitor.service_audit). A pipeline process row expands to its
+ * PER-SERVICE RUN TREND (the monitor-scope shared ServiceRunTrend — the
+ * daily run-count curve; click a day for its run list) over its
  * per-run audit history (monitor.service_audit via
  * GET /api/monitor/stream/runs, fetched on first expand; every history
  * run is CLICKABLE and opens that run's log in the shared
@@ -55,7 +57,11 @@
  * freq dropdown + search box narrow within the selected mode (freq is the
  * SUPPOSED-RUN cadence from the service_config/ static tree — hover a
  * freq for the schedule / notes / config source). Full history also lists
- * the never-run services with "—" cells. A row whose Last beat is older
+ * the never-run services with "—" cells; the per-service run trend lives
+ * in each row's expansion (the shared ServiceRunTrend), replacing the
+ * old History-mode picker panel.
+ *
+ * A row whose Last beat is older
  * than the freq's supposed window (daily 24h / monthly 30d /
  * quarterly 92d / semiannually 183d — the endpoint carries it as
  * freqPeriodMs; windowless
@@ -77,9 +83,10 @@
  * registration (first beat ~60s).
  *
  * Layout (one file per concern, this index composes them): constants.ts
- * (cadence + chip vocabularies), fmt.ts / hooks.ts (formatters + the 1s
- * tick), ServiceRow.tsx / ProcessRow.tsx (the two table rows),
- * RunServiceDialog.tsx (the run confirm dialog), and this index.
+ * (cadence + chip vocabularies), the monitor-scope shared fmt.ts /
+ * hooks.ts / service-run-trend component (@/monitor), ServiceRow.tsx /
+ * ProcessRow.tsx (the two table rows), RunServiceDialog.tsx (the run
+ * confirm dialog), and this index.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -134,7 +141,7 @@ import {
   REFRESH_MS,
   type ProcessRunsState,
 } from "./constants";
-import { useNowTick } from "./hooks";
+import { useNowTick } from "@/monitor/hooks";
 import ProcessRow from "./ProcessRow";
 import RunServiceDialog from "./RunServiceDialog";
 import ServiceRow from "./ServiceRow";
@@ -201,11 +208,12 @@ export default function ServiceMonitorPage() {
     resp: HealthCheckResponse;
   } | null>(null);
   // ---- Start stream always (header button) ----------------------------
-  // The POST resolves as soon as the detached keeper session is spawned
-  // (services go live within ~60s, on the table's own refresh cadence),
-  // so saRunning is just the click-to-spawn spinner — no tag-registry
-  // tracking (the keeper never exits); the verdict shows as a
-  // dismissible alert.
+  // The POST resolves once the API's monitor-area ensure-up pass has
+  // run (a healthy fleet answers in seconds; a dead fleet first takes
+  // the API's bootstrap window — wake WSL → boot hook → fleet starter —
+  // so saRunning is a potentially minutes-long spinner). Services go
+  // live within ~60s of the verdict, on the table's own refresh
+  // cadence; the verdict shows as a dismissible alert.
   const [saRunning, setSaRunning] = useState(false);
   const [saError, setSaError] = useState<string | null>(null);
   const [saResult, setSaResult] = useState<{
@@ -624,7 +632,7 @@ export default function ServiceMonitorPage() {
         >
           {saResult.resp.message}
           {saResult.resp.success
-            ? ` (triggered at ${fmtTimeShanghai(saResult.at)}) — the keeper session runs the watchdog starter then the five pollers 1s apart; if services stay down, see logs/<date>/ui_stream_always.log`
+            ? ` (at ${fmtTimeShanghai(saResult.at)}); the table's beats refresh every 30s — first beats within ~60s of any start`
             : ""}
         </Alert>
       )}

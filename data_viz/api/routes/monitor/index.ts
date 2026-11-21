@@ -25,6 +25,16 @@
  *   GET /api/monitor/stream/runs?service=...&limit=10
  *     → run audit history of ONE pipeline process (monitor.service_audit).
  *
+ *   GET /api/monitor/stream/runs/daily?service=...&days=90
+ *     → daily run counts of ONE service over the trailing window
+ *       (Shanghai-local days, gap-filled with 0) + per-day abnormal
+ *       counts: the per-service run-trend curve every monitor row
+ *       expansion mounts (the shared ServiceRunTrend component).
+ *
+ *   GET /api/monitor/stream/runs/day?date=YYYY-MM-DD[&limit=2000]
+ *     → every run of ONE Shanghai-local day across ALL services (the
+ *       day drill-down under the curve; same run rows as /stream/runs).
+ *
  *   GET /api/monitor/stream/runs/log?service=...&date=YYYY-MM-DD[&tail=]
  *     → ONE run's component log: the tail of logs/<date>/<service>.log —
  *       the ONE file _common/log_setup wrote for that service that day,
@@ -71,6 +81,30 @@
  *       registry, each heartbeating onto Pipeline processes as it
  *       starts. GET /orchestration/runs/:tag polls step statuses;
  *       dryRun=true echoes the plan without executing (smoke only).
+ *       The maintainer's chain posts with arrange=true: the monitor
+ *       area first upserts the tier's freq-window arrangement
+ *       (monitor.orchestration_task_state) and skips not-due steps
+ *       (state skipped_not_due) instead of spawning them to no-op.
+ *
+ *   GET /api/monitor/orchestration/board
+ *     → the ARRANGEMENT BOARD (the Orchestration tab): every
+ *       orchestration-tier service's arrangement row
+ *       (monitor.orchestration_task_state — the Shanghai-calendar
+ *       freq verdict the monitor area's OrchestrationArranger wrote,
+ *       state DECODED via the label_dim join) classified into three
+ *       sections — `running` (heartbeat-live, pid/started/beat joined),
+ *       `queue` (arranged due, not yet successfully run; priority-desc
+ *       with the non-daily missing/attempts/next-check tooltip fields),
+ *       `noNeed` (the rest, most-recent first, with the reason: within
+ *       freq window | once — done | ran since arranged | no window) —
+ *       each row enriched with its service_config schedule/sourceRef.
+ *       An empty (never-arranged) table bootstraps through one
+ *       arrangement pass before the read.
+ *
+ *   POST /api/monitor/orchestration/arrange
+ *     → one arrangement pass over every tier file NOW (the page's
+ *       Arrange now action — the same freq rule the nightly chain's
+ *       per-tier arrange side applies), then the refreshed board.
  *
  *   GET /api/monitor/non-daily
  *     → the non-daily tasks' completeness monitor (the Non-daily tab):
@@ -97,6 +131,22 @@
  *       missing re-run-eligible task (module + tier args + force args
  *       via the run registry), re-check, bump attempts + the weekly
  *       next_check gate. dryRun=true reports the due list only.
+ *
+ *   GET /api/monitor/llm-host/models
+ *     → the local-model host's admin list (server_cluster/llm, 8767):
+ *       every configured local model with its GPU lifecycle state
+ *       under `local` (loaded = weights on the GPU, offloaded = in RAM
+ *       off the GPU, unloaded = next use cold-loads from disk).
+ *
+ *   POST /api/monitor/llm-host/models/offload-all
+ *     → the manual save-memory action: every LOADED model's weights
+ *       move GPU → CPU right now (already-offloaded models skipped, a
+ *       failing model skipped so the rest still offload; the next
+ *       request rehydrates transparently). The operator's one-call
+ *       VRAM free before the GPU-hungry pipelines run.
+ *
+ *   POST /api/monitor/llm-host/models/:id/:action
+ *     → one model's admin lifecycle action (load | offload | unload).
  *
  *   POST /api/monitor/health-check
  *     → the monitor area's GET /health-check (database.monitoring's
@@ -238,9 +288,49 @@
  *       cache-hit / backlog trend. instance + replication_state arrive
  *       DECODED (db_instance / db_replication_state).
  *
+ *   GET /api/monitor/cautions?state=open|resolved|all&source=&severity=&limit=
+ *     → the cross-service caution trail (monitor.caution_log — the
+ *       Cautions tab): one OPEN row per issue per service (deduped on
+ *       (service, dedupe_key) over open rows — a recurrence bumps
+ *       occurrence_count / last_seen_at), covering running-service
+ *       errors (abnormal pipeline exits via service_heartbeat,
+ *       orchestration step failures, maintenance job crashes, the API's
+ *       own unhandled errors + py-runner never-started runs), AI-found
+ *       suspicions (output-validation complaints that survive their
+ *       repair round, [CRITICAL]-flagged findings, below-floor /
+ *       unavailable jev reads, deep-agents daemon failures) and manual
+ *       pending bugs (python -m _common.caution_log). source /
+ *       severity_level arrive DECODED (caution_source /
+ *       caution_severity); ordering is open-first, worst severity
+ *       first, most-recent-hit first.
+ *
+ *   POST /api/monitor/cautions { service, title, severity, source?,
+ *       dedupeKey?, detail?, logContext? }
+ *     → register ONE caution from any writer that cannot go DB-direct
+ *       (ops scripts, non-Python services, sandboxed code — Python
+ *       services keep using `_common.caution_log` DB-direct). Same
+ *       upsert + dedupe contract as every writer: (service, dedupeKey)
+ *       over OPEN rows, a recurrence bumps occurrence_count /
+ *       last_seen_at. severity is required (info | warning | error |
+ *       critical), source defaults to service; an unknown label name is
+ *       a 400 (the direct caller gets the rejection the internal
+ *       never-throw writers swallow). logContext { file?, keyword?,
+ *       timeFrom?, timeTo? } rides into detail.log_context — how to
+ *       locate the error in the logs (the Cautions tab's locate-in-logs
+ *       line; missing time bounds are stamped with the record time).
+ *       Python-side writers auto-carry the derived context (the day's
+ *       logs/<date>/<service>.log + record time) — detail.log_context
+ *       from any writer wins over the derived default.
+ *
+ *   POST /api/monitor/cautions/resolve { id }
+ *     → resolve ONE open caution row (is_resolved = true +
+ *       resolved_timestamp = now(), the Cautions tab's Resolve action).
+ *       A resolved row is history — never re-opened; a recurrence opens
+ *       a fresh row.
+ *
  * Reads monitor.service_heartbeat / monitor.service_audit /
  * monitor.external_resource_stats / monitor.external_resource_audit /
- * monitor.src_data_audit on
+ * monitor.src_data_audit / monitor.caution_log on
  * the read replica — beats are upserted every ~60s and the stale
  * threshold is 240s, so ordinary replica lag never flips a live service
  * to stale. The watchdog restart trail is merged into service_audit (a
@@ -252,6 +342,7 @@ import { Router } from "express";
 import runsRouter from "./runs.js";
 import runGuardRouter from "./run-guard.js";
 import orchestrationRouter from "./orchestration.js";
+import orchestrationBoardRouter from "./orchestration-board.js";
 import nonDailyRouter from "./non-daily.js";
 import extResourcesRouter from "./ext-resources.js";
 import srcDataAuditRouter from "./src-data-audit.js";
@@ -259,12 +350,15 @@ import streamAlwaysRouter from "./stream-always.js";
 import streamRouter from "./stream.js";
 import aiAuditRouter from "./ai-audit.js";
 import dbAuditRouter from "./db-audit.js";
+import cautionsRouter from "./cautions.js";
+import llmHostRouter from "./llm-host.js";
 
 const router = Router();
 
 router.use(runsRouter);
 router.use(runGuardRouter);
 router.use(orchestrationRouter);
+router.use(orchestrationBoardRouter);
 router.use(nonDailyRouter);
 router.use(extResourcesRouter);
 router.use(srcDataAuditRouter);
@@ -272,6 +366,8 @@ router.use(streamAlwaysRouter);
 router.use(streamRouter);
 router.use(aiAuditRouter);
 router.use(dbAuditRouter);
+router.use(cautionsRouter);
+router.use(llmHostRouter);
 
 // Re-exported for server.ts, which imports the boot auto-start helpers
 // from routes/monitor/index.js.

@@ -12,8 +12,11 @@
 --  purpose-scoped sibling INSERT files, one per business area:
 --    10_market_state          regime / side / px_speed / vol_state
 --    20_signal_detection      signal_type / signal_sub_type / action /
---                             analysis_cache_kind / portfolio_type /
---                             portfolio_sub_type
+--                             oracle_action / no_action_reason /
+--                             signal_amplifier / signal_amplifier_type /
+--                             signal_amplifier_margin /
+--                             analysis_cache_kind /
+--                             portfolio_type / portfolio_sub_type
 --    30_industry_aggregation  weighting / rank_side / pool_size /
 --                             attribution_type
 --    40_security_identity     sec_type / board / sec_owner_type /
@@ -24,7 +27,8 @@
 --                             secret_sub_type / db_instance /
 --                             db_replication_state
 --    07_text_llm              research_logic / prompt_type /
---                             agent_context_kind / search_table
+--                             agent_context_kind / search_table /
+--                             news_category
 --    08_keyword_maps          kw_category_type / kw_market / kw_pos /
 --                             kw_language / kw_theme
 --                             (static.keyword_maps' columns)
@@ -123,6 +127,12 @@
 --               fixed output — the run's final answer document, the UI
 --               Result view's display source). Third llm.* LLM-layer
 --               enum converted (2026-10-31).
+--    news_category
+--               text.news_digestions (category): the discourse
+--               category of a digested article — 0 discussion / 1
+--               analysis / 2 opinion / 3 statement / 99 other — the
+--               fake-news detector's classification lane (Jev read over
+--               source + title + content; 2026-11-17).
 --
 --  PENDING (vocabulary registered, columns STILL TEXT — convert table +
 --  writers before using the codes): skew_type

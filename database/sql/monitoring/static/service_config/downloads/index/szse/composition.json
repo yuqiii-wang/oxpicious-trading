@@ -3,9 +3,11 @@
   "max_parallel": 1,
   "included_parallel_services": [],
   "excluded_parallel_services": [],
+  "is_resident": false,
   "freq": "quarterly",
+  "priority": 140,
   "schedule": "calendar-quarterly pass — quarter-start refresh on the 1st of Jan/Apr/Jul/Oct (cron-scheduled; no in-script date guard)",
   "notes": null,
   "source_ref": "scripts/orchestration/downloads_quarterly.json",
-  "updated_at": "2026-10-10T06:29:48.410435+00:00"
+  "updated_at": "2026-11-20T15:25:15.716730+00:00"
 }

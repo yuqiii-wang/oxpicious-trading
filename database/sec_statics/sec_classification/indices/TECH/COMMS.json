@@ -128,20 +128,6 @@
     ],
     "is_industry_not_strategy": true
   },
-  "DUMMY_COMMS": {
-    "name": "通信综合指数",
-    "exchange": null,
-    "sector_id": "TECH",
-    "industry_id": "COMMS",
-    "tags": [
-      {
-        "sector_id": "TECH",
-        "industry_id": "COMMS"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
-  },
   "H30318": {
     "name": "科技传媒通信150",
     "exchange": "HK",

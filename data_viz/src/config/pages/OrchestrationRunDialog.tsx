@@ -70,7 +70,7 @@ export default function RunOrchestrationDialog({
       ? ""
       : target.kind === "step"
         ? `python -m ${target.script}${target.args.length > 0 ? ` ${target.args.join(" ")}` : ""}`
-        : `POST /orchestration/run — scripts/orchestration/${target.file}.json`;
+        : `POST /orchestration/run — scripts/orchestration/${target.file}`;
 
   const submit = useCallback(async () => {
     if (target == null) return;

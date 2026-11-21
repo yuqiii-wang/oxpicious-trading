@@ -447,6 +447,10 @@ export function portfolioMemberToRecord(
     regime_state: "all",
     is_typical: null,
     is_rejection: x.action === "wait",
+    // portfolio member records never carry the no-action overlay
+    // (the mark annotates standalone fired days only)
+    is_no_action: false,
+    no_action_reason: null,
     count_20d: 0,
   };
 }

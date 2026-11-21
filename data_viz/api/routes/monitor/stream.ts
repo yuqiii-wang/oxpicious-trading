@@ -92,9 +92,12 @@ export interface ProcessStatus {
   stoppedAt: string | null;
   liveParallel: number | null;
   maxParallel: number | null;
-  freq: string;
+  /** The task's start cadence from the service_config/ static tree —
+   *  null for a resident (always lives; residents do not appear in this
+   *  table, the value is defensive). */
+  freq: string | null;
   /** The freq's auto-skip window in ms (FREQ_PERIOD_MS) — null when the
-   *  freq has no checkable period (always / occasionally / on_demand /
+   *  freq has no checkable period (resident / occasionally / on_demand /
    *  once). The UI ambers a Last beat older than this against the
    *  supposed cadence. */
   freqPeriodMs: number | null;
@@ -174,12 +177,12 @@ function toStatus(
 }
 
 /** The finite window of ``freq`` (null = no checkable period: the
- *  no-window freqs, "once" whose any-success rule never lapses, and
- *  unknown values). JSON-serializable form of FREQ_PERIOD_MS — the
- *  pipeline-process rows carry it so the UI can amber an overdue
- *  Last beat against the supposed cadence. */
-function freqPeriodMsFor(freq: string): number | null {
-  const period = FREQ_PERIOD_MS[freq] ?? null;
+ *  no-window freqs, a resident's null freq, "once" whose any-success
+ *  rule never lapses, and unknown values). JSON-serializable form of
+ *  FREQ_PERIOD_MS — the pipeline-process rows carry it so the UI can
+ *  amber an overdue Last beat against the supposed cadence. */
+function freqPeriodMsFor(freq: string | null): number | null {
+  const period = freq == null ? null : FREQ_PERIOD_MS[freq] ?? null;
   return period != null && Number.isFinite(period) ? period : null;
 }
 

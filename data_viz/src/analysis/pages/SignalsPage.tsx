@@ -41,6 +41,23 @@ export const SIGNALS_ANALYSES: SignalItem[] = [
       "OI-weighted moneyness skew and options-wall breach signals for the " +
       "picked underlying (ETF or index).",
   },
+  {
+    slug: "signal-amplification",
+    title: "Signal Amplification",
+    description:
+      "The OHLCV-anatomy amplifiers — intraday gaps, wicks and volume " +
+      "shapes that amplify (or discount) the close-only signal families' " +
+      "claims, with their measured evidence.",
+  },
+  {
+    slug: "oracle",
+    title: "Oracle",
+    description:
+      "The hindsight oracle (decoupled from the rule tier): a " +
+      "perfect-foresight action at every local extreme — 5-bar-window " +
+      "pivots scanned daily, buy at a local minimum / sell at a local " +
+      "maximum, one action per 5-day window.",
+  },
 ];
 
 export default function SignalsPage() {

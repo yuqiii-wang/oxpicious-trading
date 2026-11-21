@@ -3,9 +3,11 @@
   "max_parallel": 1,
   "included_parallel_services": [],
   "excluded_parallel_services": [],
+  "is_resident": false,
   "freq": "daily",
+  "priority": 170,
   "schedule": "every A-share trading date, in the 16:00 nightly chain after downloads.stock.sse.trend, before builds_daily",
-  "notes": "Latest-missing-date PE auto-load for SSE stocks: appends the latest biz date's 静态市盈率 row to temps/sse_archive/{code}_pe.csv (builds.stock auto-loads the missing tail). Keeps the stock-PE estimation anchors fresh WITHOUT scheduling the downloads.stock.sse.archive crawl (which stays a manual/once backfill for gap anchors).",
+  "notes": "Latest-missing-date PE auto-load for the IMPORTANT SSE stocks only (curated importance rank 0-1, the shared load_important_stocks universe): appends the latest biz date's 静态市盈率 row to temps/sse_archive/{code}_pe.csv (builds.stock auto-loads the missing tail). Keeps the important stocks' estimation anchors fresh day-to-day; the gap-anchor crawl (quarterly snapshots + big-jump dates) is the weekly downloads.stock.sse.trend_pe service since 2026-11-20 — the archive module's former PE half, migrated to the trend side (the shared 成交概况 fetch helpers + universe loader now live there). Non-important stocks keep their fetched PE history but stop getting fresh anchors.",
   "source_ref": "scripts/orchestration/downloads_daily.json",
-  "updated_at": "2026-11-16T02:20:00.000000+00:00"
+  "updated_at": "2026-11-20T15:25:15.716730+00:00"
 }

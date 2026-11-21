@@ -140,7 +140,8 @@ export function buildKgGraphOption(
         color,
         width,
         opacity: 0.55,
-        curveness: 0.12,
+        // Straight edges (curveness 0, the Thread Graph's shape).
+        curveness: 0,
       },
       info,
     }));

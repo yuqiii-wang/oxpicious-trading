@@ -29,8 +29,10 @@ class TokenizationBackend(ModelBackend):
     segmentation batches in, word lists out (see :meth:`segment_batch`)."""
 
     def __init__(self, spec: ModelBackendSpec,
-                 default_idle_offload_s: float) -> None:
-        super().__init__(spec, default_idle_offload_s)
+                 default_idle_offload_s: float,
+                 default_idle_unload_s: float) -> None:
+        super().__init__(spec, default_idle_offload_s,
+                         default_idle_unload_s)
         from _common.tokenization import ChineseWordSegmenter
 
         model_dir = spec.resolved_path()
@@ -53,6 +55,9 @@ class TokenizationBackend(ModelBackend):
 
     def _offload(self) -> None:
         self._engine.offload()
+
+    def _unload(self) -> None:
+        self._engine.unload()
 
     def _warmup(self) -> None:
         # One real forward so CUDA kernels/cuDNN autotune land before the

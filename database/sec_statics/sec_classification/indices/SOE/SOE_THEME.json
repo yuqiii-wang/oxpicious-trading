@@ -128,20 +128,6 @@
     ],
     "is_industry_not_strategy": false
   },
-  "DUMMY_SOE_THEME": {
-    "name": "央企/国企综合指数",
-    "exchange": null,
-    "sector_id": "SOE",
-    "industry_id": "SOE_THEME",
-    "tags": [
-      {
-        "sector_id": "SOE",
-        "industry_id": "SOE_THEME"
-      }
-    ],
-    "is_industry_not_strategy": false,
-    "is_dummy": true
-  },
   "H11153": {
     "name": "内地国有",
     "exchange": "HK",

@@ -60,7 +60,28 @@ DEFAULT_TIMEOUT_S = 4 * 3600.0
 instead of hanging the maintainer's daily thread forever."""
 
 ROBOCOPY_EXE = "robocopy.exe"
-"""WSL interop resolves it on the Windows PATH (/mnt/c/WINDOWS/system32)."""
+"""Robocopy's argv form — resolved at import (see :func:`_robocopy_exe`)."""
+
+
+def _robocopy_exe() -> str:
+    """The robocopy.exe path to exec.
+
+    ``robocopy.exe`` bare works through the WSL interop ONLY while the
+    Windows PATH (/mnt/c/WINDOWS/system32) is inherited into this
+    process's environment — an interop hiccup left it unresolvable and
+    the batch died as "spawn failed: No such file or directory"
+    (2026-11-19 stats_db_backup). Resolve eagerly: shutil.which first
+    (PATH working), else the canonical absolute interop path when it
+    exists, else the bare name (so the spawn error still names it)."""
+    import shutil
+
+    found = shutil.which(ROBOCOPY_EXE)
+    if found:
+        return found
+    canonical = "/mnt/c/WINDOWS/system32/robocopy.exe"
+    if os.path.exists(canonical):
+        return canonical
+    return ROBOCOPY_EXE
 
 _RC_MISMATCH_BIT = 4   # exit 4-7: some files mismatched (present, differ)
 _RC_FAILED_BIT = 8     # exit 8+: copy failures (16 fatal included)
@@ -155,7 +176,7 @@ class RobocopyMirror:
         return record
 
     def _build_command(self, max_age: Optional[date]) -> list[str]:
-        cmd = [ROBOCOPY_EXE, self._src_win, self._dest_win,
+        cmd = [_robocopy_exe(), self._src_win, self._dest_win,
                # /E the whole tree; DAT timestamps preserved (the
                # dest-compare + /MAXAGE correctness); /MT the
                # disk-speed workers; /BYTES exact byte counts in the

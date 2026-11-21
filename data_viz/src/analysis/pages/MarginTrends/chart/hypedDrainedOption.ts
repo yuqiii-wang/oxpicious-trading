@@ -106,7 +106,7 @@ export function buildHypedDrainedOption(args: HypedDrainedArgs): EChartsOption |
       itemGap: 12,
       top: 0,
       right: 0,
-      textStyle: { color: c.textColor, fontSize: 10 },
+      textStyle: { fontSize: 10 }, // colors inherit from commonLegend
       data: [DRAINED, HYPED],
     },
     grid: { left: 88, right: 64, top: 28, bottom: 26 },

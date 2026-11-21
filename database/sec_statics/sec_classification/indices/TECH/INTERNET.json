@@ -79,20 +79,6 @@
     ],
     "is_industry_not_strategy": true
   },
-  "DUMMY_INTERNET": {
-    "name": "互联网综合指数",
-    "exchange": null,
-    "sector_id": "TECH",
-    "industry_id": "INTERNET",
-    "tags": [
-      {
-        "sector_id": "TECH",
-        "industry_id": "INTERNET"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
-  },
   "H11136": {
     "name": "中国互联网",
     "exchange": "HK",

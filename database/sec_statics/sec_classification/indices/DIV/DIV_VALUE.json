@@ -33,20 +33,6 @@
     ],
     "is_industry_not_strategy": false
   },
-  "DUMMY_DIV_VALUE": {
-    "name": "红利价值/高息综合指数",
-    "exchange": null,
-    "sector_id": "DIV",
-    "industry_id": "DIV_VALUE",
-    "tags": [
-      {
-        "sector_id": "DIV",
-        "industry_id": "DIV_VALUE"
-      }
-    ],
-    "is_industry_not_strategy": false,
-    "is_dummy": true
-  },
   "H30270": {
     "name": "红利价值",
     "exchange": "HK",

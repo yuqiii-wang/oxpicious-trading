@@ -5,7 +5,9 @@
 --  config grid entry produced a signal, the reversal action, and the
 --  intermediate-result cache's tenant. Owning tables:
 --  analysis_signals.signal_thresholds / history_signals / signal_curves,
---  analysis_signals.analysis_cache, live.live_signals (action).
+--  analysis_signals.analysis_cache, live.live_signals (action),
+--  analysis.oracle_signals (oracle_action — the hindsight oracle tier,
+--  DECOUPLED from the rule tier).
 -- ============================================================================
 
 INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
@@ -19,6 +21,17 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     ('action',     0, 'buy',    0),
     ('action',     1, 'sell',   1),
     ('action',     2, 'wait',   2),
+    -- oracle_action (2026-11-19): the hindsight oracle tier's action
+    -- vocabulary (analysis.oracle_signals.action). v2 pivot grammar
+    -- (same-day refactor): 0 buy (an ORDER-5 local min — the +-5-row
+    -- window minimum), 1 sell (a local max); 2 no_action was the v1
+    -- era's explicit stand-down decision row (fluctuating path /
+    -- failed long-horizon extremum gate) — decode-only now, v2 emits
+    -- only 0/1. Its own domain (not the rule tier's 'action' 2=wait,
+    -- whose observational semantics do not apply)
+    ('oracle_action', 0, 'buy',       0),
+    ('oracle_action', 1, 'sell',      1),
+    ('oracle_action', 2, 'no_action', 2),
     -- signal_type: the analysis_signals detection family (converted
     -- 2026-10-10; registry order = pipeline order)
     ('signal_type', 0, 'mov_rsi',  0),
@@ -133,11 +146,16 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     ('signal_sub_type', 302, 'rsi10_3pct', 302),
     ('signal_sub_type', 304, 'rsi10_5pct', 304),
     ('signal_sub_type', 309, 'rsi10_10pct', 309),
+    -- the Wilder failure-swing pattern subs (2026-11-19, the RSI canon
+    -- study's graduate): just past the tail-ordinal decade, within the
+    -- window's century block
+    ('signal_sub_type', 310, 'rsi10_fswing', 310),
     ('signal_sub_type', 400, 'rsi14_1pct', 400),
     ('signal_sub_type', 401, 'rsi14_2pct', 401),
     ('signal_sub_type', 402, 'rsi14_3pct', 402),
     ('signal_sub_type', 404, 'rsi14_5pct', 404),
     ('signal_sub_type', 409, 'rsi14_10pct', 409),
+    ('signal_sub_type', 410, 'rsi14_fswing', 410),
     ('signal_sub_type', 500, 'rsi20_1pct', 500),
     ('signal_sub_type', 501, 'rsi20_2pct', 501),
     ('signal_sub_type', 502, 'rsi20_3pct', 502),
@@ -666,6 +684,46 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     ('signal_sub_type', 6130, 'crowd_tech_washout', 6130),
     ('signal_sub_type', 6131, 'crowd_tech_euphoria', 6131),
     ('signal_sub_type', 6132, 'crowd_tech_euphoria_div', 6132),
+    -- signal_type 12 (2026-11-18): the volatility family — the
+    -- realized-volatility panel (analysis.volatility, the daily
+    -- per-security vol build) as rule cells: the LEVERAGE-EFFECT
+    -- tails (realized-vol peaks cluster at price troughs — "local
+    -- top volatility signals local low price"). spike BUY = a vol
+    -- axis above its own trailing top-q adaptive tail with price
+    -- below its 5-rows-ago close (the fear leg); crush SELL = below
+    -- its bottom tail with price within 2% of its trailing-60-row
+    -- high (complacency at the top, exit timing). Data-driven
+    -- universe (the codes with vol rows — index only while the
+    -- panel's run scope is the study indices).
+    ('signal_type', 12, 'volatility', 12),
+    -- the volatility family's sub types: the FIRST grid (block 6200+,
+    -- the all-history 2520d top-{1,2,3}% tails) is RETIRED the same
+    -- day it shipped (2026-11-18, user-directed "too few signals — a
+    -- rough check on 000001 volatility should have 2 dozens local
+    -- volatility spikes": the whole-history tails are degenerate on
+    -- the panel's ~7y history, only the 2024-10 mega-cluster ever
+    -- breaching them — 000001 fired 4 events; the labels stay
+    -- decode-only for the purged first build's performance snapshots)
+    ('signal_sub_type', 6200, 'hv20_1pct', 6200),
+    ('signal_sub_type', 6201, 'hv20_2pct', 6201),
+    ('signal_sub_type', 6202, 'hv20_3pct', 6202),
+    ('signal_sub_type', 6203, 'ewma_1pct', 6203),
+    ('signal_sub_type', 6204, 'ewma_2pct', 6204),
+    ('signal_sub_type', 6205, 'ewma_3pct', 6205),
+    -- the volatility family's LOCAL-tail sub types (block 6210+):
+    -- the (axis × nested tail pct) grid over the trailing-252d
+    -- adaptive quantiles (the panel's own pct_rank_252 convention),
+    -- both actions per sub type — hv20 = the 20-row close-to-close
+    -- realized vol, ewma = the RiskMetrics fast vol (λ=0.94); the
+    -- tail pct is the deepest claiming tail (5 ⊃ 10 ⊃ 15 ⊃ 20)
+    ('signal_sub_type', 6210, 'hv20_5pct', 6210),
+    ('signal_sub_type', 6211, 'hv20_10pct', 6211),
+    ('signal_sub_type', 6212, 'hv20_15pct', 6212),
+    ('signal_sub_type', 6213, 'hv20_20pct', 6213),
+    ('signal_sub_type', 6214, 'ewma_5pct', 6214),
+    ('signal_sub_type', 6215, 'ewma_10pct', 6215),
+    ('signal_sub_type', 6216, 'ewma_15pct', 6216),
+    ('signal_sub_type', 6217, 'ewma_20pct', 6217),
     -- analysis_cache_kind: analysis_signals.analysis_cache.kind — the
     -- generic intermediate-result cache's tenant (which analysis owns
     -- the row's cache jsonb)
@@ -692,3 +750,121 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     --   signal_rule_ids only — they never are portfolio rows themselves.
     ('portfolio_sub_type', 0, 'trio_wash', 0),
     ('portfolio_sub_type', 1, 'spread', 1);
+
+-- no_action_reason (2026-11-18): the NO-ACTION overlay tier's
+-- reason vocabulary — analysis_signals.no_action_signals.
+-- reason_code, WHY a FIRED POSITIVE day carries the day-level
+-- negative-confidence mark (engines/no_action, the sibling of the
+-- reject tier's negative cell means). The mark advises against the
+-- row's OWN action at that price, never the inverse.
+INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
+    -- 0 fatigue (cross-family): >= N DISTINCT FIRED DAYS of the
+    -- (code, signal_type, action) within the trailing window of
+    -- the code's own traded rows — genuine chop (the bar crossed
+    -- and re-crossed); the marginal signal in the burst adds no
+    -- information the first N did not carry
+    ('no_action_reason', 0, 'fatigue', 0),
+    -- 1 rsi_bandwalk_sell (mov_rsi, NO SELL): a top-tail trigger
+    -- mid-rise with a positively-agreeing Kaufman guard — the band
+    -- walk; overbought persists while trending (tops continue, the
+    -- sell side pooled negative for every window)
+    ('no_action_reason', 1, 'rsi_bandwalk_sell', 1),
+    -- 2 boll_squeeze_breakdown (bollinger, NO BUY): a -k breach out
+    -- of a squeezed band — compression -> breakdown CONTINUES
+    -- (measured 2026-10-16, pooled -0.15%): a momentum event
+    -- wearing a mean-reversion costume
+    ('no_action_reason', 2, 'boll_squeeze_breakdown', 2),
+    -- 3 boll_bandwalk_sell (bollinger, NO SELL): a +k breach riding
+    -- an EXPANDING band with a rising SMA20 — Bollinger's own
+    -- band-walk warning, continuation not exhaustion
+    ('no_action_reason', 3, 'boll_bandwalk_sell', 3),
+    -- 4 ma_whipsaw (ma_cross, NO BUY): a reclaim inside a recent
+    -- below->above flip chop — a range wearing a new run
+    ('no_action_reason', 4, 'ma_whipsaw', 4),
+    -- 5 rebound_pe_deadzone (rebound, NO BUY): a capitulation
+    -- trigger at MIDDLE PE — the 2026-10-26 barbell's dead zone
+    -- (cheap20 +6.64% fwd20 / rich20 +6.46% fwd60 / middle no
+    -- 60d edge)
+    ('no_action_reason', 5, 'rebound_pe_deadzone', 5),
+    -- 6 macd_chop (macd, NO BUY / NO SELL): a noise-scale cross
+    -- (|histogram| below its own trailing p25) inside rapid
+    -- cross-flip alternation — the whipsaw remainder past the K=5
+    -- absorb
+    ('no_action_reason', 6, 'macd_chop', 6);
+
+-- signal_amplifier (2026-11-18; the 2026-11-20 two-level split made
+-- this the SUB-TYPE axis): the OHLCV-anatomy amplifier vocabulary —
+-- analysis_signals.signal_amplification_history.sub_type (and the
+-- bound amplifiers[] inside signal_amplification_rules.rule_params)
+-- when the parent amplifier_type = signal_amplifier_type 'ohlcv' (0).
+-- The close-only signal families' intraday strengthener: each code is
+-- a recurring day-level OHLCV anatomy (gap/wick/volume shape) that
+-- AMPLIFIES or DISCOUNTS the bound signal families' claims on that
+-- day. Code order groups the BUY-side reversion amplifiers first, then
+-- the continuation / SELL-side exit amplifiers, then the discount.
+INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
+    -- 0 flush_washout (探底洗出, BUY reversion): the lower wick >= its
+    -- trailing-252d q90 (the 探底回升 flush) on a down close with heavy
+    -- participation (amt_ratio_20 >= 1.5) — the capitulation washout
+    -- shape; amplifies the reversion families' BUY
+    ('signal_amplifier', 0, 'flush_washout', 0),
+    -- 1 gap_reclaim (低开收复, BUY reversion): down open (open <=
+    -- prev_close * (1 - GAP_RECLAIM_OPEN_BAR)) reclaimed by the close
+    -- (close >= prev_close) — the intraday reversal of an overnight
+    -- flush; amplifies the reversion families' BUY
+    ('signal_amplifier', 1, 'gap_reclaim', 1),
+    -- 2 breakout_confirm (放量突破确认, BUY continuation): close above
+    -- the prior valid day's high with heavy participation and a strong
+    -- close (close_pos >= 0.7) — the volume-confirmed breakout;
+    -- amplifies the continuation families' BUY
+    ('signal_amplifier', 2, 'breakout_confirm', 2),
+    -- 3 spike_blowoff (冲高回落放量, SELL exit): the upper wick >= its
+    -- trailing-252d q90 (冲高回落) with the close fading into the
+    -- bottom 30% of the day's range on heavy participation — the
+    -- blow-off shape; amplifies the exit-timing families' SELL
+    ('signal_amplifier', 3, 'spike_blowoff', 3),
+    -- 4 exhaustion_gap (高开低走竭尽, SELL exit): up open (open >=
+    -- prev_close * (1 + GAP_RECLAIM_OPEN_BAR)) on a red close (close <
+    -- open) — the exhaustion gap that failed intraday; amplifies the
+    -- exit-timing families' SELL
+    ('signal_amplifier', 4, 'exhaustion_gap', 4),
+    -- 5 dry_rebound (缩量弱反弹, BUY DISCOUNT): an up close on SHRINKING
+    -- participation (amt_ratio_20 <= 0.8) — the 缩量弱反弹; the rebound
+    -- is fade-prone, so the bound families' BUY is DISCOUNTED
+    -- (negative amplify_bp) rather than amplified
+    ('signal_amplifier', 5, 'dry_rebound', 5);
+
+-- signal_amplifier_type (2026-11-20): the amplifier PARENT TYPE axis —
+-- analysis_signals.signal_amplification_history.amplifier_type (and the
+-- bound amplifiers[] inside signal_amplification_rules.rule_params):
+-- which DATA DOMAIN an amplifier's day-level anatomy comes from. The
+-- specific pattern under each type is the sub_type column, decoded via
+-- 'signal_amplifier' when ohlcv, 'signal_amplifier_margin' when margin
+-- (the external_resource_audit resource_type/sub_type precedent).
+INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
+    -- 0 ohlcv: the K-line day anatomy amplifiers (gap / wick / volume
+    -- shapes) — the sub types decode via 'signal_amplifier'
+    ('signal_amplifier_type', 0, 'ohlcv', 0),
+    -- 1 margin: the 融资融券 margin-balance level amplifiers (rz_balance
+    -- vs its own trailing quantile bars) — the sub types decode via
+    -- 'signal_amplifier_margin'
+    ('signal_amplifier_type', 1, 'margin', 1);
+
+-- signal_amplifier_margin (2026-11-20): the MARGIN sub-type vocabulary
+-- (the 'signal_amplifier_type' = 1 / margin branch) — the 融资余额
+-- (rz_balance; indices read the analysis.margin_index_series weighted
+-- aggregate) LEVEL vs its own trailing-window quantile bars. LOW
+-- balance = leverage washed out (low risk, price already lower) —
+-- amplifies the reversion families' BUY; HIGH balance = leverage
+-- crowding (fragility) — amplifies the exit-timing families' SELL.
+INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
+    -- 0 margin_washout (融资余额低位, BUY reversion): rz_balance at/below
+    -- its trailing-252d q10 bar (>= 120 obs, the day's own row included
+    -- — post-close record) — leverage de-risked; low risk + lower
+    -- price, amplifies the reversion families' BUY
+    ('signal_amplifier_margin', 0, 'margin_washout', 0),
+    -- 1 margin_crowding (融资余额高位, SELL exit): rz_balance at/above
+    -- its trailing-252d q90 bar (>= 120 obs, the day's own row included
+    -- — post-close record) — leverage crowding / fragility; amplifies
+    -- the exit-timing families' SELL
+    ('signal_amplifier_margin', 1, 'margin_crowding', 1);

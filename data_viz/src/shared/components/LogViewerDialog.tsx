@@ -55,6 +55,9 @@ interface LogViewerDialogProps {
   log: LogFileView | null;
   loading: boolean;
   error: string | null;
+  /** Pre-filled contains-filter — e.g. a caution row's log_context
+   *  keyword, so the dialog opens already narrowed to the error lines. */
+  initialFilter?: string;
 }
 
 function fmtSize(bytes: number): string {
@@ -71,6 +74,7 @@ export default function LogViewerDialog({
   log,
   loading,
   error,
+  initialFilter,
 }: LogViewerDialogProps) {
   // Contains-filter over the log's lines — non-matching lines are hidden
   // (the filter narrows a large tail, it does not search the whole file).
@@ -86,13 +90,14 @@ export default function LogViewerDialog({
     el.scrollTop = filter.trim() === "" ? el.scrollHeight : 0;
   }, [log, filter]);
 
-  // Reset the transient UI state whenever the dialog reopens on a new log.
+  // Reset the transient UI state whenever the dialog reopens on a new log
+  // (the filter starts at initialFilter — the caller's landing keyword).
   useEffect(() => {
     if (open) {
-      setFilter("");
+      setFilter(initialFilter?.trim() ?? "");
       setCopied(false);
     }
-  }, [open, log]);
+  }, [open, log, initialFilter]);
 
   const filterActive = filter.trim() !== "";
   const { display, matchLines } = useMemo(() => {

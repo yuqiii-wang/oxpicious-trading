@@ -1,0 +1,13 @@
+{
+  "service": "analysis.oracle_signals",
+  "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
+  "is_resident": false,
+  "freq": "weekly",
+  "priority": 60,
+  "schedule": "weekly tier in the 16:00 nightly chain (analysis_weekly, after analysis_daily) — the pipeline's own weekly gate (config.WEEKLY_GATE_DAYS) no-ops runs until the last build is >= 6 calendar days old",
+  "notes": "Hindsight oracle local-extreme actions for the 10 study indices (analysis.oracle_signals → analysis.oracle_signals; DECOUPLED from the analysis_signals rule tier): local extremes of the 5-bar window [date-2, date+2] scanned with a 1-day stride, ONE action per 5-consecutive-row window (first candidate claims; a more extreme same-side candidate within the unit upgrades the placement) — buy at a local min, sell at a local max, next opposite action as the swing target (v3 grammar 2026-11-19; the v2 +-5 windows retired — they left real peaks unmarked whenever a higher close sat within 5 rows). A candidate needs its 2 right-side bars, so the trail ends 2 bars before the frontier; the frontier unit's placement can upgrade forward, so incremental runs rewrite each code's revisable tail. --force deletes the sec_type's rows and COPY-rebuilds; --code recomputes one security. Serves the Signals Oracle page (GET /api/analysis/oracle/*).",
+  "source_ref": "scripts/orchestration/analysis_weekly.json",
+  "updated_at": "2026-11-20T15:25:15.716730+00:00"
+}

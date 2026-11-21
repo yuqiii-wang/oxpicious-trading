@@ -32,19 +32,5 @@
       }
     ],
     "is_industry_not_strategy": true
-  },
-  "DUMMY_INFO_SEC": {
-    "name": "信息安全综合指数",
-    "exchange": null,
-    "sector_id": "TECH",
-    "industry_id": "INFO_SEC",
-    "tags": [
-      {
-        "sector_id": "TECH",
-        "industry_id": "INFO_SEC"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
   }
 }

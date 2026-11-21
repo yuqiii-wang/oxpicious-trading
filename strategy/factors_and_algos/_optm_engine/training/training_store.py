@@ -7,8 +7,9 @@ Lifecycle per Train Model invocation:
      BEFORE the study starts (a crashed run stays visible in the UI).
   2. the ``NestedTrainer`` runs, collecting ``trial_records`` (one dict
      per evaluated point, tagged ``loss_type`` 'set_a_omega' /
-     'set_b_calmar') and ``log_lines`` in memory — the study loop is
-     synchronous, DB writes are async, so records are buffered.
+     'set_b_calmar' — 'set_c_calmar' in mixed mode) and ``log_lines``
+     in memory — the study loop is synchronous, DB writes are async, so
+     records are buffered.
   3. ``finish_training_run``  — flip the header to 'completed'/'failed'
      with the outcome (best params + metrics + Kelly + captured log).
   4. ``insert_training_trials`` — bulk-insert the buffered records.
@@ -100,6 +101,14 @@ async def finish_training_run(
     ``result`` is a ``trainer.TrainingResult`` (completed) or
     None (failed). JSON cells that would be None are written as SQL
     NULL (NULL::jsonb beats 'null'::jsonb for the UI).
+
+    The ``full_series_metrics`` cell doubles as the final REPORT bundle
+    (no new DDL — the column was already a free JSONB "report only"
+    field): when the run carries a train-gate comparison or a PBO
+    diagnostic it is written as
+    ``{"full_series": <flat bundle>, "gate": <block>, "pbo": <diag>}``;
+    with neither present the flat full-series bundle is written exactly
+    as before (the pre-gate shape, untouched consumers unaffected).
     """
     if result is not None:
         winner = result.winner_trial_no
@@ -110,8 +119,17 @@ async def finish_training_run(
         a_m = _jsonify(result.best_a_metrics)
         b_m = _jsonify(result.best_b_metrics)
         kelly = _jsonify(result.kelly) if result.kelly is not None else None
-        full = (_jsonify(result.full_series_metrics)
-                if result.full_series_metrics is not None else None)
+        gate = result.gate_metrics
+        pbo = result.pbo
+        if gate is None and pbo is None:
+            full = (_jsonify(result.full_series_metrics)
+                    if result.full_series_metrics is not None else None)
+        else:
+            full = _jsonify({
+                "full_series": result.full_series_metrics,
+                "gate": gate,
+                "pbo": pbo,
+            })
     else:
         winner = n_cand = grid = None
         best = a_p = b_p = a_m = b_m = kelly = full = None

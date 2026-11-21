@@ -423,5 +423,28 @@ def _record_read(template_key: str, action_key: str, facts: Any,
             output_payload=output_payload,
             duration_ms=duration_ms,
             is_failed=is_failed, error=error)
+        # The caution trail (monitor.caution_log, source=ai): a host
+        # failure is an ERROR row; a below-floor verdict (the lane rode
+        # fail-soft on soft evidence) is a WARNING row. Both dedupe per
+        # lane — one open row per lane bumped on recurrence, not a row
+        # per read (soft-evidence lanes read constantly).
+        from _common.caution_log import record as _caution_record
+        if is_failed:
+            _caution_record(
+                "ai", "error", f"jev lane unavailable: {template_key}",
+                dedupe_key=f"jev-unavailable:{template_key}",
+                detail={"lane": template_key, "error": (error or "")[:400]},
+                service="llm_agents.deep_agents")
+        elif decision is not None and not decision.ok:
+            _caution_record(
+                "ai", "warning",
+                f"jev read below confidence floor: {template_key} "
+                f"({decision.note})",
+                dedupe_key=f"jev-below-floor:{template_key}",
+                detail={"lane": template_key,
+                        "action": decision.action,
+                        "confidence": decision.confidence,
+                        "note": decision.note},
+                service="llm_agents.deep_agents")
     except Exception:  # noqa: BLE001 — the recorded step never breaks the lane
         logger.debug("aux decision step unavailable", exc_info=True)

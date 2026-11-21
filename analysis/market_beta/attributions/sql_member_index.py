@@ -15,7 +15,8 @@ Two-phase implementation using a mapping table:
 
 Two variants of phase 2:
   _FULL: no date filter, plain INSERT (TRUNCATE already issued).
-  _INCREMENTAL: ``ibs.date = ANY($1::date[])`` + plain INSERT.
+  _INCREMENTAL: ``ibs.date = ANY($1::date[])`` + ON CONFLICT DO NOTHING
+    (idempotency guard against racing / partially-committed runs).
 """
 from __future__ import annotations
 
@@ -173,22 +174,15 @@ def _build_member_index_map_sql(
     ) + on_conflict
 
 
-# ON CONFLICT clause for the map populate INSERT. The map table is
-# truncated in force mode, but in incremental mode existing rows from a
-# previous run would cause a UniqueViolationError on
-# pk_industry_member_index_map (industry_id, benchmark_code). DO UPDATE
-# refreshes the composition-derived weights (which only change when
-# sec_composition snapshots are refreshed).
-_MAP_ON_CONFLICT = """
-ON CONFLICT (industry_id, benchmark_code) DO UPDATE SET
-    industry_shared_weight  = EXCLUDED.industry_shared_weight,
-    benchmark_shared_weight = EXCLUDED.benchmark_shared_weight
-"""
+# ON CONFLICT clause: NONE — the map is TRUNCATE+repopulated (see the
+# runner's member phase) so the populate is AUTHORITATIVE: pairs that
+# stopped being members (an index reclassified out of the industry, or a
+# code that became a broad-market benchmark) leave the map instead of
+# lingering as stale rows that would re-insert member-grain attribution
+# rows the broad-market INSERT now owns (PK overlap, 2026-11-20).
 
 # All industries at once.
-MEMBER_INDEX_MAP_POPULATE_SQL = _build_member_index_map_sql(
-    on_conflict=_MAP_ON_CONFLICT
-)
+MEMBER_INDEX_MAP_POPULATE_SQL = _build_member_index_map_sql()
 
 
 # --- Phase 2: expand mapping table to per-date rows (simple JOIN) --------
@@ -231,8 +225,14 @@ def _build_member_index_insert_sql(
 # Full recompute (all industries at once) — plain INSERT.
 MEMBER_INDEX_INSERT_SQL_FULL = _build_member_index_insert_sql()
 
-# Incremental (all industries at once) — date filter, plain INSERT (target
-# dates are pruned to genuinely missing ones + transaction-wrapped).
+# Incremental (all industries at once) — date filter, ON CONFLICT DO
+# NOTHING (the idempotency guard against racing / partially-committed
+# previous runs; values are deterministic, so a skipped row is a no-op —
+# same rationale as sql_broad_market._ON_CONFLICT_DO_NOTHING).
 MEMBER_INDEX_INSERT_SQL_INCREMENTAL = _build_member_index_insert_sql(
     date_filter="AND ibs.date = ANY($1::date[])",
+    on_conflict=(
+        "\nON CONFLICT (industry_id, benchmark_code, date, "
+        "attribution_type) DO NOTHING"
+    ),
 )

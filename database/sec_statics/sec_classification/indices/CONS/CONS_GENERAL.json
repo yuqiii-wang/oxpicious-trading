@@ -261,19 +261,5 @@
       }
     ],
     "is_industry_not_strategy": true
-  },
-  "DUMMY_CONS_GENERAL": {
-    "name": "消费综合指数",
-    "exchange": null,
-    "sector_id": "CONS",
-    "industry_id": "CONS_GENERAL",
-    "tags": [
-      {
-        "sector_id": "CONS",
-        "industry_id": "CONS_GENERAL"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
   }
 }

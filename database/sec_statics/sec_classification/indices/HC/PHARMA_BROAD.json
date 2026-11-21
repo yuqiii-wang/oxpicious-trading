@@ -240,20 +240,6 @@
     ],
     "is_industry_not_strategy": true
   },
-  "DUMMY_PHARMA_BROAD": {
-    "name": "医药综合指数",
-    "exchange": null,
-    "sector_id": "HC",
-    "industry_id": "PHARMA_BROAD",
-    "tags": [
-      {
-        "sector_id": "HC",
-        "industry_id": "PHARMA_BROAD"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
-  },
   "H30178": {
     "name": "医疗保健",
     "exchange": "HK",

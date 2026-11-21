@@ -8,6 +8,7 @@ import { Router, type Request, type Response } from "express";
 import { HttpError } from "../../lib/http.js";
 import {
   deleteServiceConfigEntry,
+  deriveServicePriority,
   readDefaultServiceConfig,
   readServiceConfig,
   validParallelServiceEntries,
@@ -21,11 +22,13 @@ const router = Router();
 //  Service config — service_config/ tree
 // ---------------------------------------------------------------------------
 
-/** Closed freq vocabulary (scripts/*.sh cadences + the fallback), shared
- *  by validation here and the editor's dropdown in the UI. */
+/** Closed freq vocabulary for NON-RESIDENT tasks (the one-time start
+ *  cadence; the retired "always" labeling moved to is_resident
+ *  2026-11-20), shared by validation here and the editor's dropdown in
+ *  the UI. */
 const FREQ_VALUES = [
-  "always",
   "daily",
+  "weekly",
   "monthly",
   "quarterly",
   "semiannually",
@@ -40,7 +43,13 @@ export interface ServiceConfigPayload {
   maxParallelRuns: number | null;
   includedParallelServices: string[];
   excludedParallelServices: string[];
-  freq: string;
+  /** true = an always-live resident daemon (freq null); false = a
+   *  one-time task whose freq orchestrates when it starts. */
+  isResident: boolean;
+  /** The one-time task's start cadence — null for a resident. */
+  freq: string | null;
+  /** The orchestration give-way rank (higher = wins conflicts). */
+  priority: number;
   schedule: string | null;
   notes: string | null;
   sourceRef: string;
@@ -54,7 +63,9 @@ function toServicePayload(e: ServiceConfigEntry): ServiceConfigPayload {
     maxParallelRuns: e.max_parallel_runs,
     includedParallelServices: e.included_parallel_services,
     excludedParallelServices: e.excluded_parallel_services,
+    isResident: e.is_resident,
     freq: e.freq,
+    priority: e.priority,
     schedule: e.schedule,
     notes: e.notes,
     sourceRef: e.source_ref,
@@ -99,9 +110,35 @@ function parseServiceEntry(body: unknown): ServiceConfigEntry {
       throw new HttpError(400, "INVALID_PARAM","maxParallelRuns must be an integer >= 1 or null");
     }
   }
-  const freq = typeof b.freq === "string" ? b.freq : "";
-  if (!(FREQ_VALUES as readonly string[]).includes(freq)) {
-    throw new HttpError(400, "INVALID_PARAM",`freq must be one of: ${FREQ_VALUES.join(" | ")}`);
+  // The resident flag: true = always-live daemon (no freq); false =
+  // one-time task (freq required). Must be an explicit boolean.
+  const isResident = b.isResident;
+  if (typeof isResident !== "boolean") {
+    throw new HttpError(400, "INVALID_PARAM","isResident must be true or false");
+  }
+  let freq: string | null = null;
+  if (isResident) {
+    if (b.freq != null) {
+      throw new HttpError(400, "INVALID_PARAM","freq must be null for a resident (isResident true — an always-live service has no cadence)");
+    }
+  } else {
+    freq = typeof b.freq === "string" ? b.freq : "";
+    if (!(FREQ_VALUES as readonly string[]).includes(freq)) {
+      throw new HttpError(400, "INVALID_PARAM",`freq must be one of: ${FREQ_VALUES.join(" | ")} (or null when isResident)`);
+    }
+  }
+  // The orchestration give-way rank: an optional integer >= 0 — absent
+  // (or invalid) derives from isResident/freq + service domain (same
+  // fallback as the tree read path; keep an explicit value in sync with
+  // the cadence).
+  let priority: number;
+  if (b.priority == null) {
+    priority = deriveServicePriority(service, freq, isResident);
+  } else {
+    priority = Number(b.priority);
+    if (!Number.isInteger(priority) || priority < 0) {
+      throw new HttpError(400, "INVALID_PARAM","priority must be an integer >= 0 (or null to derive from freq)");
+    }
   }
   // Parallel-services lists: arrays of rooted dotted prefixes that must
   // NAME a real scope / sub-scope path / service — the valid-entry set is
@@ -164,7 +201,9 @@ function parseServiceEntry(body: unknown): ServiceConfigEntry {
     max_parallel_runs: maxParallelRuns,
     included_parallel_services: included,
     excluded_parallel_services: excluded,
+    is_resident: isResident,
     freq,
+    priority,
     schedule: strOrNull(b.schedule, "schedule"),
     notes: strOrNull(b.notes, "notes"),
     source_ref: sourceRef,

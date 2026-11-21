@@ -48,16 +48,17 @@ async def discover_available_codes(conn, sec_type: str) -> List[str]:
 
 
 # ---------------------------------------------------------------------------
-# strategy_seq reads — list (seq_id, code) pairs for the risk pipeline
+# strategy_seq reads — list (seq_id, code, strategy_name) rows for the risk
+# pipeline
 # ---------------------------------------------------------------------------
 async def fetch_strategy_seqs(
     conn,
     sec_type: str,
     codes: list = None,
     strategy_name: str = None,
-) -> List[Tuple[int, str]]:
-    """Return [(seq_id, code), ...] for the given sec_type, optionally
-    filtered by a code list and/or a strategy_name.
+) -> List[Tuple[int, str, str]]:
+    """Return [(seq_id, code, strategy_name), ...] for the given sec_type,
+    optionally filtered by a code list and/or a strategy_name.
 
     strategy_identity is per-code (one row per (strategy, code) run), so this
     reads directly from strategy_identity — no JOIN to trade_decision needed.
@@ -66,13 +67,15 @@ async def fetch_strategy_seqs(
     sec_type (subject to the strategy_name filter). Used by the risk pipeline
     to know which seqs to compute risk metrics for. ``strategy_name`` scopes
     the result to one algo (e.g. 'macd') so a run for one
-    algo doesn't recompute risks for another algo's seqs.
+    algo doesn't recompute risks for another algo's seqs. Each row's own
+    strategy_name is returned as well so the risk grade can tell the modes
+    apart (the ORACLE mode grades structurally LITTLE).
     """
     name_clause = " AND strategy_name = $3" if strategy_name else ""
     if codes:
         if strategy_name:
             rows = await conn.fetch(
-                f"SELECT seq_id, code "
+                f"SELECT seq_id, code, strategy_name "
                 f"FROM strategy.strategy_identity "
                 f"WHERE sec_type = $1 AND code = ANY($2::text[]){name_clause} "
                 f"ORDER BY seq_id, code",
@@ -80,7 +83,7 @@ async def fetch_strategy_seqs(
             )
         else:
             rows = await conn.fetch(
-                "SELECT seq_id, code "
+                "SELECT seq_id, code, strategy_name "
                 "FROM strategy.strategy_identity "
                 "WHERE sec_type = $1 AND code = ANY($2::text[]) "
                 "ORDER BY seq_id, code",
@@ -92,7 +95,7 @@ async def fetch_strategy_seqs(
             # $3-numbered name_clause would leave $3 unbound and asyncpg
             # refuses to prepare the statement).
             rows = await conn.fetch(
-                "SELECT seq_id, code "
+                "SELECT seq_id, code, strategy_name "
                 "FROM strategy.strategy_identity "
                 "WHERE sec_type = $1 AND strategy_name = $2 "
                 "ORDER BY seq_id, code",
@@ -100,13 +103,13 @@ async def fetch_strategy_seqs(
             )
         else:
             rows = await conn.fetch(
-                "SELECT seq_id, code "
+                "SELECT seq_id, code, strategy_name "
                 "FROM strategy.strategy_identity "
                 "WHERE sec_type = $1 "
                 "ORDER BY seq_id, code",
                 sec_type,
             )
-    return [(r["seq_id"], r["code"]) for r in rows]
+    return [(r["seq_id"], r["code"], r["strategy_name"]) for r in rows]
 
 
 # ---------------------------------------------------------------------------

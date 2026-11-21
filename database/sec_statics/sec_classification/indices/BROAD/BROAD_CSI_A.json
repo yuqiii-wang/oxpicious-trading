@@ -50,19 +50,5 @@
       }
     ],
     "is_industry_not_strategy": false
-  },
-  "DUMMY_BROAD_CSI_A": {
-    "name": "中证A系列综合指数",
-    "exchange": null,
-    "sector_id": "BROAD",
-    "industry_id": "BROAD_CSI_A",
-    "tags": [
-      {
-        "sector_id": "BROAD",
-        "industry_id": "BROAD_CSI_A"
-      }
-    ],
-    "is_industry_not_strategy": false,
-    "is_dummy": true
   }
 }

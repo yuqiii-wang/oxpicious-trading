@@ -33,7 +33,7 @@ import {
   type ProcessStatus,
   type ServiceRunGuardResponse,
 } from "@/lib/api-client/monitor";
-import { fmtAge, fmtPeriod } from "./fmt";
+import { fmtAge, fmtPeriod } from "@/monitor/fmt";
 import { fmtTimeShanghai } from "@/shared/datetime";
 
 interface RunServiceDialogProps {
@@ -127,7 +127,7 @@ export default function RunServiceDialog({
           python -m {proc?.service}
         </Typography>
         <Typography variant="caption" color="text.secondary">
-          freq {proc?.freq}
+          {proc?.freq != null ? `freq ${proc.freq}` : "resident — always lives"}
           {proc?.schedule ? ` · ${proc.schedule}` : ""} — the spawn is
           fire-and-forget: the run shows up as “running” in the heartbeat
           table within ~60s and lands in the row's run history on exit.
@@ -157,7 +157,9 @@ export default function RunServiceDialog({
                   ? `${guard.freq} auto-skip window ${fmtPeriod(guard.periodMs)}`
                   : guard.skipRule === "any_success"
                     ? "freq once — any successful exit satisfies it"
-                    : `freq ${guard.freq} — no auto-skip`}
+                    : guard.freq != null
+                      ? `freq ${guard.freq} — no auto-skip`
+                      : "resident — always lives, no auto-skip"}
               </Typography>
             </Box>
           </Alert>

@@ -213,6 +213,17 @@ class LocalModelHostClient:
     def offload(self, model_id: str) -> Dict[str, Any]:
         return self._request("POST", f"/v1/models/{model_id}/offload")
 
+    def offload_all(self) -> Dict[str, Any]:
+        """Admin offload-all: move every loaded model's weights GPU →
+        CPU now — the manual save-memory action (already-offloaded
+        models are skipped; the answer lists what got offloaded)."""
+        return self._request("POST", "/v1/models/offload-all")
+
+    def unload(self, model_id: str) -> Dict[str, Any]:
+        """Admin unload: drop the RAM weights of an offloaded model
+        entirely (the next load cold-reads from disk)."""
+        return self._request("POST", f"/v1/models/{model_id}/unload")
+
     def segment_batch(
         self, texts: List[str], *, aggressive: bool = False,
         batch_size: Optional[int] = None,

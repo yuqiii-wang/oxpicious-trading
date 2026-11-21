@@ -3,6 +3,11 @@
 --     from the rules tier (15:00 day-close anchors; label-code columns
 --     decoded back to the labels the union speaks via the caller's
 --     labelDecodeSql fragments),
+--   • analysis_signals.no_action_signals — the NO-ACTION OVERLAY marks
+--     (2026-11-18): one row per (fired positive day x declined action x
+--     reason) — negative-confidence advice AGAINST the fired day's own
+--     action, OVERLAYING (never suppressing) its positive twin (the
+--     dedup partition carries is_no_action so both rows survive),
 --   • live.live_signals — the RECENT 20-TRADING-DAY SLICE ONLY: the
 --     recorded breaches inside (win_start, anchor]. Older days belong to
 --     the history record — the union never re-scans them.
@@ -18,7 +23,9 @@
 --   where_clause: fragment — the live-tier predicates joined " AND "
 --     (aliased s.; carries the caller's $n params)
 --   hist_where_clause: fragment — the history-tier predicates joined
---     " AND " (aliased s.; label-code literals + caller $n params)
+--     " AND " (aliased s.; applies to the history AND no-action tiers —
+--     both store the SMALLINT label codes; label-code literals + caller
+--     $n params)
 --   anchor_expr: fragment — "$n::date" (the viewed day) or
 --     "'infinity'::date"
 --   sec_type_decode: fragment — labelDecodeSql("sec_type", "s.sec_type")
@@ -28,6 +35,9 @@
 --     "s.signal_sub_type")
 --   action_decode: fragment — labelDecodeSql("action", "r.action")
 --   regime_decode: fragment — labelDecodeSql("regime", "r.regime_state")
+--   no_action_reason_decode: fragment — labelDecodeSql(
+--     "no_action_reason", "s.reason_code") — the no-action tier's
+--     reason vocabulary decode
 --   action_wait: fragment — LABEL_CODE.action.wait (the wait-action code
 --     literal: the is_rejection derivation)
 --   name_code: fragment — "$2" (the code param the predicates bind; the
@@ -67,7 +77,9 @@ WITH win AS (
            s.is_day_close_trigger,
            s.regime_state,
            NULL::boolean AS is_typical,
-           FALSE        AS is_rejection
+           FALSE        AS is_rejection,
+           FALSE        AS is_no_action,
+           NULL::text   AS no_action_reason
     FROM live.live_signals s
     WHERE {{where_clause}}
       AND s.date > (SELECT win_start FROM win)
@@ -103,12 +115,50 @@ WITH win AS (
            s.is_typical,
            -- the is_rejection column was dropped 2026-10-14 — the
            -- grey-diamond wait event IS the action code now
-           (s.action = {{action_wait}}) AS is_rejection
+           (s.action = {{action_wait}}) AS is_rejection,
+           FALSE        AS is_no_action,
+           NULL::text   AS no_action_reason
     FROM analysis_signals.history_signals s
+    WHERE {{hist_where_clause}}
+ ),
+ noaction AS (
+    -- THE NO-ACTION OVERLAY (2026-11-18) — analysis_signals.
+    -- no_action_signals: day-level negative-confidence marks on FIRED
+    -- POSITIVE days (engines/no_action's invalidation conditions).
+    -- A row re-states its fired twin's own identity/values with
+    -- NEGATIVE confidence = do NOT take this action at this price
+    -- (never the inverse action); the reason names WHY (the squeeze
+    -- breakdown, the fatigue chop, ...). The dedup partition carries
+    -- is_no_action so a mark never collapses into its positive twin —
+    -- the overlay's whole point is that BOTH rows stay visible.
+    SELECT s.code,
+           {{sec_type_decode}} AS sec_type,
+           {{signal_type_decode}} AS signal_type,
+           {{signal_sub_type_decode}} AS signal_sub_type,
+           s.date,
+           s.time,
+           s.action,
+           (s.signal - s.signal_reference)::float8 AS signal_excess,
+           ((s.signal - s.signal_reference)
+            / NULLIF(abs(s.signal_reference), 0) * 100)::float8
+                                        AS signal_excess_pct,
+           s.signal::float8               AS signal,
+           s.signal_reference::float8     AS signal_threshold,
+           s.confidence,
+           (s.confidence::float8 / 100.0) AS confidence_pct,
+           TRUE                           AS is_day_close_trigger,
+           s.regime_state,
+           NULL::boolean AS is_typical,
+           FALSE        AS is_rejection,
+           TRUE         AS is_no_action,
+           {{no_action_reason_decode}} AS no_action_reason
+    FROM analysis_signals.no_action_signals s
     WHERE {{hist_where_clause}}
  ),
  combined AS (
     SELECT h.* FROM history h
+    UNION ALL
+    SELECT n.* FROM noaction n
     UNION ALL
     SELECT r.* FROM recent r
  ),
@@ -120,17 +170,17 @@ WITH win AS (
     -- mirror rows). The EVENT's pass stamp rides the partition
     -- (max — one event carries exactly one stamp): a live tick
     -- winning a day inherits its history anchor's pass, so the
-    -- pass toggle still sees the day. is_rejection rides the
-    -- partition too — a rejected NO-ACTION record never collapses
-    -- into its actionable twin.
+    -- pass toggle still sees the day. is_rejection AND is_no_action
+    -- ride the partition too — a rejected / no-action-marked record
+    -- never collapses into its actionable twin.
     SELECT d.*,
            bool_or(d.is_typical) OVER (
                PARTITION BY d.signal_type, d.signal_sub_type, d.date,
-                            d.is_rejection
+                            d.is_rejection, d.is_no_action
            ) AS event_is_typical,
            row_number() OVER (
                PARTITION BY d.signal_type, d.signal_sub_type, d.date,
-                            d.is_rejection
+                            d.is_rejection, d.is_no_action
                ORDER BY d.is_day_close_trigger, d.time,
                         d.confidence DESC
            ) AS rn
@@ -159,6 +209,8 @@ WITH win AS (
         {{regime_decode}} AS regime_state,
         r.event_is_typical AS is_typical,
         r.is_rejection,
+        r.is_no_action,
+        r.no_action_reason,
         (SELECT to_char(win_start, 'YYYY-MM-DD') FROM win)
             AS recent_window_start
  FROM deduped r

@@ -4,14 +4,18 @@ own optimizer and loss (regime-aware loss splitting, see ``loss/``):
 Set A — SIGNAL params (path-independent): the algo's ``TUNABLE_SPACE``
     (e.g. MACD EMA spans / thresholds / weights) PLUS ``conf_threshold``
     (the |signal_confidence| dust filter — a threshold on which signals
-    FIRE, so it belongs to the signal regime). Optimized by Optuna TPE
-    against the Omega-Ratio loss (``loss/omega.py``).
+    FIRE, so it belongs to the signal regime) — SKIPPED for algos whose
+    replay consumes no dust threshold (``AlgoBase.DUST_FILTER`` False —
+    the oracle full-fidelity replay). Optimized by Optuna TPE against
+    the Omega-Ratio loss (``loss/omega.py``).
 
 Set B — EXECUTION params (path-dependent, multiplicative): the
     trading-layer knobs read by ``AlgoBase.run_backtest`` / the
     execution engine — ``buy_exec_delay`` / ``sell_exec_delay`` (exit
-    lags) and ``min_holding_period`` (hold-period offset). Optimized by
-    a vanilla grid (default) or a separate TPE study against the
+    lags) and ``min_holding_period`` (hold-period offset); the delay
+    axes are dropped for mixed mode AND for algos that never shift
+    execution dates (``AlgoBase.TUNES_EXEC_DELAYS`` False). Optimized
+    by a vanilla grid (default) or a separate TPE study against the
     Calmar loss (``loss/calmar.py``).
 
 ``COMMON_SPACE`` (kept for documentation / backward compatibility) is
@@ -67,6 +71,28 @@ SET_B_GRID_STEPS: Dict[str, int] = {
     "sell_exec_delay": 1,
     "min_holding_period": 2,
 }
+
+# ---------------------------------------------------------------------------
+# Set C — comb grid (MIXED mode only; the portfolio's "rules to assign
+# weights under different scenarios")
+# ---------------------------------------------------------------------------
+# A curated, evidence-grounded grid over the _comb stack (skill
+# singleton-strategy-tuning Parts 3-12): adaptive family weights ×
+# thesis-matched regime gate × vol-state overlay × the blend dust
+# threshold. Every axis value is a measured keeper or its null control —
+# no open-ended search. quantile_sizing + equity_guard stay ON (both
+# measured keepers, Part 6), breadth stays OFF (cross-code feature,
+# degenerate for a per-code study).
+SET_C_WEIGHT_MODES = ("tstat", "tstat_bar1", "mean_bar", "equal", "ewma")
+SET_C_GATE_WINDOWS = (120, 255, 0)  # 0 = regime gate OFF (control)
+SET_C_VOL_STATE = (True, False)
+# 2026-11-19 validation study (temp_scripts/sig_wfa_validation_study.py):
+# the blend conf_threshold measured INERT on every selection segment —
+# per-variant thr-neighborhood score deltas sat in the 3rd decimal and the
+# run-18 lesson already showed thr neighbors measuring metrically
+# identical — so the axis is pinned at the production default 5.0 and the
+# Set C grid drops 90 → 30 cells. Re-widen ONLY with new measured evidence.
+SET_C_CONF_THRESHOLDS = (5.0,)
 
 # Union kept for documentation / backward compatibility.
 COMMON_SPACE: Dict[str, dict] = {**SET_A_EXEC_SPACE, **SET_B_SPACE}
@@ -159,9 +185,17 @@ def suggest_set_a_params(trial, algo: AlgoBase) -> dict:
     conf_threshold + the algo's TUNABLE_SPACE. Discrete (categorical)
     params are sampled from their declared choices ONLY and re-snapped
     after repair so every emitted param set is legal.
+
+    ``conf_threshold`` is SKIPPED for algos that consume no dust
+    threshold (``DUST_FILTER`` False — the oracle full-fidelity
+    replay): the replay ignores the key entirely, so tuning it would
+    burn trials on metrically identical points and store a param the
+    run never reads.
     """
     params: dict = {}
     for name, spec in SET_A_EXEC_SPACE.items():
+        if name == "conf_threshold" and not getattr(algo, "DUST_FILTER", True):
+            continue
         params[name] = _suggest_one(trial, name, spec)
     for name, spec in (getattr(algo, "TUNABLE_SPACE", {}) or {}).items():
         params[name] = _suggest_one(trial, name, spec)
@@ -177,18 +211,127 @@ def suggest_set_b_params(trial) -> dict:
     return params
 
 
-def set_b_grid() -> List[Dict[str, int]]:
+def set_b_grid(
+    mixed: bool = False,
+    drop_delays: bool = False,
+    drop_min_hp: bool = False,
+) -> List[Dict[str, int]]:
     """Vanilla-grid candidates for Set B (Stage B).
 
-    Cartesian product of the stepped SET_B_SPACE ranges in
-    deterministic order (288 candidates with the default steps).
+    Cartesian product of the stepped SET_B_SPACE ranges in deterministic
+    order (288 candidates with the default steps).
+
+    ``mixed=True`` / ``drop_delays=True`` drop the ``buy_exec_delay`` /
+    ``sell_exec_delay`` axes: the mixed collector path never applies
+    exec delays (only ``AlgoBase.run_backtest`` shifts per-family
+    signals — skill Part 3 method notes), and ``drop_delays`` covers
+    binary algos whose replay never shifts execution dates
+    (``AlgoBase.TUNES_EXEC_DELAYS`` False — the oracle full-fidelity
+    replay; the trainer passes it from the backtester's flag).
+
+    ``drop_min_hp`` drops the ``min_holding_period`` axis for binary
+    algos whose replay pins it (``AlgoBase.TUNES_MIN_HOLDING`` False —
+    ``run_backtest`` overrides the key to 1, so tuning it would grade
+    metrically identical points). All three flags together leave ONE
+    grid point (an empty product) — the only execution config the
+    replay can run. Grading a never-consumed axis burns compute on
+    trials whose metrics are exact duplicates (run 18: all 288 points
+    of a candidate differed only through ``min_holding_period``). The
+    persisted Set-B keys then simply lack the dropped keys — the
+    loader's defaults are overridden by the same flags at run time.
     """
     axes = []
     for name, spec in SET_B_SPACE.items():
+        if (mixed or drop_delays) and name in ("buy_exec_delay", "sell_exec_delay"):
+            continue
+        if drop_min_hp and name == "min_holding_period":
+            continue
         step = SET_B_GRID_STEPS.get(name, 1)
         lo, hi = int(spec["low"]), int(spec["high"])
         axes.append([(name, v) for v in range(lo, hi + 1, step)])
     return [dict(combo) for combo in itertools.product(*axes)]
+
+
+def set_c_comb_grid(has_reject_rows: bool = False,
+                    has_no_action_rows: bool = False) -> List[dict]:
+    """Curated comb-grid candidates for Set C (mixed-mode Stage C).
+
+    One cell per (weight mode × gate window × vol_state ×
+    conf_threshold) — 5 × 3 × 2 × 3 = 90 cells, each carrying a full
+    ``CombParams.model_dump()`` under ``"comb"`` plus the blend
+    ``conf_threshold``. Graded by ``evaluate_set_c`` (Calmar on IS +
+    official risk tiebreak); the winning cell rides the candidate params
+    through Kelly / Set B / final selection unchanged.
+
+    ``has_reject_rows`` — the fetched frames carry reject-tier evidence
+    (any non-null ``rej_action``; computed by the trainer from the
+    collector's per-algo frames). When True, every cell gets a
+    reject-ON twin: the family-local same-side self-suppression
+    (``_comb/reject.py``) joins the trained space — the reject
+    OFFSETTING becomes optimizable exactly when there is reject
+    evidence to optimize on, under the SAME preference/DD-cap/OOS
+    funnel as every other axis (a reject-ON winner must beat its
+    reject-OFF twin through that funnel — the Part 2 D acceptance bar,
+    structural). When False (the tier's birth-probation soft-launch
+    state, 0 rows live) the grid is UNCHANGED — the axis is simply
+    absent rather than pinned: no reject evidence, nothing to tune.
+    CROSS-family reject offsets are not and will not be a grid axis
+    (measured harmful — skill singleton-strategy-tuning Part 16).
+
+    ``has_no_action_rows`` — the same availability gate for the
+    NO-ACTION overlay marks (any non-null ``na_action``): when True
+    every cell additionally gets a no-action-ON twin (the family-local
+    suppression of MARKED FIRED days, ``_comb/no_action.py`` — the
+    reject tier's day-level mirror, same funnel, same ON-must-beat-OFF
+    bar). With both evidences present the grid quadruples (90 → 360
+    cells); the structural-dedupe key in ``optimize_set_c`` keeps the
+    variant count manageable.
+    """
+    from strategy.factors_and_algos._comb.config import (
+        AdhocActionsCfg,
+        CombParams,
+        EquityGuardCfg,
+        NoActionCfg,
+        QuantileCfg,
+        RegimeGateCfg,
+        RejectCfg,
+        ToggleCfg,
+        WeightsCfg,
+    )
+
+    cells: List[dict] = []
+    for mode in SET_C_WEIGHT_MODES:
+        for gate_win in SET_C_GATE_WINDOWS:
+            for vol in SET_C_VOL_STATE:
+                for rej in ((False, True) if has_reject_rows
+                            else (False,)):
+                    for na in ((False, True) if has_no_action_rows
+                               else (False,)):
+                        comb = CombParams(
+                            weights=WeightsCfg(mode=mode),
+                            regime_gate=RegimeGateCfg(
+                                enabled=gate_win > 0,
+                                window=gate_win or 120,
+                            ),
+                            quantile_sizing=QuantileCfg(enabled=True),
+                            vol_state=ToggleCfg(enabled=vol),
+                            equity_guard=EquityGuardCfg(enabled=True),
+                            breadth=ToggleCfg(enabled=False),
+                            # Ad-hoc actions are pinned OFF in the trainer:
+                            # the training landscape stays frozen at the
+                            # measured Part 10-14 stack until the trim
+                            # module beats the no-overlay OOS Calmar bar
+                            # (skill Part 2 D).
+                            adhoc_actions=AdhocActionsCfg(enabled=False),
+                            reject=RejectCfg(enabled=rej),
+                            no_action=NoActionCfg(enabled=na),
+                        )
+                        for thr in SET_C_CONF_THRESHOLDS:
+                            cells.append({
+                                "comb": comb.model_dump(),
+                                "conf_threshold": thr,
+                            })
+    return cells
 
 
 __all__ = [
@@ -196,9 +339,14 @@ __all__ = [
     "SET_B_SPACE",
     "SET_B_DEFAULTS",
     "SET_B_GRID_STEPS",
+    "SET_C_WEIGHT_MODES",
+    "SET_C_GATE_WINDOWS",
+    "SET_C_VOL_STATE",
+    "SET_C_CONF_THRESHOLDS",
     "COMMON_SPACE",
     "suggest_set_a_params",
     "suggest_set_b_params",
     "set_b_grid",
+    "set_c_comb_grid",
     "snap_categorical_params",
 ]

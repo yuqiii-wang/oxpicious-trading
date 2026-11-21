@@ -63,6 +63,17 @@ export const COMMONS_ANALYSES: CommonsAnalysis[] = [
       "pool's hottest stocks (top 10% by trading amount, min 5; score = " +
       "level + flow change), with the day's hot names in the tooltip.",
   },
+  {
+    slug: "volatility",
+    title: "Volatility",
+    description:
+      "Per-security realized-volatility panel: close-to-close HV across " +
+      "six windows + the RiskMetrics EWMA vol, the 20-day " +
+      "Parkinson/Garman-Klass/Rogers-Satchell/Yang-Zhang estimator " +
+      "comparison, trailing-year percentile + z-score regime gauges, " +
+      "and the overnight/intraday split with 5-min realized vol — all " +
+      "percent annualized.",
+  },
 ];
 
 export default function CommonsPage() {

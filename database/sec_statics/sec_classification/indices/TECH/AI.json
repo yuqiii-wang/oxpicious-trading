@@ -71,19 +71,5 @@
       }
     ],
     "is_industry_not_strategy": true
-  },
-  "DUMMY_AI": {
-    "name": "人工智能综合指数",
-    "exchange": null,
-    "sector_id": "TECH",
-    "industry_id": "AI",
-    "tags": [
-      {
-        "sector_id": "TECH",
-        "industry_id": "AI"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
   }
 }

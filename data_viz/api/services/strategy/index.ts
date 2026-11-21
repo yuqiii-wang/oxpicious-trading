@@ -7,6 +7,7 @@
  */
 export {
   DEFAULT_STRATEGY_NAME,
+  DEFAULT_FAULT_TOLERANCE,
 } from "./_shared.js";
 
 export {
@@ -43,3 +44,14 @@ export {
   fetchSignalFamilies,
   type SignalFamilyRow,
 } from "./signal-families.js";
+
+export {
+  fetchRunHistory,
+  type RunHistoryItem,
+  type RunHistoryResponse,
+} from "./run-history.js";
+
+export {
+  fetchForecast,
+  runForecastScript,
+} from "./forecast.js";

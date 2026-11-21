@@ -81,6 +81,11 @@ export interface CodeTrendTooltipContext {
    *  Recent Movements bucket's registered buy/sell per highlighted day),
    *  refreshed by the overlay memo (no option rebuild). */
   forecastActionByDateRef?: React.MutableRefObject<Map<string, OhlcForecastAction>>;
+  /** Per-date EXTRA rows (the singleton code trend's decision + daily
+   *  P&L block), called at hover time; null/undefined → no extra rows.
+   *  Appended at the very bottom of the tooltip, after every built-in
+   *  block. */
+  extraRows?: (date: string) => React.ReactNode | null;
 }
 
 interface AxisTooltipParam {
@@ -181,7 +186,11 @@ export function makeCodeTrendTooltipFormatter(ctx: CodeTrendTooltipContext) {
 
     // Trade-signal rows — one per live_signals record of the day. A
     // REJECTED record (is_rejection — the gate's explicit no-action)
-    // renders the grey ◆ NO ACTION row, never a buy/sell triangle row.
+    // renders the grey ◆ NO ACTION row, never a buy/sell triangle row;
+    // a NEGATIVE-confidence record (the REJECT tier, 2026-11-16)
+    // renders the crossed ✕▲/✕▼ NO BUY / NO SELL row of its OWN
+    // action — do not take this action at this price, never the
+    // inverse action.
     const daySignals = ctx.signalsByDate?.get(dateStr) ?? [];
     for (const s of daySignals) {
       if (s.is_rejection === true) {
@@ -201,6 +210,22 @@ export function makeCodeTrendTooltipFormatter(ctx: CodeTrendTooltipContext) {
       }
       const buy = s.action === "buy";
       const color = buy ? UP_COLOR : DOWN_COLOR;
+      const reject = s.confidence < 0 && (buy || s.action === "sell");
+      if (reject) {
+        children.push(makeRow([
+          React.createElement(
+            "span", { style: { color } }, buy ? "✕▲" : "✕▼"),
+          " ",
+          React.createElement(
+            tooltipComponents.Bold,
+            { style: { color } },
+            buy ? "NO BUY" : "NO SELL",
+          ),
+          ` · ${signalRecordName(s.signal_type, s.signal_sub_type)}`,
+          ` (conf ${s.confidence}% — evidence against the action here)`,
+        ]));
+        continue;
+      }
       children.push(makeRow([
         React.createElement("span", { style: { color } }, buy ? "▲" : "▼"),
         " ",
@@ -384,6 +409,12 @@ export function makeCodeTrendTooltipFormatter(ctx: CodeTrendTooltipContext) {
         React.createElement(tooltipComponents.Bold, null, `¥${fmtNum(epsVal, 4)}`),
       ]));
     }
+
+    // Extra per-date rows — the caller's own overlay block (the
+    // singleton code trend's decision + daily P&L rows), appended at
+    // the very bottom after every built-in block.
+    const extra = ctx.extraRows?.(dateStr);
+    if (extra != null) children.push(extra);
 
     return renderReactElement(React.createElement(React.Fragment, null, children));
   };

@@ -340,6 +340,8 @@ export default function OptionsSignalsPage() {
             date: s.date,
             action: s.action,
             is_rejection: s.is_rejection === true,
+            // NEGATIVE = the REJECT tier (the cross-triangle marker)
+            confidence: s.confidence_pct,
           }))
         : [],
     [pickedSignals, signalFamily],
@@ -351,6 +353,8 @@ export default function OptionsSignalsPage() {
             date: s.date,
             action: s.action,
             is_rejection: s.is_rejection === true,
+            // NEGATIVE = the REJECT tier (the cross-triangle marker)
+            confidence: s.confidence_pct,
           }))
         : [],
     [pickedSignals, signalFamily],

@@ -61,12 +61,32 @@ the first step of the work:
 - ANY daily OHLCV / K-line study (fetching index/etf/stock bars,
   MA/RSI/MACD/momentum studies) or interpretation of the Chinese volume
   vocabulary (放量, 缩量, 量价背离, 缩量弱反弹 …) → `ohlcv`
+- ANY debt / money-market work (PBoC OMO / 逆回购 / outright repo
+  买断式逆回购 / MLF, SHIBOR, LPR, ChinaBond 国债 yield curve, pboc_oma
+  policy notices — the `stats.debt_*` tables, `v_debt_daily`, the
+  `builds/bond` pipeline, `/api/debt`, or the Debt Market page) →
+  `debt-market`
 - analysis_signals semantics (rule cells, history vs live, the nine
   families) → `signals-live-vs-history`
 - financial/biz semantics of the mov_rsi / bollinger / ma_cross /
   options_wall / options_vix / momentum / rf_break / rebound / macd
   signal families
   (trigger meaning, parameters, sides, evidence) → `signals-biz-logic`
+- ANY work on the no-action / negative-confidence tier — the
+  invalidation module (`engines/no_action`), the reject tier
+  (`engines/reject`), the `no_action_signals` table, per-family
+  invalidation / misleading conditions, or the recent-days same-type
+  fatigue filter → `signals-no-action`
+- ANY change to the singleton strategy training model (Train Model =
+  `strategy.factors_and_algos._optm_engine`, the losses / spaces /
+  NestedTrainer), the trained `algo_configs` params shape, or plans to
+  parametrize trained configs (signal cancel rules between families,
+  signal weights, position-aware sizing utils, max-return goal) →
+  `singleton-strategy-tuning`
+- news provider/content audit (text.news_providers /
+  text.news_provider_audit / text.news_content_audit), the
+  `analysis.news_audit` pipeline, the 5-day audit window grid or the
+  Composites News Audit page → `news-audit`
 
 ## cudf preference (short form — the `cudf-dtypes` skill is authoritative)
 
@@ -100,4 +120,6 @@ the first step of the work:
   test runs with `--sec-type index`.
 - Study scope: only the 10 named indices unless explicitly instructed.
 - Throwaway scripts and outputs go in `temp_scripts/`.
-- Verify changes by checking API responses and the UI, not just the code.
+- Verify changes by sending the request from the UI and checking the
+  logs — never by directly testing in Python (details in the conventions
+  skill).

@@ -48,6 +48,7 @@ import {
   readDeepAgentLimits,
 } from "../infra/static-config.service.js";
 import { LABEL_CODE, labelDecodeSql } from "../infra/label-codes.js";
+import { recordCaution } from "../caution-log.service.js";
 import { listAiPrompts, type AiPromptRow } from "./ai-prompts.service.js";
 import {
   listDocsWithLabels,
@@ -83,6 +84,7 @@ const DOC_OPTIONAL_PROMPT_CAP = 6;
  *  structurally; the per-run forcedTables pick narrows further. */
 const KG_SUMMARY_SCHEMAS = [
   "analysis",
+  "analysis_signals",
   "strategy",
   "stats",
   "text",
@@ -918,20 +920,32 @@ export async function generateAnalysisSummary(
         plan_template_id: payload.planTemplateId ?? null,
       });
     } catch (err) {
-      return {
-        success: false,
-        answer: "",
-        stderrTail:
-          `deep-agents server unreachable or timed out (${String(err)}) — ` +
-          `is ${DEEP_AGENTS_HOST}:${DEEP_AGENTS_PORT} up?`,
-      };
+      const stderrTail =
+        `deep-agents server unreachable or timed out (${String(err)}) — ` +
+        `is ${DEEP_AGENTS_HOST}:${DEEP_AGENTS_PORT} up?`;
+      // The daemon-side run trail (deep_agent_states) records nothing
+      // when the daemon never answered — the caution trail does.
+      void recordCaution({
+        service: "data_viz.api",
+        source: "ai",
+        severity: "error",
+        title: "AI summary run failed: deep-agents daemon unreachable",
+        dedupeKey: "ai-summary:daemon-unreachable",
+        detail: { error: stderrTail, host: `${DEEP_AGENTS_HOST}:${DEEP_AGENTS_PORT}` },
+      });
+      return { success: false, answer: "", stderrTail };
     }
     if (res.status !== 200) {
-      return {
-        success: false,
-        answer: "",
-        stderrTail: `deep agent failed (HTTP ${res.status}): ${res.text.slice(-500)}`,
-      };
+      const stderrTail = `deep agent failed (HTTP ${res.status}): ${res.text.slice(-500)}`;
+      void recordCaution({
+        service: "data_viz.api",
+        source: "ai",
+        severity: "error",
+        title: `AI summary run failed: HTTP ${res.status} from the daemon`,
+        dedupeKey: "ai-summary:http-fail",
+        detail: { status: res.status, body_tail: res.text.slice(-500) },
+      });
+      return { success: false, answer: "", stderrTail };
     }
     let parsed: {
       answer?: string;
@@ -947,11 +961,16 @@ export async function generateAnalysisSummary(
     try {
       parsed = JSON.parse(res.text);
     } catch {
-      return {
-        success: false,
-        answer: "",
-        stderrTail: `deep agent returned non-JSON: ${res.text.slice(-300)}`,
-      };
+      const stderrTail = `deep agent returned non-JSON: ${res.text.slice(-300)}`;
+      void recordCaution({
+        service: "data_viz.api",
+        source: "ai",
+        severity: "warning",
+        title: "AI summary run failed: non-JSON daemon reply",
+        dedupeKey: "ai-summary:non-json",
+        detail: { body_tail: res.text.slice(-300) },
+      });
+      return { success: false, answer: "", stderrTail };
     }
     const PLAN_STATUSES = new Set([
       "pending", "in_progress", "completed", "failed", "skipped",

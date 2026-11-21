@@ -3,9 +3,11 @@
   "max_parallel": 1,
   "included_parallel_services": [],
   "excluded_parallel_services": [],
-  "freq": "always",
+  "is_resident": true,
+  "freq": null,
+  "priority": 80,
   "schedule": "always-on supervisor started by scripts/stream_watchdog.sh (the WSL boot hook)",
   "notes": "Supervises the downloads.stream.* pollers + database.db_health: restarts dead/wedged processes and resets leaked live_parallel from host pid liveness.",
   "source_ref": "scripts/stream_watchdog.sh;database/stream_watchdog.py",
-  "updated_at": "2026-10-10T06:29:48.410435+00:00"
+  "updated_at": "2026-11-20T15:25:15.716730+00:00"
 }

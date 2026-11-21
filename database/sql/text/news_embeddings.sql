@@ -11,16 +11,19 @@
 -- tags: embeddings, 向量, semantic search, 语义检索
 
 CREATE TABLE IF NOT EXISTS text.news_embeddings (
-    news_title  TEXT    NOT NULL,
+    title       TEXT    NOT NULL,
+    title_hash  TEXT    NOT NULL,               -- md5(title), writer-computed (see text/news.sql)
     source      TEXT    NOT NULL,
     date        DATE    NOT NULL,
     embedding   vector(1536),               -- content embedding
     model       TEXT,                        -- embedding model id
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-    CONSTRAINT pk_news_embeddings PRIMARY KEY (news_title, source, date),
-    CONSTRAINT fk_news_embeddings_news FOREIGN KEY (news_title, source, date)
-        REFERENCES text.news (title, source, date)
+    -- Same hashed-natural-key shape as pk_news (see text/news.sql):
+    -- raw-title btree entries cap at ~2704 bytes.
+    CONSTRAINT pk_news_embeddings PRIMARY KEY (title_hash, source, date),
+    CONSTRAINT fk_news_embeddings_news FOREIGN KEY (title_hash, source, date)
+        REFERENCES text.news (title_hash, source, date)
 );
 
 COMMENT ON TABLE text.news_embeddings IS

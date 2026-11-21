@@ -24,6 +24,10 @@ Risk philosophy:
     distribution asymmetry (losses dominate gains in variance or mean) and
     tail loss (any period's loss exceeding 2σ/3σ from the loss mean) — each
     scaled so at-threshold contributes 6.0 (pushes grade to HIGH on its own).
+    GRADES: score-based LITTLE-criteria / LOW / MODERATE / ELEVATED / HIGH
+    (``_risk_grade``) — where the ORACLE mode (strategy_name 'oracle*') is
+    a second STRUCTURAL LITTLE route (the perfect-foresight replay is the
+    risk floor; its score + factor rows stay computed as diagnostics).
   - ``compute_risk_periods`` rolls P&L up per year/season/month for the UI
     chart and flags periods that dominate (hotspot) or move against the run
     total (counter-trend).
@@ -49,6 +53,7 @@ from strategy._risks.constants import (
     LITTLE_LOSS_RATIO, LITTLE_GAIN_CV_MAX,
     GAIN_DISCOUNT_WEIGHT,
     FT_LOSS_THRESHOLD,
+    ORACLE_STRATEGY_PREFIX,
 )
 
 
@@ -353,6 +358,17 @@ def _compute_price_drawdowns(
 # ---------------------------------------------------------------------------
 #  Risk grade — LITTLE / LOW / MODERATE / ELEVATED / HIGH
 # ---------------------------------------------------------------------------
+def _is_oracle_strategy(strategy_name: Optional[str]) -> bool:
+    """True when the run is the ORACLE mode (the strategy_name carries the
+    'oracle' prefix — 'oracle', 'oracle_ft10'; portfolio names always start
+    with 'portfolio:', so the prefix match is unambiguous). The oracle is
+    the perfect-foresight upper-bound replay — structurally the risk floor
+    (see :func:`_risk_grade`).
+    """
+    return bool(strategy_name) and strategy_name.lower().startswith(
+        ORACLE_STRATEGY_PREFIX)
+
+
 def _is_little_risk(
     sells: pd.DataFrame,
     total_realized: float,
@@ -392,17 +408,35 @@ def _is_little_risk(
     return True
 
 
-def _risk_grade(risk_score: float, is_little: bool = False) -> str:
+def _risk_grade(
+    risk_score: float,
+    is_little: bool = False,
+    is_oracle: bool = False,
+) -> str:
     """Map the (absolute) exponential rolling-window risk_score to a grade.
 
-    LITTLE is criteria-based (checked first): almost no losses + stable
-    gains + profitable. Otherwise score-based:
+    LITTLE is structural, checked BEFORE score-based grades — two routes:
+        - ``is_little`` criteria-based: almost no losses + stable gains +
+          profitable (the criteria guarantee safety);
+        - ``is_oracle``: the ORACLE mode is the perfect-foresight
+          upper-bound replay and by construction carries no forecasting
+          risk — it is the risk floor. Its residual losses (graded partial
+          exits, the flat-book sell skips before the code's first buy, the
+          full-size frontier replay near the data end) are replay
+          artifacts, not risk signals — the computed score + factor rows stay displayed as the
+          per-component diagnostic of where the residual comes from
+          (2026-11-20: the former MODERATE label was entirely the
+          losing-month streak's +1.0 — two adjacent replay-artifact losing
+          months crossing the LOW bound at 1.0 — with the oracle's
+          gain-dominated asymmetry discounts floored at 0 giving no
+          offsetting credit).
+    Otherwise score-based:
         < 1.0  → LOW       (no window reaches its loss threshold)
         < 3.0  → MODERATE  (one window past threshold, or several near it)
         < 6.0  → ELEVATED  (multiple windows past threshold)
         else   → HIGH
     """
-    if is_little:
+    if is_little or is_oracle:
         return "LITTLE"
     if risk_score < RISK_GRADE_LOW_BOUND:
         return "LOW"
@@ -993,6 +1027,7 @@ def compute_risk_seq(
     close_prices: Optional[List[Dict[str, Any]]] = None,
     daily_rows: Optional[List[Dict[str, Any]]] = None,
     total_buy_cost: float = 0.0,
+    strategy_name: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Compute the strategy_risks row for one (seq_id, code).
 
@@ -1009,6 +1044,10 @@ def compute_risk_seq(
     ``total_buy_cost`` is the peak normalized capital deployed (from
     strategy_results), used as the "% of capital" denominator for
     loss_fraction. Falls back to total_abs_pnl when 0/unavailable.
+    ``strategy_name`` (optional) is the run's identity name — the ORACLE
+    mode ('oracle', 'oracle_ft10') grades structurally LITTLE (the risk
+    floor; see :func:`_risk_grade`). The score + factor rows are computed
+    unchanged either way.
     """
     if not decisions:
         return None
@@ -1080,7 +1119,11 @@ def compute_risk_seq(
     _ft_contrib, ft_amplified_pnl, _ft_fac_list = _compute_ft_factor(
         sells, capital_base)
     is_little = _is_little_risk(sells, total_realized)
-    grade = _risk_grade(risk_score, is_little=is_little)
+    grade = _risk_grade(
+        risk_score,
+        is_little=is_little,
+        is_oracle=_is_oracle_strategy(strategy_name),
+    )
 
     return {
         "seq_id": seq_id,

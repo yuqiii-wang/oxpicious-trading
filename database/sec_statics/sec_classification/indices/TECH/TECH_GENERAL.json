@@ -252,19 +252,5 @@
       }
     ],
     "is_industry_not_strategy": true
-  },
-  "DUMMY_TECH_GENERAL": {
-    "name": "科技综合指数",
-    "exchange": null,
-    "sector_id": "TECH",
-    "industry_id": "TECH_GENERAL",
-    "tags": [
-      {
-        "sector_id": "TECH",
-        "industry_id": "TECH_GENERAL"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
   }
 }

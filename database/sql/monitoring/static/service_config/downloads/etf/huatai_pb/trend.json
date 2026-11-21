@@ -3,9 +3,11 @@
   "max_parallel": 1,
   "included_parallel_services": [],
   "excluded_parallel_services": [],
+  "is_resident": false,
   "freq": "daily",
+  "priority": 170,
   "schedule": "every A-share trading date, in the 16:00 nightly chain after downloads_daily, before builds_daily",
   "notes": "huatai-pb.com fund-site trend — the daily member of the huatai_pb set (composition monthly, archive once, dividends semi-annual).",
   "source_ref": "scripts/orchestration/downloads_daily.json",
-  "updated_at": "2026-10-10T06:29:48.410435+00:00"
+  "updated_at": "2026-11-20T15:25:15.716730+00:00"
 }

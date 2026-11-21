@@ -30,7 +30,8 @@ const router = Router();
 //  freq (service_config/ static tree) says the last successful exit is
 //  still inside the current period — daily = last 24h, monthly = last 30d,
 //  quarterly = last 92d, semiannually = last 183d, once = any success
-//  ever; always / occasionally / on_demand never auto-skip. Force rerun
+//  ever; residents (freq null — always live) / occasionally / on_demand
+//  never auto-skip. Force rerun
 //  bypasses the
 //  guard. The spawn is FIRE-AND-FORGET (batch runs take hours): the POST
 //  resolves as soon as the process is handed to WSL, the heartbeat table
@@ -42,8 +43,9 @@ const router = Router();
 /** Result of the freq auto-skip evaluation for ONE service. */
 interface FreqGuard {
   service: string;
-  /** freq from the service_config/ static tree (default.json fallback). */
-  freq: string;
+  /** freq from the service_config/ static tree (default.json fallback);
+   *  null for a resident (always lives — never auto-skips). */
+  freq: string | null;
   /** "within" = skip while last success < periodMs; "any_success" = skip
    *  after any success ever; "never" = no auto-skip. */
   skipRule: "within" | "any_success" | "never";
@@ -61,7 +63,7 @@ interface FreqGuard {
  *  its last successful exit in monitor.service_audit. */
 async function evaluateFreqGuard(service: string): Promise<FreqGuard> {
   const cfg = serviceConfigLooseFor(service);
-  const period = FREQ_PERIOD_MS[cfg.freq] ?? null;
+  const period = cfg.freq == null ? null : FREQ_PERIOD_MS[cfg.freq] ?? null;
   const skipRule: FreqGuard["skipRule"] =
     period === null ? "never" : period === SKIP_ANY_SUCCESS ? "any_success" : "within";
   const pool = getReadPool();

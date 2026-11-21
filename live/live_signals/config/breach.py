@@ -38,9 +38,13 @@ ABOVE_ACTION = ACTION_CODE["sell"]
 #     fixed_sigma       |excess| / 1   (σ units — bollinger's depth is
 #                          the raw σ excess past ±k)
 #
-# Negative amplification clamps to 0; the record stores the INTEGER
-# basis-point scale (×100), clamped to [0, 10000]
-# (CONFIDENCE_CAP_BP).
+# Negative amplification clamps to 0 — EXCEPT the REJECT tier
+# (2026-11-16, engines/reject.py): a reject cell's base_pct (its latest
+# snapshot's dir_ave) is NEGATIVE, and the negative sign IS the product
+# — the live row reads "do NOT take this action at this price", never
+# the inverse action. The record stores the INTEGER basis-point scale
+# (×100), clamped SYMMETRICALLY to [-10000, 10000]
+# (CONFIDENCE_CAP_BP; live.live_signals' CHECK relaxed the same day).
 DEPTH_NORM_UNITS: dict[str, float] = {
     "rolling_quantile": 10.0,
     "fixed_sigma": 1.0,
@@ -62,8 +66,12 @@ def rules_confidence_bp(sig: dict, excess: float) -> int:
     basis-point record scale: base_pct × (1 + depth_factor ×
     min(depth_norm, depth_cap)) × sample_scale
     percent over the normalized breach depth — the history writer's
-    identical formula (rule_base.confidence_pct) converted ×100,
-    clamped to [0, 10000]. sample_scale is the starvation haircut
+    identical formula (rule_base.confidence_pct for trading cells,
+    engines.reject.py's mirrored scale for reject cells) converted
+    ×100, clamped SYMMETRICALLY to [-10000, 10000] (2026-11-16): a
+    NEGATIVE base (the reject cell's measured dir_ave) yields a
+    NEGATIVE confidence — REJECT the action at this price, never the
+    inverse action. sample_scale is the starvation haircut
     min(n/floor, 1) RECOMPUTED by the fetch since 2026-10-20 (the
     latest snapshot's n_episodes against the rule's
     gate.sample_floor constant — the digest left the slimmed cell
@@ -76,7 +84,7 @@ def rules_confidence_bp(sig: dict, excess: float) -> int:
     depth = min(breach_depth_norm(sig, excess), cap)
     return int(min(max(round(
         base_pct * (1.0 + factor * depth) * scale * 100.0,
-    ), 0), 10_000))
+    ), -10_000), 10_000))
 
 # ---- Record defaults ---------------------------------------------------------
 

@@ -15,6 +15,12 @@
  * Columns WITHOUT `group` span both rows (rowSpan 2). Groups must therefore
  * be contiguous in `columns` (caller's responsibility).
  *
+ * PAGINATION is OPT-IN via `paginated`: the POST-HEADER-FILTER rows slice
+ * into pages under a MUI TablePagination footer (count = filtered.length,
+ * so the column filters and the page counts stay coherent — a header
+ * filter change re-slices, it never strands the view past the last page).
+ * Default off — the full-scroll behavior every existing caller relies on.
+ *
  * Column spec:
  *   • key/label         — identity + header text (also the filter label).
  *   • align             — body-cell AND header text alignment (default left).
@@ -47,7 +53,7 @@
  * an expansion driven from OUTSIDE the table (a chart marker click)
  * lands visible.
  */
-import { Fragment, memo, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Box,
   Table,
@@ -55,6 +61,7 @@ import {
   TableCell,
   TableContainer,
   TableHead,
+  TablePagination,
   TableRow,
   Typography,
 } from "@mui/material";
@@ -133,6 +140,14 @@ export interface ExpandedTableProps<T> {
    *  cleared. Passed through to the header-filters hook; see its
    *  docstring. */
   onEndMonthChange?: (month: string | null) => void;
+  /** OPT-IN client-side pagination: the post-header-filter rows slice
+   *  into pages under a TablePagination footer. Default off (full
+   *  scroll). */
+  paginated?: boolean;
+  /** paginated only — rows-per-page choices (default [20, 50, 100]). */
+  rowsPerPageOptions?: number[];
+  /** paginated only — initial rows per page (default 20). */
+  defaultRowsPerPage?: number;
   /** Rendered instead of the table when `rows` is empty. */
   emptyState?: ReactNode;
   /** Row-click handler (cursor turns pointer when set). */
@@ -261,6 +276,9 @@ export function ExpandedTableImpl<T>({
   filterScopeDeps = [],
   defaultEndMonth = null,
   onEndMonthChange,
+  paginated = false,
+  rowsPerPageOptions,
+  defaultRowsPerPage = 20,
   emptyState,
   onRowClick,
   selectedRowKey,
@@ -311,6 +329,16 @@ export function ExpandedTableImpl<T>({
     onEndMonthChange,
   );
 
+  // Pagination state — the page CLAMPS into the available filtered rows so
+  // a filter shrinking the set never strands the view past the last page
+  // (the DbAudit TableWorkloadTable / TrainLogsDialog precedent).
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(defaultRowsPerPage);
+  const maxPage = Math.max(0, Math.ceil(filtered.length / rowsPerPage) - 1);
+  useEffect(() => {
+    if (page > maxPage) setPage(maxPage);
+  }, [page, maxPage]);
+
   // An expandedRowKey CHANGE brings its row into view — an expansion
   // driven from OUTSIDE the table (a chart marker click) must land
   // visible; a click-driven one already is (block nearest = no-op).
@@ -325,6 +353,12 @@ export function ExpandedTableImpl<T>({
   if (rows.length === 0 && emptyState != null) {
     return <>{emptyState}</>;
   }
+
+  // The page slice rides AFTER the header filters — pagination counts and
+  // filtering stay coherent (footer count = filtered.length).
+  const pageRows = paginated
+    ? filtered.slice(page * rowsPerPage, (page + 1) * rowsPerPage)
+    : filtered;
 
   const layered = columns.some((c) => c.group != null);
   // Contiguous group runs — standalone columns keep their own run (group null).
@@ -356,117 +390,149 @@ export function ExpandedTableImpl<T>({
   const defByKey = new Map(filterDefs.map((d) => [d.key, d]));
 
   return (
-    <TableContainer ref={containerRef} sx={expandedTableContainerSx(maxHeight)}>
-      <Table size="small" stickyHeader>
-        <TableHead>
-          <TableRow>
-            {runs.map((run) =>
-              run.group == null ? (
-                <TableCell
-                  key={run.cols[0].key}
-                  sx={colSx(run.cols[0], {
-                    ...headSx,
-                    ...(layered ? { position: "sticky", top: 0 } : {}),
-                  })}
-                  rowSpan={layered ? 2 : undefined}
-                >
-                  {headContent(run.cols[0], defByKey.get(run.cols[0].key))}
-                </TableCell>
-              ) : (
-                <TableCell
-                  key={`g-${run.group}`}
-                  sx={{ ...groupSx, position: "sticky", top: 0 }}
-                  colSpan={run.cols.length}
-                >
-                  {run.group}
-                </TableCell>
-              ),
-            )}
-          </TableRow>
-          {layered && (
+    <>
+      <TableContainer
+        ref={containerRef}
+        // Paginated: square off the bottom corners so the pagination footer
+        // attaches flush beneath the container's border.
+        sx={
+          paginated
+            ? { ...expandedTableContainerSx(maxHeight), borderRadius: "4px 4px 0 0" }
+            : expandedTableContainerSx(maxHeight)
+        }
+      >
+        <Table size="small" stickyHeader>
+          <TableHead>
             <TableRow>
-              {runs.flatMap((run) =>
-                run.group == null
-                  ? []
-                  : run.cols.map((c) => (
-                      <TableCell key={c.key} sx={colSx(c, subSx)}>
-                        {headContent(c, defByKey.get(c.key))}
-                      </TableCell>
-                    )),
+              {runs.map((run) =>
+                run.group == null ? (
+                  <TableCell
+                    key={run.cols[0].key}
+                    sx={colSx(run.cols[0], {
+                      ...headSx,
+                      ...(layered ? { position: "sticky", top: 0 } : {}),
+                    })}
+                    rowSpan={layered ? 2 : undefined}
+                  >
+                    {headContent(run.cols[0], defByKey.get(run.cols[0].key))}
+                  </TableCell>
+                ) : (
+                  <TableCell
+                    key={`g-${run.group}`}
+                    sx={{ ...groupSx, position: "sticky", top: 0 }}
+                    colSpan={run.cols.length}
+                  >
+                    {run.group}
+                  </TableCell>
+                ),
               )}
             </TableRow>
-          )}
-        </TableHead>
-        <TableBody>
-          {filtered.length === 0 ? (
-            <TableRow>
-              <TableCell colSpan={columns.length} sx={expandedTableBodyCellSx}>
-                <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.68rem" }}>
-                  all rows filtered out — clear a header filter
-                </Typography>
-              </TableCell>
-            </TableRow>
-          ) : (
-            filtered.map((row, idx) => {
-              const key = rowKey(row);
-              const extra =
-                expandedRows != null &&
-                expandedRowKey != null &&
-                key === expandedRowKey
-                  ? expandedRows(row)
-                  : null;
-              return (
-                <Fragment key={key}>
-                  <BodyRow<T>
-                    row={row}
-                    rowKey={key}
-                    columns={columns}
-                    valueByKey={valueByKey}
-                    selected={selectedRowKey != null && key === selectedRowKey}
-                    idx={idx}
-                    zebra={zebra}
-                    onRowClick={onRowClick}
-                  />
-                  {extra?.map((er, ei) => (
-                    // Inline expansion rows: SAME columns, no headers —
-                    // a muted fixed shade (distinct from the main rows
-                    // whichever zebra mode), optionally clickable.
-                    <TableRow
-                      key={`${key}-x-${ei}`}
-                      onClick={onExpandedRowClick ? () => onExpandedRowClick(er) : undefined}
-                      sx={{
-                        ...expandedTableBodyRowSx(idx + ei + 1),
-                        bgcolor: "action.hover",
-                        ...(onExpandedRowClick ? { cursor: "pointer" } : {}),
-                      }}
-                    >
-                      {columns.map((c) => (
-                        <TableCell key={c.key} sx={colSx(c, expandedTableBodyCellSx)}>
-                          {cellText(c, er, valueByKey)}
+            {layered && (
+              <TableRow>
+                {runs.flatMap((run) =>
+                  run.group == null
+                    ? []
+                    : run.cols.map((c) => (
+                        <TableCell key={c.key} sx={colSx(c, subSx)}>
+                          {headContent(c, defByKey.get(c.key))}
                         </TableCell>
-                      ))}
-                    </TableRow>
-                  ))}
-                  {expandedContent != null && key === expandedRowKey && (
-                    // The arbitrary full-width expansion row — the caller
-                    // block owns its padding; zero here so nested outlined
-                    // tables sit flush.
-                    <TableRow key={`${key}-xc`}>
-                      <TableCell
-                        colSpan={columns.length}
-                        sx={{ p: 0, border: "none", bgcolor: "action.hover" }}
+                      )),
+                )}
+              </TableRow>
+            )}
+          </TableHead>
+          <TableBody>
+            {filtered.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={columns.length} sx={expandedTableBodyCellSx}>
+                  <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.68rem" }}>
+                    all rows filtered out — clear a header filter
+                  </Typography>
+                </TableCell>
+              </TableRow>
+            ) : (
+              pageRows.map((row, idx) => {
+                const key = rowKey(row);
+                const extra =
+                  expandedRows != null &&
+                  expandedRowKey != null &&
+                  key === expandedRowKey
+                    ? expandedRows(row)
+                    : null;
+                return (
+                  <Fragment key={key}>
+                    <BodyRow<T>
+                      row={row}
+                      rowKey={key}
+                      columns={columns}
+                      valueByKey={valueByKey}
+                      selected={selectedRowKey != null && key === selectedRowKey}
+                      idx={idx}
+                      zebra={zebra}
+                      onRowClick={onRowClick}
+                    />
+                    {extra?.map((er, ei) => (
+                      // Inline expansion rows: SAME columns, no headers —
+                      // a muted fixed shade (distinct from the main rows
+                      // whichever zebra mode), optionally clickable.
+                      <TableRow
+                        key={`${key}-x-${ei}`}
+                        onClick={onExpandedRowClick ? () => onExpandedRowClick(er) : undefined}
+                        sx={{
+                          ...expandedTableBodyRowSx(idx + ei + 1),
+                          bgcolor: "action.hover",
+                          ...(onExpandedRowClick ? { cursor: "pointer" } : {}),
+                        }}
                       >
-                        {expandedContent(row)}
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </Fragment>
-              );
-            })
-          )}
-        </TableBody>
-      </Table>
-    </TableContainer>
+                        {columns.map((c) => (
+                          <TableCell key={c.key} sx={colSx(c, expandedTableBodyCellSx)}>
+                            {cellText(c, er, valueByKey)}
+                          </TableCell>
+                        ))}
+                      </TableRow>
+                    ))}
+                    {expandedContent != null && key === expandedRowKey && (
+                      // The arbitrary full-width expansion row — the caller
+                      // block owns its padding; zero here so nested outlined
+                      // tables sit flush.
+                      <TableRow key={`${key}-xc`}>
+                        <TableCell
+                          colSpan={columns.length}
+                          sx={{ p: 0, border: "none", bgcolor: "action.hover" }}
+                        >
+                          {expandedContent(row)}
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </Fragment>
+                );
+              })
+            )}
+          </TableBody>
+        </Table>
+      </TableContainer>
+      {paginated && (
+        <TablePagination
+          component="div"
+          count={filtered.length}
+          page={page}
+          onPageChange={(_, p) => setPage(p)}
+          rowsPerPage={rowsPerPage}
+          onRowsPerPageChange={(e) => {
+            setRowsPerPage(parseInt(e.target.value, 10));
+            setPage(0);
+          }}
+          rowsPerPageOptions={rowsPerPageOptions ?? [20, 50, 100]}
+          size="small"
+          sx={{
+            border: "1px solid",
+            borderTop: 0,
+            borderColor: "divider",
+            borderRadius: "0 0 4px 4px",
+          }}
+        />
+      )}
+    </>
   );
 }
 

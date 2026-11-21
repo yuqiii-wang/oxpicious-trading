@@ -47,14 +47,14 @@ export interface ProcessStatus {
   stoppedAt: string | null;
   liveParallel: number | null;
   maxParallel: number | null;
-  /** Supposed-run cadence from the service_config/ static tree
-   *  (database/sql/monitoring/static/service_config/), mirrored from
-   *  the orchestration tier files; "on_demand" for services without
-   *  their own file. */
-  freq: string;
+  /** The task's start cadence from the service_config/ static tree
+   *  (database/sql/monitoring/static/service_config/); "on_demand" for
+   *  services without their own file; null for a resident (always
+   *  lives — cadence does not apply). */
+  freq: string | null;
   /** The freq's supposed-run window in ms (null = no checkable period:
-   *  always / occasionally / on_demand / once) — a Last beat older than
-   *  this renders amber (overdue vs the cadence). */
+   *  resident / occasionally / on_demand / once) — a Last beat older
+   *  than this renders amber (overdue vs the cadence). */
   freqPeriodMs: number | null;
   /** Human-readable timing detail from the same tree entry. */
   schedule: string | null;
@@ -129,6 +129,52 @@ export function fetchProcessRuns(
 ): Promise<ServiceAuditEntry[]> {
   return fetchJson<ProcessRunsResponse>(
     `/api/monitor/stream/runs?service=${encodeURIComponent(service)}&limit=${limit}`,
+  ).then((r) => r.runs);
+}
+
+export interface DailyRunsResponse {
+  success: true;
+  /** The service the counts belong to (echoes the query param). */
+  service: string;
+  /** Shanghai-local day (YYYY-MM-DD) per index — gap-filled, so quiet
+   * days are present with a zero count. */
+  days: string[];
+  /** Pipeline-run counts, index-aligned with `days`. */
+  counts: number[];
+  /** Non-normal exits per day, index-aligned with `days`. */
+  abnormalCounts: number[];
+}
+
+export interface DayRunsResponse {
+  success: true;
+  date: string;
+  runs: ServiceAuditEntry[];
+}
+
+/** Daily run counts of ONE service over the trailing window (GET
+ * /api/monitor/stream/runs/daily) — the per-service run-trend curve the
+ * monitor-scope shared ServiceRunTrend mounts (every service-row
+ * expansion). A day-grain aggregate over append-only audit history
+ * (today's bucket only grows), so the shared cache's 10-min TTL window
+ * is fine. */
+export function fetchDailyRunCounts(
+  service: string,
+  days = 90,
+): Promise<DailyRunsResponse> {
+  return fetchJson<DailyRunsResponse>(
+    `/api/monitor/stream/runs/daily?service=${encodeURIComponent(service)}&days=${days}`,
+  );
+}
+
+/** Every run of ONE Shanghai-local day across ALL services (GET
+ * /api/monitor/stream/runs/day) — the day drill-down under the daily
+ * run-count curve. Append-only history: shared-cache TTL fine. */
+export function fetchDayRuns(
+  date: string,
+  limit = 2000,
+): Promise<ServiceAuditEntry[]> {
+  return fetchJson<DayRunsResponse>(
+    `/api/monitor/stream/runs/day?date=${encodeURIComponent(date)}&limit=${limit}`,
   ).then((r) => r.runs);
 }
 
@@ -211,21 +257,30 @@ export interface StreamAlwaysResponse {
   message: string;
 }
 
-/** Bring the always-on resident processes up: the keeper session runs
- * the watchdog starter then the poller starter — the watchdog then
- * revives every supervised resident process (pollers, db_health, the
- * llm_agents daemons). Resolves as soon as the keeper session is handed
- * to WSL — NOT when
- * services are live. A raw fetch, NOT fetchJson: this POST spawns a
- * long-lived process and must never be served from (or written into)
- * the client cache. Deduped server-side by process-id-tag while the
- * keeper lives; the downstream starters are idempotent anyway (watchdog
- * pgrep-guard, pollers max_parallel-guard), so a redundant start is a
- * harmless no-op. */
+/** Bring the always-on resident processes up: POST /api/monitor/stream-always
+ *  proxies to the monitor area's idempotent ensure-up (every
+ *  desired-running-but-down resident gets an explicit start; over a
+ *  healthy fleet a no-op). When the monitor area itself is down the API
+ *  bootstraps the dead fleet first (wake WSL → boot hook → fleet
+ *  starter), so the call can take up to a few minutes before it
+ *  resolves; the page's spinner covers the wait. Error responses carry
+ *  the route's real failure description — surfaced verbatim, not as a
+ *  bare status line. A raw fetch, NOT fetchJson: this POST touches the
+ *  resident fleet and must never be served from (or written into) the
+ *  client cache. Idempotent end to end (fleet starter pgrep-guard,
+ *  services' max_parallel guard, ensure-up no-op over a healthy fleet),
+ *  so a redundant click is harmless. */
 export async function startStreamAlways(): Promise<StreamAlwaysResponse> {
   const res = await fetch("/api/monitor/stream-always", { method: "POST" });
   if (!res.ok) {
-    throw new Error(`stream-always failed: HTTP ${res.status}`);
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = (await res.json()) as { message?: string };
+      if (body?.message) detail = body.message;
+    } catch {
+      // non-JSON error body — the status line is the message
+    }
+    throw new Error(`stream-always failed: ${detail}`);
   }
   return (await res.json()) as StreamAlwaysResponse;
 }
@@ -238,10 +293,10 @@ export async function startStreamAlways(): Promise<StreamAlwaysResponse> {
  *  service_config freq vs its last successful exit (monitor.service_audit
  *  is_normal_exit). skipRule "within" = skip while last success < periodMs;
  *  "any_success" = skip after any success ever (once); "never" = no
- *  auto-skip (always / occasionally / on_demand). */
+ *  auto-skip (resident (freq null) / occasionally / on_demand). */
 export interface ServiceRunGuard {
   service: string;
-  freq: string;
+  freq: string | null;
   skipRule: "within" | "any_success" | "never";
   periodMs: number | null;
   lastSuccessAt: string | null;
@@ -967,12 +1022,13 @@ export async function fetchDbPartitions(
   return (await res.json()) as DbPartitionsResponse;
 }
 
-/** ONE table's write/read workload trend on the primary (the drill-down
- *  chart behind a workload-row click; a partitioned parent returns its
- *  family aggregate — response.family; live hours=0 = the full retained
- *  history; source=archive = the rollup table's per-GMT-day series over
- *  the full archive history, each point stamped with its operational
- *  day — point.date). */
+/** ONE table's write/read workload trend on the primary (the family
+ *  workload trend chart inside an expanded family row of the workload
+ *  table — the former page-level drill-down is retired; a partitioned
+ *  parent returns its family aggregate — response.family; live hours=0 =
+ *  the full retained history; source=archive = the rollup table's
+ *  per-GMT-day series over the full archive history, each point stamped
+ *  with its operational day — point.date). */
 export async function fetchDbTableTrend(
   schema: string,
   table: string,
@@ -1060,41 +1116,94 @@ export async function fetchDbInstances(
 }
 
 // ---------------------------------------------------------------------------
-// Non-daily tasks — completeness monitor + weekend backfill
+// Orchestration arrangement board — what the maintainer arranged to run
+// vs skip (the Orchestration page's three sections)
 // ---------------------------------------------------------------------------
 
-/** One non-daily task row (GET /api/monitor/non-daily): the orchestration
- *  tier step merged with its check config, its completeness state
- *  (monitor.non_daily_task_state — the identity-grounded verdict) and its
- *  service_config cadence. */
-export type NonDailyState = "unknown" | "complete" | "missing" | "check_failed";
-
-export interface NonDailyTask {
+/** One board task — the shared shape of all three sections' rows (each
+ *  expands into the per-service run trend off `service`). */
+export interface OrchestrationBoardTask {
   service: string;
   tier: string;
   step: string;
-  script: string;
-  args: string[];
-  check: string | null;
-  rerunArgs: string[];
-  rerunEligible: boolean;
-  state: NonDailyState;
+  freq: string;
+  priority: number;
+  /** The arrangement verdict (monitor.orchestration_task_state — the
+   *  Shanghai-calendar freq rule; the state arrives already DECODED). */
+  planState: "unknown" | "due" | "not_due";
   stateCode: number;
-  missingCount: number;
-  missingDetail: Record<string, unknown> | null;
-  attempts: number;
-  lastCheckAt: string | null;
-  lastRerunAt: string | null;
-  nextCheckAt: string | null;
-  freq: string | null;
+  lastSuccessAt: string | null;
+  /** The calendar boundary the verdict keys on (NULL = no boundary:
+   *  never succeeded / always / occasionally / on_demand / once). */
+  dueAt: string | null;
+  arrangedAt: string | null;
+  successSinceArranged: boolean;
+  /** Live-heartbeat join — present only in the running section. */
+  pid: number | null;
+  startedAt: string | null;
+  beatAt: string | null;
+  beatAgeS: number | null;
+  /** Non-daily completeness join (nulls when the task has no row) — the
+   *  queue's missing / attempts / next-check tooltip. */
+  ndState: string | null;
+  ndMissingCount: number | null;
+  ndAttempts: number | null;
+  ndNextCheckAt: string | null;
+  /** service_config cadence enrichment. */
   schedule: string | null;
+  sourceRef: string | null;
+  /** Why the task sits in the no-need section (null elsewhere). */
+  reason: string | null;
 }
 
-export interface NonDailyTasksResponse {
+export interface OrchestrationBoardResponse {
   success: true;
   generatedAt: string;
-  tasks: NonDailyTask[];
+  running: OrchestrationBoardTask[];
+  queue: OrchestrationBoardTask[];
+  noNeed: OrchestrationBoardTask[];
 }
+
+export interface OrchestrationArrangeResponse extends OrchestrationBoardResponse {
+  arranged: {
+    tiers: number;
+    services: number;
+    due: number;
+    notDue: number;
+    notDueServices: string[];
+  };
+}
+
+/** The arrangement board. Plain no-store fetch — the running section is
+ *  a live-heartbeat join and the verdicts change with every arrange
+ *  pass. */
+export async function fetchOrchestrationBoard(): Promise<OrchestrationBoardResponse> {
+  const res = await fetch("/api/monitor/orchestration/board", {
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new Error(`orchestration board fetch failed (HTTP ${res.status})`);
+  }
+  return (await res.json()) as OrchestrationBoardResponse;
+}
+
+/** One arrangement pass over every tier file NOW (the page's Arrange now
+ *  action — the same freq rule the nightly chain's per-tier arrange side
+ *  applies), then the refreshed board. */
+export async function arrangeOrchestration(): Promise<OrchestrationArrangeResponse> {
+  const res = await fetch("/api/monitor/orchestration/arrange", {
+    method: "POST",
+  });
+  if (!res.ok) {
+    throw new Error(`orchestration arrange failed (HTTP ${res.status})`);
+  }
+  return (await res.json()) as OrchestrationArrangeResponse;
+}
+
+// ---------------------------------------------------------------------------
+// Non-daily tasks — completeness checks + weekend backfill (the
+// Orchestration page's actions)
+// ---------------------------------------------------------------------------
 
 export interface NonDailyEvaluateResponse {
   success: true;
@@ -1124,16 +1233,6 @@ export interface NonDailyBackfillResponse {
   detail: string;
 }
 
-/** The non-daily tasks inventory. Plain no-store fetch — the state rows
- *  change with every evaluate / backfill pass. */
-export async function fetchNonDailyTasks(): Promise<NonDailyTasksResponse> {
-  const res = await fetch("/api/monitor/non-daily", { cache: "no-store" });
-  if (!res.ok) {
-    throw new Error(`non-daily tasks fetch failed (HTTP ${res.status})`);
-  }
-  return (await res.json()) as NonDailyTasksResponse;
-}
-
 /** One completeness check pass now (the page's Evaluate action; the
  *  verdicts upsert into monitor.non_daily_task_state). */
 export async function evaluateNonDailyTasks(): Promise<NonDailyEvaluateResponse> {
@@ -1161,4 +1260,115 @@ export async function backfillNonDailyTasks(
     throw new Error(`non-daily backfill failed (HTTP ${res.status})`);
   }
   return (await res.json()) as NonDailyBackfillResponse;
+}
+
+// ---------------------------------------------------------------------------
+//  Cautions — the cross-service caution trail (monitor.caution_log):
+//  service errors, AI-found suspicions, manual pending bugs; resolvable.
+// ---------------------------------------------------------------------------
+
+/** Caution source label (caution_source domain): service | ai | manual. */
+export type CautionSource = "service" | "ai" | "manual";
+/** Caution severity label (caution_severity domain): info | warning |
+ *  error | critical — code order is semantic, best -> worst. */
+export type CautionSeverity =
+  | "info"
+  | "warning"
+  | "error"
+  | "critical";
+export type CautionState = "open" | "resolved" | "all";
+
+/** One caution row: an OPEN row per issue per service (the dedupe
+ *  contract — a recurrence bumps occurrenceCount / lastSeenAt;
+ *  resolution stamps resolvedTimestamp, a recurrence re-raises fresh). */
+export interface CautionEntry {
+  id: number;
+  service: string;
+  source: number;
+  sourceLabel: string;
+  severity: number;
+  severityLabel: string;
+  title: string;
+  detail: Record<string, unknown>;
+  dedupeKey: string;
+  occurrenceCount: number;
+  isResolved: boolean;
+  createdAt: string;
+  lastSeenAt: string;
+  resolvedTimestamp: string | null;
+}
+
+export interface CautionsResponse {
+  success: true;
+  generatedAt: string;
+  state: CautionState;
+  rows: CautionEntry[];
+}
+
+/** The caution trail, OPEN-first (open before resolved, worst severity
+ *  first, most-recent-hit first). Plain no-store fetch (NOT fetchJson):
+ *  live working-set state. */
+export async function fetchCautions(
+  state: CautionState = "open",
+  source: CautionSource | null = null,
+  severity: CautionSeverity | null = null,
+  limit = 200,
+): Promise<CautionsResponse> {
+  const qs = new URLSearchParams({ state, limit: String(limit) });
+  if (source != null) qs.set("source", source);
+  if (severity != null) qs.set("severity", severity);
+  const res = await fetch(`/api/monitor/cautions?${qs.toString()}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new Error(`cautions fetch failed (HTTP ${res.status})`);
+  }
+  return (await res.json()) as CautionsResponse;
+}
+
+/** Resolve ONE open caution row (POST /cautions/resolve). 404s (an
+ *  unknown id / an already-resolved row) throw — the caller refreshes. */
+export async function resolveCaution(id: number): Promise<void> {
+  const res = await fetch("/api/monitor/cautions/resolve", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id }),
+  });
+  if (!res.ok) {
+    throw new Error(`caution resolve failed (HTTP ${res.status})`);
+  }
+}
+
+/** One caution to register (POST /cautions) — severity required,
+ *  source defaults to service, dedupeKey defaults to the title.
+ *  logContext (file / keyword / timeFrom / timeTo) rides into
+ *  detail.log_context — how to locate the error in the logs; missing
+ *  time bounds are stamped with the record time. */
+export interface RegisterCautionInput {
+  service: string;
+  title: string;
+  severity: CautionSeverity;
+  source?: CautionSource;
+  dedupeKey?: string;
+  detail?: Record<string, unknown>;
+  logContext?: {
+    file?: string;
+    keyword?: string;
+    timeFrom?: string;
+    timeTo?: string;
+  };
+}
+
+/** Register ONE caution row (POST /api/monitor/cautions) — the write
+ *  half of the trail (deduped on (service, dedupeKey) over open rows;
+ *  a recurrence bumps occurrenceCount server-side). */
+export async function registerCaution(input: RegisterCautionInput): Promise<void> {
+  const res = await fetch("/api/monitor/cautions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    throw new Error(`caution register failed (HTTP ${res.status})`);
+  }
 }

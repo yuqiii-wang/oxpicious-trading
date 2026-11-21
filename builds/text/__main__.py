@@ -174,9 +174,13 @@ class TextBuild(DataBuild):
                         "(%d new/changed) …", len(rows), len(needing))
             # KEEP UPSERT (not COPY): rows include EXISTING articles whose
             # word_count / industry_id changed — real PK conflicts by design.
+            # Conflict key uses title_hash (WRITER-computed md5(title), see
+            # build_news_rows — not a GENERATED column, which can't ride in
+            # writer rows); the raw-title PK broke at the btree index-entry
+            # cap on multi-KB titles (2026-11-20).
             news_rows = upsert.build_news_rows(rows)
             await bulk_upsert_async(conn, upsert.NEWS_TABLE, news_rows,
-                                    ["title", "source", "date"])
+                                    ["title_hash", "source", "date"])
             # search_tsv (TSV_SPECS): index rows now; the
             # IS NULL guard keeps re-upserts of unchanged articles cheap.
             from _common.tokenization import SearchIndexer

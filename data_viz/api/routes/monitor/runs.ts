@@ -29,6 +29,28 @@ interface AuditLifeRow {
   is_normal_exit: boolean | null;
 }
 
+/** snake_case audit row → the wire shape the UI's ServiceAuditEntry
+ *  mirrors (all three run-reading handlers map through this). */
+function toAuditEntry(r: AuditLifeRow) {
+  return {
+    id: r.id,
+    service: r.service,
+    scope: r.scope,
+    subScope: r.sub_scope,
+    pid: r.pid,
+    startedAt: r.started_at.toISOString(),
+    endedAt: r.ended_at ? r.ended_at.toISOString() : null,
+    exitReason: r.exit_reason,
+    isNormalExit: r.is_normal_exit,
+  };
+}
+
+interface DailyCountRow {
+  day: string;
+  run_count: number;
+  abnormal_count: number;
+}
+
 /** GET /api/monitor/stream/runs?service=...&limit=10 — run audit history
  *  of ONE pipeline process (the pipeline table's expandable rows). Full
  *  per-service history with its own limit — the UI dropped the global
@@ -46,17 +68,62 @@ router.get("/stream/runs", wrapAsync(async (req: Request, res: Response) => {
   res.json({
     success: true,
     service,
-    runs: rows.rows.map((r) => ({
-      id: r.id,
-      service: r.service,
-      scope: r.scope,
-      subScope: r.sub_scope,
-      pid: r.pid,
-      startedAt: r.started_at.toISOString(),
-      endedAt: r.ended_at ? r.ended_at.toISOString() : null,
-      exitReason: r.exit_reason,
-      isNormalExit: r.is_normal_exit,
-    })),
+    runs: rows.rows.map(toAuditEntry),
+  });
+}));
+
+/** GET /api/monitor/stream/runs/daily?service=...&days=90 — DAILY run
+ *  counts of ONE pipeline service over the trailing window (Shanghai-
+ *  local days, gap-filled with 0): the Pipeline-processes History mode's
+ *  per-service daily run-count curve (the picker lists the services).
+ *  Index-aligned `days` / `counts` / `abnormalCounts` arrays like the
+ *  ai/usage aggregate. Counts move only as new runs start (append-only
+ *  audit) — a light read, no caching beyond the client's shared TTL. */
+router.get("/stream/runs/daily", wrapAsync(async (req: Request, res: Response) => {
+  const service = strParam(req, "service", { required: true });
+  const days = intParam(req, "days", { default: 90, clamp: [1, 365] });
+  const pool = getReadPool();
+  const { sql, params } = renderSqlView(
+    "data_viz/api/routes/monitor/stream_runs_daily",
+    { service, days },
+  );
+  const rows = await pool.query<DailyCountRow>(sql, params);
+  res.json({
+    success: true,
+    service,
+    days: rows.rows.map((r) => r.day),
+    counts: rows.rows.map((r) => r.run_count),
+    abnormalCounts: rows.rows.map((r) => r.abnormal_count),
+  });
+}));
+
+/** GET /api/monitor/stream/runs/day?date=YYYY-MM-DD[&limit=2000] — every
+ *  run of ONE Shanghai-local day across ALL services (residents'
+ *  included — a restart day shows the closing and the opening life): the
+ *  day drill-down under the daily run-count curve, the same run-list
+ *  format as a per-service expansion grouped by service in the UI. The
+ *  default covers the busiest days (the nightly chain + restart waves
+ *  can exceed 500 lives/day). */
+router.get("/stream/runs/day", wrapAsync(async (req: Request, res: Response) => {
+  const date = strParam(req, "date", { required: true });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new HttpError(
+      400,
+      "INVALID_PARAM",
+      `query param 'date' must be YYYY-MM-DD, got '${date}'`,
+    );
+  }
+  const limit = intParam(req, "limit", { default: 2000, clamp: [1, 5000] });
+  const pool = getReadPool();
+  const { sql, params } = renderSqlView(
+    "data_viz/api/routes/monitor/stream_runs_day",
+    { day: date, limit },
+  );
+  const rows = await pool.query<AuditLifeRow>(sql, params);
+  res.json({
+    success: true,
+    date,
+    runs: rows.rows.map(toAuditEntry),
   });
 }));
 

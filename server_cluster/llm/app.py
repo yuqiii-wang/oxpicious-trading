@@ -5,7 +5,7 @@
 ``app.state`` (the routers resolve them per request via
 ``routers.deps`` — never through closures), installs the OpenAI error
 handler, includes every ``routers/`` module, and wires the lifespan
-(idle-offload watchdog start + the startup warm-up pass). Composition
+(idle-policy watchdog start + the startup warm-up pass). Composition
 root only — no route logic lives here."""
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ def create_app(config: Optional[HostConfig] = None,
         title="local-model-host",
         description="Resident host for the repo's local AI models "
                     "(OpenAI chat-completions surface + tokenization + "
-                    "load/offload management).",
+                    "load/offload/unload management).",
         version="1.0.0",
         lifespan=lifespan,
     )

@@ -82,7 +82,7 @@ const APPS: Record<AppKey, AppConfig> = {
     defaultPath: "/strategy/singleton",
     tabs: [
       { label: "Singleton", path: "/strategy/singleton" },
-      { label: "Commons", path: "/strategy/commons" },
+      { label: "Forecast", path: "/strategy/forecast" },
     ],
   },
   monitor: {
@@ -90,11 +90,12 @@ const APPS: Record<AppKey, AppConfig> = {
     defaultPath: "/monitor",
     tabs: [
       { label: "Services", path: "/monitor" },
+      { label: "Cautions", path: "/monitor/cautions" },
       { label: "External Resources", path: "/monitor/ext-resources" },
       { label: "AI", path: "/monitor/ai" },
       { label: "DB", path: "/monitor/db" },
       { label: "Source Data", path: "/monitor/src-data" },
-      { label: "Non-daily", path: "/monitor/non-daily" },
+      { label: "Orchestration", path: "/monitor/orchestration" },
     ],
   },
   config: {

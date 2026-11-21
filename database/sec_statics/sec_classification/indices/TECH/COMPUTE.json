@@ -15,19 +15,5 @@
       }
     ],
     "is_industry_not_strategy": true
-  },
-  "DUMMY_COMPUTE": {
-    "name": "算力综合指数",
-    "exchange": null,
-    "sector_id": "TECH",
-    "industry_id": "COMPUTE",
-    "tags": [
-      {
-        "sector_id": "TECH",
-        "industry_id": "COMPUTE"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
   }
 }

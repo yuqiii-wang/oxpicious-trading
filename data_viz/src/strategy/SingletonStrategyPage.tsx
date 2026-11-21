@@ -4,14 +4,25 @@
  * The backtest itself is run by the Python package `strategy.singleton_trading`
  * (python -m strategy.singleton_trading --sec-type index --codes <code>),
  * which writes results to the strategy schema. This page reads those results
- * via the API and renders the chart + B/S markers + decision table.
+ * via the API and renders the shared CodeTrendChart — INHERITED, not
+ * hand-rolled (user-directed 2026-11-18): the market rows come from the
+ * same synced sec-baseline data path every code-trend consumer uses, and
+ * the strategy's OWN data (B/S decision markers, run/sync subtitle,
+ * sync-gap band) layers on top via SingletonStrategyCodeTrendChart.
+ * The DecisionTable mirrors the chart's visible window; clicking a row
+ * emphasizes + pans to its marker.
  *
  * Risk metrics (computed by `python -m strategy._risks`) are loaded in
  * parallel and shown in an expandable RiskPanel below the chart.
  *
- * The "Run Strategy" button spawns the Python backtest + risk computation
- * via the backend (POST /api/strategy/singleton/run). When the process
- * exits, the page invalidates cache and reloads from DB.
+ * The "Run Strategy" / "Train Model" buttons SUBMIT the Python job via
+ * the backend (POST /api/strategy/singleton/run|train resolves at the
+ * cluster accept, 2026-11-18 async submit) — the process keeps running
+ * server-side. useProcessStatusPoll drives the spinners from the
+ * process-status endpoint (60s idle / 5s active auto-check + a manual
+ * refresh button); when a process exits, the page invalidates cache and
+ * reloads from DB (a non-zero exit surfaces the process's log tail via
+ * /singleton/process-result).
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -19,51 +30,71 @@ import {
   Box,
   CircularProgress,
   Stack,
-  Typography,
 } from "@mui/material";
-import EChart from "@/shared/charts/EChart";
-import { useChartThemeMode } from "@/shared/charts/base-chart";
-import { useAiAskAddon } from "@/shared/ai-ask";
-import type { AiAskSpec } from "@/shared/ai-ask";
-import { useDocs } from "@/shared/docs";
+import type { StrategyDecision } from "@shared/types";
 import {
   checkExistingStrategy,
   runSingletonStrategy,
   trainStrategyModel,
-  fetchStrategyProcessStatus,
-  serializeSelection,
+  fetchStrategyProcessResult,
   singletonRunTag,
   singletonTrainTag,
+  formatFetchError,
+  DEFAULT_FAULT_TOLERANCE,
   DEFAULT_STRATEGY_SELECTION,
   type CheckExistingResult,
   type StrategySelection,
 } from "@/lib/api-client";
-import { buildSingletonStrategyOption } from "./singletonStrategyChartOption";
+import type { CodeTrendSecType } from "@/ui/OhlcChart";
 import {
   StrategyPageShell,
   useStrategyNav,
   SummaryChip,
   DecisionTable,
+  type DecisionWindowInfo,
   RiskPanel,
 } from "./_common";
 import {
   useStrategyData,
-  useChartInteractions,
+  useProcessStatusPoll,
   RunControls,
   PkConfirmModal,
+  SingletonStrategyCodeTrendChart,
 } from "./singleton";
 
+/** AI-Ask seed keywords for the inherited code-trend "?" button (the
+ *  page's own backtest AI addon retired with the hand-rolled chart). */
+const SINGLETON_AI_KEYWORDS = [
+  "singleton strategy",
+  "backtest decisions",
+  "fault tolerance",
+];
+
 export default function SingletonStrategyPage() {
-  const themeMode = useChartThemeMode();
 
-  // Signal-family tag selection (no weights — the tags input) + FT
+  // Signal-family tag selection (no weights — the tags input). Fault
+  // tolerance is PINNED at 10% (user-directed) — a constant, not state.
   const [selection, setSelection] = useState<StrategySelection>(DEFAULT_STRATEGY_SELECTION);
-  const [faultTolerance, setFaultTolerance] = useState(10);
+  const faultTolerance = DEFAULT_FAULT_TOLERANCE;
 
-  // Run Strategy state
+  // The MODE toggle (2026-11-19): "signals" = the analysis signal
+  // families (the tags input, analysis_signals.history_signals pickup);
+  // "oracle" = the HINDSIGHT oracle mode (strategy.factors_and_algos.
+  // _oracle — only analysis.oracle_signals pivot actions, swing-
+  // proportional confidence). Oracle mode replaces the family selection
+  // with the single "oracle" algo name end-to-end (run, train, check,
+  // history).
+  const [mode, setMode] = useState<"signals" | "oracle">("signals");
+  const effectiveSelection: StrategySelection = useMemo(
+    () => (mode === "oracle" ? ["oracle"] : selection),
+    [mode, selection],
+  );
+
+  // Run Strategy state — submission + error only: completion is the
+  // refreshed results themselves (no completion alert, user-directed
+  // 2026-11-18 — no backend internals on the page).
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
-  const [runSuccess, setRunSuccess] = useState(false);
   // PK-exists confirmation modal state
   const [checkingPk, setCheckingPk] = useState(false);
   const [pkModalOpen, setPkModalOpen] = useState(false);
@@ -72,23 +103,10 @@ export default function SingletonStrategyPage() {
   // Train Model state (Optuna _optm_engine)
   const [training, setTraining] = useState(false);
   const [trainError, setTrainError] = useState<string | null>(null);
-  const [trainSuccess, setTrainSuccess] = useState(false);
 
-  // Remote-process state (process-id-tag registry): a Run/Train process
-  // for the CURRENT (code, secType, selection, ft) may already be running
-  // from before a page refresh (or another tab). While its tag is held,
-  // the buttons spin and an info note is shown; when it exits, data is
-  // reloaded from the DB automatically.
-  const [remoteRunning, setRemoteRunning] = useState(false);
-  const [remoteTraining, setRemoteTraining] = useState(false);
-  const [remoteNote, setRemoteNote] = useState<string | null>(null);
-
-  // Shared classification nav
-  const nav = useStrategyNav((code) => {
-    if (!code) {
-      // Reset handled by useStrategyData
-    }
-  });
+  // Shared classification nav (no onCodeChange callback — the data hook
+  // resets on its own when the code clears)
+  const nav = useStrategyNav();
 
   // Data loading and state management
   const {
@@ -98,153 +116,167 @@ export default function SingletonStrategyPage() {
     error,
     selectedPeriod,
     displayBacktest,
-    backtestRef,
     setSelectedPeriod,
     reload,
+    runHistory,
+    selectedSeqId,
+    selectRun,
   } = useStrategyData(
-    nav.searchCode, nav.secType, selection, faultTolerance,
+    nav.searchCode, nav.secType, effectiveSelection, faultTolerance,
   );
 
-  // ---- Remote-process recovery (process-id-tag status poll) --------------
-  // Poll the running-state of the CURRENT identity's run/train tags on
-  // mount and every 5s while one is held. Covers: page refresh mid-run,
-  // duplicate clicks (deduped server-side), and processes started in
-  // another tab. When a remote process exits, reload data from the DB.
+  // ---- Backend process state (process-id-tag status poll) ---------------
+  // The run/train POSTs resolve at the SUBMIT — the process keeps
+  // running server-side, so this poll is the single source of truth for
+  // "is a backend process running for the CURRENT identity". Covers: a
+  // just-submitted job, a page refresh mid-run, duplicate clicks
+  // (deduped server-side), and processes started in another tab. On a
+  // tag's exit edge the page reloads data from the DB (completion IS
+  // the refreshed results — user-directed 2026-11-18) or, for a
+  // non-zero exit, surfaces the process's own log tail via
+  // /singleton/process-result.
   const runTag = nav.searchCode
-    ? singletonRunTag(nav.searchCode, nav.secType, selection, faultTolerance)
+    ? singletonRunTag(nav.searchCode, nav.secType, effectiveSelection, faultTolerance)
     : "";
   const trainTag = nav.searchCode
-    ? singletonTrainTag(nav.searchCode, nav.secType, selection)
+    ? singletonTrainTag(nav.searchCode, nav.secType, effectiveSelection)
     : "";
-  useEffect(() => {
-    if (!runTag || !trainTag) return;
-    let cancelled = false;
-    let wasRun = false;
-    let wasTrain = false;
-    const poll = async () => {
+  const onRunSettled = useCallback((exitCode: number | null) => {
+    if (exitCode === null || exitCode === 0) {
+      if (nav.searchCode) reload(nav.searchCode, nav.secType);
+      return;
+    }
+    void (async () => {
       try {
-        const status = await fetchStrategyProcessStatus([runTag, trainTag]);
-        if (cancelled) return;
-        const runActive = status[runTag] === true;
-        const trainActive = status[trainTag] === true;
-        if (runActive) {
-          wasRun = true;
-          setRemoteRunning(true);
-          setRemoteNote("Strategy process already running — waiting for it to finish…");
-        } else if (wasRun) {
-          wasRun = false;
-          setRemoteRunning(false);
-          setRemoteNote(null);
-          setRunSuccess(true);
-          reload(nav.searchCode, nav.secType);
-        }
-        if (trainActive) {
-          wasTrain = true;
-          setRemoteTraining(true);
-          setRemoteNote("Training process already running — waiting for it to finish…");
-        } else if (wasTrain) {
-          wasTrain = false;
-          setRemoteTraining(false);
-          setRemoteNote(null);
-          setTrainSuccess(true);
-          reload(nav.searchCode, nav.secType);
-        }
+        const result = await fetchStrategyProcessResult(runTag);
+        const tail = result.stderr.split("\n").filter(Boolean).slice(-5).join("\n");
+        setRunError(tail || `The strategy task failed (exit code ${exitCode}).`);
       } catch {
-        /* status poll is best-effort */
+        setRunError(`The strategy task failed (exit code ${exitCode}).`);
       }
-    };
-    void poll();
-    const timer = setInterval(poll, 5_000);
-    return () => { cancelled = true; clearInterval(timer); };
-  }, [runTag, trainTag, nav.searchCode, nav.secType, reload]);
-
-  // Chart interaction handlers
+    })();
+  }, [nav.searchCode, nav.secType, reload, runTag]);
+  const onTrainSettled = useCallback((exitCode: number | null) => {
+    if (exitCode === null || exitCode === 0) {
+      if (nav.searchCode) reload(nav.searchCode, nav.secType);
+      return;
+    }
+    void (async () => {
+      try {
+        const result = await fetchStrategyProcessResult(trainTag);
+        const tail = result.stderr.split("\n").filter(Boolean).slice(-5).join("\n");
+        setTrainError(tail || `The training task failed (exit code ${exitCode}).`);
+      } catch {
+        setTrainError(`The training task failed (exit code ${exitCode}).`);
+      }
+    })();
+  }, [nav.searchCode, nav.secType, reload, trainTag]);
   const {
-    chartInstanceRef,
-    handleChartClick,
-    handleCanvasClick,
-    handleChartReady,
-  } = useChartInteractions(
-    displayBacktest,
-    backtestRef,
+    runActive: remoteRunning,
+    trainActive: remoteTraining,
+    refreshing: statusRefreshing,
+    refresh: refreshStatus,
+  } = useProcessStatusPoll({ runTag, trainTag, onRunSettled, onTrainSettled });
+
+  // Selected Trade-Decisions row — its marker on the code trend draws
+  // with the inherited grow+glow emphasis (selectedSignalDate) and the
+  // chart pans to reveal it when off-screen (focusDateRequest). Resets
+  // with the displayed run: decision_no keys are per-run.
+  const [selectedDecisionNo, setSelectedDecisionNo] = useState<number | null>(null);
+  const [focusReq, setFocusReq] = useState<{ date: string; seq: number } | null>(null);
+  useEffect(() => {
+    setSelectedDecisionNo(null);
+    setFocusReq(null);
+  }, [backtest]);
+
+  // ---- Visible-window mirror ------------------------------------------------
+  // The Trade-Decisions table mirrors the chart's VISIBLE window (the
+  // in-chart dataZoom): only decisions whose exec_date falls inside the
+  // reported date range are listed. SingletonStrategyCodeTrendChart
+  // reports the visible {start, end} dates on every zoom drag / rows
+  // rebuild (onVisibleRangeChange). Reset when a new run loads.
+  const [decisionWindow, setDecisionWindow] = useState<{ start: string; end: string } | null>(null);
+  useEffect(() => { setDecisionWindow(null); }, [backtest]);
+  const handleVisibleRange = useCallback(
+    (r: { start: string; end: string } | null) => {
+      setDecisionWindow(r ? { start: r.start, end: r.end } : null);
+    },
+    [],
   );
 
-  // Chart option
-  const chartOption = useMemo(() => {
-    if (!displayBacktest) return null;
-    return buildSingletonStrategyOption({
-      data: displayBacktest, themeMode, selectedPeriod,
-    });
-  }, [displayBacktest, themeMode, selectedPeriod]);
-
-  // AI Ask — semantics for the backtest chart; state carries the CURRENT
-  // algo weights / fault tolerance / selected risk period so the modal and
-  // the LLM always describe the view on screen.
-  const docs = useDocs();
-  const aiAskSpec = useMemo<AiAskSpec>(
-    () => ({
-      intro: docs.text("ui.strategy.singleton", {
-        code: displayBacktest?.code ?? nav.searchCode ?? "",
-      }),
-      instruments: displayBacktest?.code
-        ? [{ code: displayBacktest.code, name: displayBacktest.name, assetClass: nav.secType }]
-        : [],
-      window: displayBacktest && displayBacktest.ohlc.length > 0
-        ? {
-            start: displayBacktest.ohlc[0].date,
-            end: displayBacktest.ohlc[displayBacktest.ohlc.length - 1].date,
-            granularity: "daily",
-          }
-        : undefined,
-      series: docs.series("ui.strategy.singleton"),
-      state: {
-        signal_families: serializeSelection(selection),
-        fault_tolerance: faultTolerance,
-        selected_period: selectedPeriod
-          ? `${selectedPeriod.periodType} ${selectedPeriod.periodValue}`
-          : "none",
+  // The decisions visible inside the current window (the table's rows) +
+  // the window's date range and the run's unfiltered total, for
+  // DecisionTable's "slider window … · N of M" caption. Dates compare as
+  // ISO strings; a null window (pre-mount / no rows yet) lists everything.
+  const { visibleDecisions, visibleRange } = useMemo(() => {
+    if (!backtest) {
+      return {
+        visibleDecisions: [] as StrategyDecision[],
+        visibleRange: null as DecisionWindowInfo | null,
+      };
+    }
+    if (!decisionWindow) {
+      return {
+        visibleDecisions: backtest.decisions,
+        visibleRange: null,
+      };
+    }
+    return {
+      visibleDecisions: backtest.decisions.filter(
+        (d) => d.exec_date >= decisionWindow.start && d.exec_date <= decisionWindow.end,
+      ),
+      visibleRange: {
+        start: decisionWindow.start,
+        end: decisionWindow.end,
+        total: backtest.decisions.length,
       },
-      notes: docs.notes("ui.strategy.singleton"),
-    }),
-    [docs, displayBacktest, nav.searchCode, nav.secType, selection, faultTolerance, selectedPeriod],
-  );
-  const aiAskAddon = useAiAskAddon({
-    title: "Singleton Strategy Backtest",
-    subtitle: `${displayBacktest?.code ?? nav.searchCode ?? ""} · MA5/MA60 crossover backtest`,
-    option: chartOption,
-    spec: aiAskSpec,
-    getInstance: () => chartInstanceRef.current,
-  });
+    };
+  }, [backtest, decisionWindow]);
 
-  // Run Strategy handler
+  // Row click → select (toggle-off on the selected row) + pan the chart
+  // window to the decision's exec_date when off-screen (the focus hook
+  // keeps the current window span; a fresh seq per request re-applies).
+  const handleSelectDecision = useCallback((no: number | null) => {
+    setSelectedDecisionNo(no);
+    if (no != null && displayBacktest) {
+      const decision = displayBacktest.decisions.find((d) => d.decision_no === no);
+      if (decision) {
+        setFocusReq((prev) => ({
+          date: decision.exec_date,
+          seq: (prev?.seq ?? 0) + 1,
+        }));
+      }
+    }
+  }, [displayBacktest]);
+
+  // Run Strategy handler — SUBMIT only (the POST resolves at the cluster
+  // accept); the status poll owns the spinners/notes from here, and its
+  // exit edge reloads the data. `running` now spans just the submit.
   const handleRun = useCallback(async (force: boolean = false) => {
     if (!nav.searchCode || running || remoteRunning) return;
     setRunning(true);
     setRunError(null);
-    setRunSuccess(false);
     try {
       const result = await runSingletonStrategy(
-        nav.searchCode, nav.secType, selection, faultTolerance,
+        nav.searchCode, nav.secType, effectiveSelection, faultTolerance,
         force,
-        singletonRunTag(nav.searchCode, nav.secType, selection, faultTolerance),
+        singletonRunTag(nav.searchCode, nav.secType, effectiveSelection, faultTolerance),
       );
-      if (result.already_running) {
-        // Deduped by the process-id-tag registry — the running process
-        // finishes under the status poll, which reloads data on exit.
-        setRemoteNote("Strategy process already running — waiting for it to finish…");
-        setRemoteRunning(true);
-      } else if (result.success) {
-        setRunSuccess(true);
+      if (result.accepted) {
+        // Submitted (or deduped onto the in-flight process) — poll right
+        // away so the buttons flip without waiting a full idle interval.
+        refreshStatus();
       } else {
-        const tail = result.stderr.split("\n").slice(-5).join("\n");
-        setRunError(`Exit code ${result.exitCode}: ${tail || "see server logs"}`);
+        // The run was NOT started: the cluster's verbatim rejection text
+        // or the unreachable-area operator message.
+        setRunError(result.error || "The strategy task could not be submitted.");
       }
     } catch (e) {
-      setRunError(String(e instanceof Error ? e.message : e));
+      setRunError(formatFetchError(e));
     } finally {
       setRunning(false);
     }
-  }, [nav.searchCode, nav.secType, running, remoteRunning, selection, faultTolerance]);
+  }, [nav.searchCode, nav.secType, running, remoteRunning, effectiveSelection, faultTolerance, refreshStatus]);
 
   // Pre-check for PK existence
   const handleRunClick = useCallback(async () => {
@@ -253,7 +285,7 @@ export default function SingletonStrategyPage() {
     setRunError(null);
     try {
       const existing = await checkExistingStrategy(
-        nav.searchCode, nav.secType, selection, faultTolerance,
+        nav.searchCode, nav.secType, effectiveSelection, faultTolerance,
       );
       if (existing.exists) {
         setExistingRun(existing);
@@ -263,11 +295,11 @@ export default function SingletonStrategyPage() {
         await handleRun(true);
       }
     } catch (e) {
-      setRunError(String(e instanceof Error ? e.message : e));
+      setRunError(formatFetchError(e));
     } finally {
       setCheckingPk(false);
     }
-  }, [nav.searchCode, nav.secType, running, selection, faultTolerance, handleRun]);
+  }, [nav.searchCode, nav.secType, running, effectiveSelection, faultTolerance, handleRun]);
 
   const handleForceRerun = useCallback(() => {
     setPkModalOpen(false);
@@ -280,44 +312,45 @@ export default function SingletonStrategyPage() {
     setExistingRun(null);
   }, []);
 
-  // Train Model handler — runs the Optuna study; no PK path (training
-  // only upserts algo_configs, it writes no backtest rows).
-  // After successful training, auto-triggers Run Strategy with the new params.
+  // Train Model handler — SUBMIT only (the POST resolves at the cluster
+  // accept; training runs minutes server-side). No PK path (training
+  // only upserts algo_configs — it writes no backtest rows ITSELF).
+  // The TRAINER's final step is the trained strategy's own run (it
+  // spawns the run-once CLI, strategy.singleton_trading, with --force
+  // at the pinned default FT, before the job exits), so a finished
+  // training leaves a run-history record even with no browser open.
+  // This handler therefore does NOT browser-drive a follow-up run; the
+  // status poll's train-tag exit edge reloads the data with the trained
+  // run in place.
   const handleTrain = useCallback(async () => {
     if (!nav.searchCode || training || running || remoteTraining) return;
     setTraining(true);
     setTrainError(null);
-    setTrainSuccess(false);
     try {
       const result = await trainStrategyModel(
-        nav.searchCode, nav.secType, selection, 50,
-        singletonTrainTag(nav.searchCode, nav.secType, selection),
+        nav.searchCode, nav.secType, effectiveSelection, 50,
+        singletonTrainTag(nav.searchCode, nav.secType, effectiveSelection),
       );
-      if (result.already_running) {
-        // Deduped by the process-id-tag registry — the running study
-        // finishes under the status poll, which reloads data on exit.
-        setRemoteNote("Training process already running — waiting for it to finish…");
-        setRemoteTraining(true);
-      } else if (result.success) {
-        setTrainSuccess(true);
-        await handleRun(true);
+      if (result.accepted) {
+        // Submitted (or deduped onto the in-flight study) — poll right
+        // away so the buttons flip without waiting a full idle interval.
+        refreshStatus();
       } else {
-        const tail = result.stderr.split("\n").slice(-5).join("\n");
-        setTrainError(`Exit code ${result.exitCode}: ${tail || "see server logs"}`);
+        setTrainError(result.error || "The training task could not be submitted.");
       }
     } catch (e) {
-      setTrainError(String(e instanceof Error ? e.message : e));
+      setTrainError(formatFetchError(e));
     } finally {
       setTraining(false);
     }
-  }, [nav.searchCode, nav.secType, training, running, remoteTraining, selection, handleRun]);
+  }, [nav.searchCode, nav.secType, training, running, remoteTraining, effectiveSelection, refreshStatus]);
 
   return (
     <>
       <StrategyPageShell
         nav={nav}
         title="Singleton Strategy"
-        subtitle="Select a security to view its pre-computed MA5/MA60 crossover backtest. B/S markers appear on the chart with hover tooltips showing full decision details. Click Run Strategy to (re)compute via Python."
+        subtitle="Select a security to view its code trend (the shared, synced market data) with the strategy's B/S decision markers layered on. The subtitle reports where the displayed run's rows end vs the market data — uncovered days shade as a warning band. Click a decision row below to spotlight its marker on the chart — the table mirrors the chart's visible window, so pan/zoom to filter the rows. Click Run Strategy to (re)compute."
       >
         {(searchCode) =>
           searchCode && (
@@ -327,18 +360,22 @@ export default function SingletonStrategyPage() {
                 secType={nav.secType}
                 selection={selection}
                 onSelectionChange={setSelection}
-                faultTolerance={faultTolerance}
-                onFaultToleranceChange={setFaultTolerance}
+                mode={mode}
+                onModeChange={setMode}
+                runHistory={runHistory}
+                selectedSeqId={selectedSeqId}
+                onSelectRun={selectRun}
                 running={running || remoteRunning}
+                remoteRunning={remoteRunning}
                 checkingPk={checkingPk}
-                runSuccess={runSuccess}
                 runError={runError}
-                remoteNote={remoteNote}
                 onRunClick={handleRunClick}
                 training={training || remoteTraining}
-                trainSuccess={trainSuccess}
+                remoteTraining={remoteTraining}
                 trainError={trainError}
                 onTrainClick={handleTrain}
+                statusRefreshing={statusRefreshing}
+                onRefreshStatus={refreshStatus}
               />
 
               {loading && (
@@ -382,29 +419,24 @@ export default function SingletonStrategyPage() {
                 </Box>
               )}
 
-              {/* Chart */}
-              {!loading && chartOption && (
-                <Box
-                  sx={{
-                    bgcolor: "background.paper",
-                    border: 1,
-                    borderColor: "divider",
-                    borderRadius: 1.5,
-                    p: 1,
-                  }}
-                >
-                  <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
-                    Backtest — {displayBacktest?.code ?? searchCode}
-                    {aiAskAddon}
-                  </Typography>
-                  <EChart
-                    option={chartOption}
-                    height={520}
-                    onEvents={{ click: handleChartClick }}
-                    onReady={handleChartReady}
-                    onCanvasClick={handleCanvasClick}
-                  />
-                </Box>
+              {/* Code trend + the strategy's own data (the shared
+                  CodeTrendChart, inherited — market rows from the synced
+                  sec-baseline path; B/S decision markers, the run/sync
+                  subtitle and the uncovered-days gap band from the
+                  subclass). Renders even before any run exists. */}
+              {!loading && (
+                <SingletonStrategyCodeTrendChart
+                  secType={nav.secType as CodeTrendSecType}
+                  code={searchCode}
+                  name={displayBacktest?.name}
+                  backtest={displayBacktest}
+                  height={520}
+                  selectedDecisionNo={selectedDecisionNo}
+                  selectedPeriod={selectedPeriod}
+                  focusDateRequest={focusReq}
+                  onVisibleRangeChange={handleVisibleRange}
+                  aiSearchKeywords={SINGLETON_AI_KEYWORDS}
+                />
               )}
 
               {/* No backtest found */}
@@ -424,11 +456,16 @@ export default function SingletonStrategyPage() {
                 />
               )}
 
-              {/* Decision table (expandable) */}
+              {/* Decision table (expandable) — rows mirror the chart's
+                  time-slider window; chips + the slider-window caption
+                  describe the slice */}
               {!loading && backtest && backtest.decisions.length > 0 && (
                 <DecisionTable
-                  decisions={backtest.decisions}
+                  decisions={visibleDecisions}
                   faultTolerance={backtest.fault_tolerance ?? 0}
+                  windowInfo={visibleRange ?? undefined}
+                  selectedDecisionNo={selectedDecisionNo}
+                  onSelectDecision={handleSelectDecision}
                 />
               )}
             </Stack>

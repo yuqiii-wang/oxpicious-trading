@@ -12,9 +12,11 @@ models (see the package docstring). ``path`` values are relative to
 THIS package directory (the gitignored ``local_models/`` weights
 subdir) and are resolved to absolutes by :meth:`HostConfig.resolve`.
 Per-model ``idle_offload_s=None`` inherits the host default
-(:data:`DEFAULT_IDLE_OFFLOAD_S` = 3600 — the one-hour offload the word
-segmenter has always used; migrating it here generalizes it to every
-model).
+(:data:`DEFAULT_IDLE_OFFLOAD_S` = 1800 — the GPU→CPU offload tier,
+tightened from the one-hour age the word segmenter has always used),
+and ``idle_unload_s=None`` inherits :data:`DEFAULT_IDLE_UNLOAD_S`
+(= 3600 — the second tier: a further hour of no use on CPU drops the
+weights from RAM entirely).
 
 Env knobs (all optional):
   * ``LOCAL_MODEL_HOST_URL``       — the URL in-repo clients default to
@@ -40,10 +42,14 @@ DEFAULT_CONFIG_PATH = PACKAGE_DIR / "host_config.json"
 # path below is relative to PACKAGE_DIR.
 MODELS_DIR_NAME = "local_models"
 
-# The resident-process offload policy: after this many idle seconds a
-# loaded model's weights move to CPU (RAM keeps them; CUDA cache is
-# emptied). Per-model override via ModelBackendSpec.idle_offload_s.
-DEFAULT_IDLE_OFFLOAD_S = 3600.0
+# The resident-process offload policy, TWO tiers: after
+# DEFAULT_IDLE_OFFLOAD_S idle seconds a loaded model's weights move to
+# CPU (RAM keeps them; CUDA cache is emptied), and after a further
+# DEFAULT_IDLE_UNLOAD_S idle seconds on CPU the weights drop from RAM
+# entirely (the next use cold-loads from disk). Per-model overrides via
+# ModelBackendSpec.idle_offload_s / idle_unload_s.
+DEFAULT_IDLE_OFFLOAD_S = 1800.0
+DEFAULT_IDLE_UNLOAD_S = 3600.0
 
 DEFAULT_PORT = 8767
 
@@ -72,6 +78,11 @@ class ModelBackendSpec(BaseModel):
     idle_offload_s: Optional[float] = Field(
         default=None, ge=1.0,
         description="Idle seconds before weights offload to CPU; None "
+        "inherits the host default (1800).")
+    idle_unload_s: Optional[float] = Field(
+        default=None, ge=1.0,
+        description="Idle seconds after the CPU offload before the RAM "
+        "weights drop entirely (next use cold-loads from disk); None "
         "inherits the host default (3600).")
     # --- torch lifecycle (tokenization / jev) --------------------------
     device: str = Field(default="cuda", description="torch device; a "
@@ -128,7 +139,13 @@ class HostConfig(BaseModel):
         "in a background thread right after bind.")
     idle_offload_s: float = Field(
         default=DEFAULT_IDLE_OFFLOAD_S, ge=1.0,
-        description="Host-default idle-offload age (the 1-hour policy).")
+        description="Host-default tier-1 idle age (GPU -> CPU offload; "
+        "the 30-minute policy).")
+    idle_unload_s: float = Field(
+        default=DEFAULT_IDLE_UNLOAD_S, ge=1.0,
+        description="Host-default tier-2 idle age on top of the "
+        "offload (CPU RAM weights drop entirely; the further-hour "
+        "policy).")
     auth_token: Optional[str] = Field(
         default=None,
         description="When set, chat requests must present exactly this "

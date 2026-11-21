@@ -83,6 +83,11 @@ export const BOLL_BAND_FILL = cssVar("--chart-boll-fill", "#3498db");  // same h
 export const DIVIDEND_COLOR = cssVar("--chart-dividend", "#f1c40f"); // gold — dividend marker
 export const SPLIT_COLOR = cssVar("--chart-split", "#16a085"); // teal — split/conversion marker
 
+// The ✕ overlay of the no-buy/no-sell cross-triangle markers (the
+// negative-confidence REJECT rows) — white reads over both saturated
+// up/down fills in either theme
+export const REJECT_CROSS_COLOR = cssVar("--chart-reject-cross", "#ffffff");
+
 // Forecast trigger-day markers (analysis_forecasts.forecast_results.
 // trigger_dates — the merged signals' MID days a clicked forecast row
 // was computed over). Light purple family: a pinpoint circle at each
@@ -268,6 +273,38 @@ export interface AxisColors {
   tooltipBg: string;
 }
 
+// ----------------------------------------------------------------------------
+// Legend theming — the unified legend color set every ECharts legend uses.
+// Resolved from colors.css `--chart-legend-*` tokens. Dark-mode legend text is
+// deliberately BRIGHTER than the axis text (--chart-text-dark): a legend sits
+// on the card background, not the plot area, and the muted axis gray all but
+// vanished there (the Volatility page's legends were the reported case).
+// ----------------------------------------------------------------------------
+export interface LegendColors {
+  textColor: string;
+  inactiveColor: string;
+  pageIconColor: string;
+  pageTextStyleColor: string;
+}
+
+/** Resolve the unified legend colors for the given theme mode. */
+export function legendColors(mode: ThemeMode): LegendColors {
+  if (mode === "dark") {
+    return {
+      textColor: cssVar("--chart-legend-text-dark", "#C6D0E2"),
+      inactiveColor: cssVar("--chart-legend-inactive-dark", "#5A6478"),
+      pageIconColor: cssVar("--chart-legend-page-icon-dark", "#7A86A0"),
+      pageTextStyleColor: cssVar("--chart-legend-page-text-dark", "#7A86A0"),
+    };
+  }
+  return {
+    textColor: cssVar("--chart-legend-text-light", "#4E5768"),
+    inactiveColor: cssVar("--chart-legend-inactive-light", "#B9BFCC"),
+    pageIconColor: cssVar("--chart-legend-page-icon-light", "#9AA4B8"),
+    pageTextStyleColor: cssVar("--chart-legend-page-text-light", "#9AA4B8"),
+  };
+}
+
 /**
  * Shared legend config — positions legend at top-right with enough clearance
  * so it never overlaps y-axis names/labels. Callers should pair this with
@@ -276,17 +313,28 @@ export interface AxisColors {
  * The legend is positioned 4px from the top edge of the chart container,
  * and the grid should have top >= 30 to leave room for the legend height
  * (~20px) plus the y-axis name (~12px).
+ *
+ * Colors come from `legendColors(mode)` — the unified legend scheme (text,
+ * toggled-off inactive, scroll pager). Builders tuning a legend should keep
+ * layout keys only (top/right/type/itemWidth/…, fontSize via
+ * `textStyle: { fontSize }`) and inherit the colors — `baseChartOption`
+ * merges partial `legend` overrides over this fragment, so re-declaring
+ * `textStyle.color` in a builder breaks the unification.
  */
 export function commonLegend(
   mode: ThemeMode,
   extra: Partial<import("echarts").LegendComponentOption> = {},
 ): import("echarts").LegendComponentOption {
-  const c = axisColors(mode);
+  const l = legendColors(mode);
   return {
     type: "scroll",
     top: 4,
     right: 8,
-    textStyle: { color: c.textColor, fontSize: 9 },
+    textStyle: { color: l.textColor, fontSize: 9 },
+    inactiveColor: l.inactiveColor,
+    pageIconColor: l.pageIconColor,
+    pageIconInactiveColor: l.inactiveColor,
+    pageTextStyle: { color: l.pageTextStyleColor },
     itemWidth: 10,
     itemHeight: 6,
     itemGap: 15,

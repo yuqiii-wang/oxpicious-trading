@@ -92,6 +92,11 @@ class OrchestrationStep(BaseModel):
     )
     can_be_parallel: bool = False
     note: str | None = None
+    priority: int = Field(default=0, description=(
+        "The step's give-way rank from its service's service_config "
+        "entry (downloads domain +100 over the freq rank; higher = "
+        "wins conflicts — a strictly lower-priority step holds back / "
+        "stops while this one runs)."))
 
 
 class OrchestrationPlan(BaseModel):
@@ -102,6 +107,18 @@ class OrchestrationPlan(BaseModel):
 class OrchestrationRunRequest(BaseModel):
     file: str = Field(description="The orchestration file name under "
                       "scripts/orchestration/ (e.g. analysis_daily).")
+    arrange: bool = Field(default=False, description=(
+        "Arrange the tier first (the maintainer's nightly chain passes "
+        "true): upsert every step service's freq-window verdict into "
+        "monitor.orchestration_task_state and SKIP the not-due steps "
+        "(state skipped_not_due) instead of spawning them to internally "
+        "no-op off-cadence. The arrangement itself is recorded even with "
+        "force — only the skipping is bypassed.")
+    )
+    force: bool = Field(default=False, description=(
+        "Run every step regardless of the arrangement (a manual re-run's "
+        "escape hatch — the steps' own incremental guards still apply).")
+    )
 
 
 class OrchestrationRunAccepted(BaseModel):
@@ -113,9 +130,19 @@ class OrchestrationRunAccepted(BaseModel):
 class OrchestrationStepStatus(BaseModel):
     num: str
     script: str
-    state: str = Field(description="pending | running | done | failed")
+    state: str = Field(description="pending | waiting_priority | running "
+                        "| done | failed | skipped_not_due "
+                        "(waiting_priority = the step held back while a "
+                        "STRICTLY higher-priority run is in flight — the "
+                        "service_config priority give-way; it resumes "
+                        "when the blocker clears. skipped_not_due = the "
+                        "arrangement's verdict: the service's freq "
+                        "window holds, so the arranged run never spawned "
+                        "it.)")
     tag: str | None = None
     exit_code: int | None = None
+    priority: int = Field(default=0, description="The step's give-way "
+                          "rank (see OrchestrationStep.priority).")
 
 
 class OrchestrationRunStatus(BaseModel):
@@ -135,6 +162,51 @@ class OrchestrationInFlightResponse(BaseModel):
         default_factory=list, description="Every tier run currently in "
         "flight (the maintainer's nightly chain adopts these instead of "
         "racing a manual / UI-triggered run).")
+
+
+class ArrangementTaskRow(BaseModel):
+    """One orchestration-tier service's arrangement row of GET
+    /arrangement — the current monitor.orchestration_task_state row,
+    state decoded through the label index."""
+
+    service: str
+    tier: str
+    step: str
+    freq: str = Field(description="The step's cadence label (daily | "
+                      "weekly | monthly | quarterly | semiannually; "
+                      "'unknown' when unconfigured). Residents "
+                      "(is_resident — always live) are not arranged and "
+                      "hold no row.")
+    priority: int = 0
+    state: str = Field(description="unknown | due | not_due (from the "
+                       "label domain orchestration_plan_state).")
+    state_code: int = 0
+    last_success_at: str | None = None
+    due_at: str | None = Field(default=None, description=(
+        "The Shanghai-calendar boundary the arrangement keys on (NULL = "
+        "no boundary: never succeeded / a resident (always lives, no "
+        "freq) / occasionally / on_demand / once).")
+    )
+    arranged_at: str | None = None
+
+
+class ArrangementInventoryResponse(BaseModel):
+    """GET /arrangement — every arranged service's current verdict."""
+
+    tasks: list[ArrangementTaskRow]
+
+
+class ArrangementRefreshResponse(BaseModel):
+    """POST /arrangement/refresh (and the arrange side of an arranged
+    /orchestration/run) — one arrangement pass's summary."""
+
+    tiers: int = Field(description="Tier files arranged.")
+    services: int = Field(description="Distinct services arranged.")
+    due: int = 0
+    not_due: int = 0
+    not_due_services: list[str] = Field(
+        default_factory=list, description="The not-due services (the "
+        "arranged run's skip set).")
 
 
 class NonDailyTaskRow(BaseModel):
@@ -198,6 +270,11 @@ class NonDailyBackfillRerun(BaseModel):
     dry_run: bool = False
     submitted: bool = False
     exit_code: int | None = None
+    yields: int = Field(default=0, description="Times the re-run was "
+                        "stopped mid-flight to give way to a strictly "
+                        "higher-priority orchestration run (each stop "
+                        "waits the blocker out, then resumes the task "
+                        "as a fresh child).")
     state_after: str | None = Field(default=None, description="The "
                                     "post-rerun re-check verdict.")
 

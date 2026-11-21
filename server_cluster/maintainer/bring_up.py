@@ -22,14 +22,13 @@ fire time for testing; the default stays 07:00.
 """
 from __future__ import annotations
 
-import json
 import os
-import urllib.request
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field
 
+from _common.internal_request import post_json
 from server_cluster._common.config import ClusterConfig
 from server_cluster.maintainer.jobs import MaintenanceJob, PassAudit
 
@@ -103,12 +102,7 @@ class FleetBringUpJob(MaintenanceJob):
     def _ensure_up(self) -> EnsureUpOutcome:
         url = f"{self._base_url or monitor_base_url()}" \
               "/residents/ensure-up"
-        req = urllib.request.Request(
-            url, method="POST",
-            headers={"Content-Type": "application/json"}, data=b"")
-        with urllib.request.urlopen(
-                req, timeout=_REQUEST_TIMEOUT_S) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
+        body = post_json(url, timeout_s=_REQUEST_TIMEOUT_S)
         return EnsureUpOutcome(
             brought_up=int(body.get("brought_up", 0)),
             failed=sum(1 for a in body.get("actions", [])

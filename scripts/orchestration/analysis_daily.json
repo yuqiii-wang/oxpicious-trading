@@ -33,25 +33,30 @@
     "note": "opposite industry correlations (analysis_composites.industry_corr_benchmark_offsets); incremental at window-end granularity; must run after builds.industry + builds.cross_stats — without a nightly run the table went stale silently after the 2026-10-05 smallint migration recreated it"
   },
   "8": {
+    "script": "analysis.volatility",
+    "can_be_parallel": false,
+    "note": "per-security realized-volatility panel (analysis.volatility; structured for etf/index/stock, RUN SCOPE index-only for now — the 10 study indices): close-to-close HV across 5/10/20/60/120/252-row windows, RiskMetrics EWMA vol (λ=0.94), Parkinson/Garman-Klass/Rogers-Satchell/Yang-Zhang 20-row OHLC estimators, overnight-vs-intraday split, Wilder ATR(14)/NATR(14), Bollinger band width, vol-of-vol, short/long vol ratio, trailing-252 percentile ranks + shifted-1 z-scores, and the 5-minute realized vol + bipower jump ratio where the sec_type's stats.*_intraday_5min table has bars (~90-day retention — NULL on older dates); reads the sec_type's stats.*_basic_stats + *_intraday_5min, independent of steps 1-7; incremental by missing date scoped to the run's codes, --force scoped-deletes + COPY rebuild. Moved BEFORE the signals tier (was the last step) 2026-11-18: the volatility signal family reads this panel, and running it after analysis_signals left the family permanently one vol-day behind"
+  },
+  "9": {
     "script": "analysis.analysis_signals",
     "args": [
       "--sec-type",
       "index"
     ],
     "can_be_parallel": false,
-    "note": "signal rules + history + performance + the PORTFOLIO tier for the ten families (mov_rsi, bollinger, ma_cross, momentum, macd, rf_break, rebound, options_wall, options_vix; hedge_pairs is the portfolio family and also writes portfolio_signal_rules / history_portfolio_signal_performance / portfolio_history_signals in the same run) — for the FULL index universe (no code scoping — the 10-index set is STUDY-ONLY, never orchestrated; the options and hedge_pairs families resolve their own universes). Needs step 2's analysis.mov_ave_rsi (mov_rsi/momentum/roof-floor value sources), builds' stats.index_tech_stats (macd) and step 7's industry_corr_benchmark_offsets (hedge_pairs). Incremental: a family whose rules were last built at its source data horizon SKIPS; a stale family recomputes but writes are date-split — only dates past the history max COPY in (existing dates re-upsert idempotently), signal_rules is the wiped+rewritten current-state tier, the performance snapshots upsert-only and are never purged. A scoped study run left single-code class pools here once (2026-10-13) and the tier went ~all flat"
-  },
-  "9": {
-    "script": "analysis.pair_pct_change_ratios",
-    "can_be_parallel": false,
-    "note": "pair pct-change ratio MAs (analysis.pair_pct_change_ratios), two grains: index grain = ALL active indexes as subjects vs ALL active benchmarks on the stride-20 global-calendar grid (corr pattern), industry grain = AVG over member-index rows (INSERT...SELECT); incremental = missing grid dates + the latest grid date while within 15 calendar days of the frontier; reads stats.index_basic_stats + stats.sec_classification only — independent of steps 1-8"
+    "note": "signal rules + history + performance + the PORTFOLIO tier for the eleven families (mov_rsi, bollinger, ma_cross, momentum, macd, rf_break, rebound, options_wall, options_vix, crowdedness, volatility; hedge_pairs is the portfolio family and also writes portfolio_signal_rules / history_portfolio_signal_performance / portfolio_history_signals in the same run) — for the FULL index universe (no code scoping — the 10-index set is STUDY-ONLY, never orchestrated; the options, hedge_pairs, crowdedness and volatility families resolve their own data-driven universes). Needs step 2's analysis.mov_ave_rsi (mov_rsi/momentum/roof-floor value sources), builds' stats.index_tech_stats (macd), step 8's analysis.volatility (the volatility family's realized-vol panel) and step 7's industry_corr_benchmark_offsets (hedge_pairs). Incremental: a family whose rules were last built at its source data horizon SKIPS; a stale family recomputes but writes are date-split — only dates past the history max COPY in (existing dates re-upsert idempotently), signal_rules is the wiped+rewritten current-state tier, the performance snapshots upsert-only and are never purged. A scoped study run left single-code class pools here once (2026-10-13) and the tier went ~all flat"
   },
   "10": {
+    "script": "analysis.pair_pct_change_ratios",
+    "can_be_parallel": false,
+    "note": "pair pct-change ratio MAs (analysis.pair_pct_change_ratios), two grains: index grain = ALL active indexes as subjects vs ALL active benchmarks on the stride-20 global-calendar grid (corr pattern), industry grain = AVG over member-index rows (INSERT...SELECT); incremental = missing grid dates + the latest grid date while within 15 calendar days of the frontier; reads stats.index_basic_stats + stats.sec_classification only — independent of steps 1-9"
+  },
+  "11": {
     "script": "analysis.market_crowdedness",
     "can_be_parallel": false,
     "note": "market crowdedness curves (analysis.market_crowdedness → analysis.market_crowdedness): crowdedness_score = 0.5*concentration + 0.5*flow_change from each pool's dynamic hot set (top 10% of the day's active pool by trading amount, min 5 names); FULL universe on both sides — index side = all active classified indexes, industry side = full industry universe; incremental by missing date, --force = scoped delete + COPY rebuild; reads stats.sec_composition / sec_classification / stock_liquidity_margin"
   },
-  "11": {
+  "12": {
     "script": "analysis.market_participation",
     "can_be_parallel": false,
     "note": "whole-market participation gauges, one row per trading day (analysis.market_participation): total SS+SZ proxy turnover + MA/vs-MA/252-percentile gauges (stats.exchange_trading_amt proxies), raw daily SSE share + pp gauges + 20d OLS slope, and whole-universe advance/decline breadth (stats.stock_basic_stats sign counts, A/D ratio, median); incremental by missing date, --force truncates + COPY rebuild"

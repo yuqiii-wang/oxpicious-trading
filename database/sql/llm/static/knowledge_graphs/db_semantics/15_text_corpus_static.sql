@@ -39,6 +39,14 @@ FROM (VALUES
     -- The audit matview rolls keyword counts through the category map
     ('text.news_keyword_audit', 'text.news_keywords',  'computed_from', 'for_keyword_counts'),
     ('text.news_keyword_audit', 'static.keyword_maps', 'computed_from', 'for_category_map'),
+    -- The origin registry + the 5-day audit pair (analysis.news_audit)
+    ('text.news_providers',       'text.news',             'computed_from', 'for_source_author_origin'),
+    ('text.news_provider_audit',  'text.news',             'computed_from', 'for_item_grain'),
+    ('text.news_provider_audit',  'text.news_digestions',  'computed_from', 'for_sentiment_fake'),
+    ('text.news_provider_audit',  'text.news_providers',   'anchored_by',   'for_source_author'),
+    ('text.news_content_audit',   'text.news',             'computed_from', 'for_item_grain'),
+    ('text.news_content_audit',   'text.news_digestions',  'computed_from', 'for_sentiment_fake'),
+    ('text.news_content_audit',   'text.news_keywords',    'computed_from', 'for_keyword_counts'),
     -- The rules docs tables document their rule stores (2026-11-09: the
     -- edges predate this seed's restructure — folded in here; the
     -- signals docs read through static.signal_rules_docs /

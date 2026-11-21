@@ -26,6 +26,13 @@ directory, without the `.sql` extension:
 data_viz/api/services/analysis/market-beta/chart/industry_series
 ```
 
+Exception — the `strategy/` domain tree: every strategy read lives under
+`strategy/<module>/` regardless of the serving tier. Python package
+modules mirror their package path (`strategy/forecast_next_day/` serves
+`strategy/forecast_next_day/fetch.py`); the UI's strategy services drop
+their `data_viz/api/services/` prefix (`data_viz/api/services/strategy/
+risks.ts` → `strategy/risks/<query_name>.sql`).
+
 ## Template format
 
 A `.sql` file is ONE query with `{{arg_name}}` slots and a leading

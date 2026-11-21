@@ -4,7 +4,13 @@
 --          text.news_keywords, text.news_embeddings
 --    text.news             — one raw article per (title, source, date), with
 --                            a surrogate news_id (identity) other tables map
---                            to. Search is implemented in Python, not SQL:
+--                            to. The PK is (title_hash, source, date) over
+--                            the generated md5(title) — same natural-key
+--                            semantics, but indexable: a btree PK on the
+--                            raw TEXT title died on >2704-byte values
+--                            (ProgramLimitExceededError, 2026-11-20
+--                            builds.text crash on a 4872-byte title).
+--                            Search is implemented in Python, not SQL:
 --                            the keyword rows and the weighted search_tsv
 --                            tsvector are both written by the pipeline.
 --    text.news_groups      — reference-set entity: a group of news articles
@@ -29,6 +35,7 @@
 CREATE TABLE IF NOT EXISTS text.news (
     news_id       BIGINT    GENERATED ALWAYS AS IDENTITY,
     title         TEXT      NOT NULL,
+    title_hash    TEXT      NOT NULL,         -- md5(title), computed by the WRITER (bulk_upsert dedupes on row-dict keys — a GENERATED column can't ride in writer rows)
     content       TEXT,
     date          DATE      NOT NULL,
     source        TEXT,                       -- gov, zhihu, ndrc, ...
@@ -42,7 +49,12 @@ CREATE TABLE IF NOT EXISTS text.news (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     search_tsv    TSVECTOR,                   -- weighted full-text search vector: title A, content C
 
-    CONSTRAINT pk_news PRIMARY KEY (title, source, date),
+    -- title_hash (md5(title)), NOT the raw title: btree index entries cap
+    -- at ~2704 bytes and raw titles up to ~5 KB reached the DB
+    -- (ProgramLimitExceededError on pk_news, 2026-11-20). md5 preserves
+    -- the (title, source, date) natural-key equivalence exactly. Writers
+    -- compute it (hashlib.md5) — never insert a raw title without it.
+    CONSTRAINT pk_news PRIMARY KEY (title_hash, source, date),
     CONSTRAINT uq_news_news_id UNIQUE (news_id)
 );
 
@@ -71,6 +83,17 @@ COMMENT ON COLUMN text.news.news_id IS
   'Surrogate id (identity). text.news_keywords maps (keyword, news_id), so '
   'keyword search resolves articles by id without the (title, source, date) '
   'natural-key triple.';
+
+COMMENT ON COLUMN text.news.title_hash IS
+  'md5(title), computed by the WRITER at upsert time — the PK''s title '
+  'member (pk_news = title_hash, source, date). Hashed because a btree PK '
+  'over the raw TEXT title breaks at the ~2704-byte index-entry cap while '
+  'stored titles run to ~5 KB; md5 keeps the natural-key equivalence (same '
+  'title + source + date ⇒ same row). Plain column, not GENERATED: the '
+  'bulk_upsert helper dedupes key columns from the writer''s row dicts, '
+  'which cannot carry a generated column. Writers upsert ON CONFLICT '
+  '(title_hash, source, date); title/source/date remain plain identifying '
+  'columns for reads.';
 
 COMMENT ON COLUMN text.news.author IS
   'Author/origin when the downloader captured one: zhihu answer AuthorName, '

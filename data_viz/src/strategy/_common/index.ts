@@ -1,5 +1,7 @@
 export { default as DecisionTable } from "./DecisionTable";
-export { default as FtControl } from "./FtControl";
+export type { DecisionWindowInfo } from "./DecisionTable";
+export { parseMixReason, type MixData, type MixContribution } from "./mixReason";
+export type { SelectedPeriod } from "./types";
 export { default as RiskPanel } from "./RiskPanel";
 export { default as SignalTagsInput } from "./SignalTagsInput";
 export { default as SummaryChip } from "./SummaryChip";

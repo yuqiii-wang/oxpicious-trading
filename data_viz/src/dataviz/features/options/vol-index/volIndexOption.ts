@@ -38,14 +38,19 @@ export function volIndexUnderlyingLabel(code: string): string {
  *  options page's IN-SIGNAL marker mode — analysis_signals.
  *  history_signals, the options_vix family): actionable events draw
  *  THE shared buy/sell triangle; a rejected event (is_rejection)
- *  draws the grey diamond instead — the same contract as the skew
- *  chart's SharedSkewSignalEvent. */
+ *  draws the grey diamond instead; a NEGATIVE-confidence event (the
+ *  REJECT tier) draws the cross-triangle of its own action — the
+ *  same contract as the skew chart's SharedSkewSignalEvent. */
 export interface VolIndexSignalEvent {
   date: string;
   /** "buy" / "sell" — the event's recorded action. */
   action: string;
   /** TRUE = the gate-declined no-action record (the grey diamond). */
   is_rejection?: boolean;
+  /** The event's confidence in PERCENT — NEGATIVE = the REJECT tier
+   *  (the cross-triangle of the event's own action: do NOT buy/sell
+   *  at this price, never the inverse action). */
+  confidence?: number;
 }
 
 /** The in-signal builder options — the vol chart's marker layer +

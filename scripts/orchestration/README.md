@@ -75,24 +75,71 @@ fire or a manual run. An interrupted chain resumes from its state file
 (`server_cluster/_state/nightly_pipeline.json`) when the maintainer
 restarts.
 
+## Priority give-way (downloads first, then frequency)
+
+The wave protection above is per tier FILE — two concurrently-running
+files (the nightly chain plus a manual run, the chain plus the
+`/non-daily` backfill drive) can still contend for the machine and the
+anti-bot-guarded query destinations. The monitor runner is the
+PRIORITY BOARD: every step carries its service's `priority` from the
+service_config tree (`database/sql/monitoring/static/service_config/`
+— the explicit `priority` field, else derived from `freq` + domain by
+`_common/service_heartbeat.py priority_for`). The rank encodes the two
+house rules — the DOWNLOADS domain outranks every non-download
+regardless of cadence (a build stops to give way to a download), and
+within a domain the more frequent the cadence the higher the rank
+(always 80 > daily 70 > weekly 60 > monthly 50 > quarterly 40 >
+semiannually 30 > once 20 > occasionally 10 > on_demand 0; downloads
++100):
+
+- a step whose priority is STRICTLY lower than any running step of
+  another run shows `waiting_priority` (poll `GET
+  /orchestration/run/{tag}`) until the higher-priority run finishes —
+  then it submits;
+- a higher-priority run arriving while a lower-priority step is
+  already running STOPS that step's child (registry stop) and resumes
+  it as a fresh child once the blocker finishes — the tasks'
+  incremental guards pick up where the stop left off;
+- EQUAL priorities never give way to each other (same-rank runs stay
+  concurrent, as before) — a same-file race is still refused (409) or
+  registry-deduped;
+- the `/non-daily` backfill drive (`server_cluster/monitor/
+  non_daily.py`) gives way the same way per re-run (its rerun records
+  carry a `yields` count; the re-run's rank is its module's
+  service_config priority).
+
+A run never blocks its own steps (its waves already order them).
+Adopted runs (after a monitor restart) carry no step plan and claim no
+board — the chain aborts on a lost run anyway (the same in-memory
+boundary).
+
 ## What runs when
 
 The nightly chain fires at 16:00 China time on A-share trading days
 and runs the tiers sequentially: monitoring → downloads
-(daily/monthly/quarterly/semiannual/once) → builds
-(daily/semiannual/once/monthly) → analysis → strategy
+(daily/weekly/monthly/quarterly/semiannual/once) → builds
+(daily/semiannual/once/monthly) → analysis (daily/weekly) → strategy
 (`NIGHTLY_CHAIN` in `server_cluster/maintainer/pipeline.py` is the
 canonical order). The whole pass skips on non-trading days; a manual
 run with `{"force": true}` bypasses the gate (the former
 `FORCE_DOWNLOADS=1`). The monthly builds tier (importance ranks)
 carries its own month guard inside the step (no-op unless a new month
-started). Higher-cadence tiers (monthly, quarterly) ride every pass —
-their tasks' internal skip logic makes off-cadence runs no-ops: the
-monthly tasks refresh on the 1st of each month, and the quarterly
+started). Higher-cadence tiers (monthly, quarterly, weekly) ride every
+pass — their tasks' internal skip logic makes off-cadence runs no-ops:
+the monthly tasks refresh on the 1st of each month, and the quarterly
 tier's tasks (the index/ETF composition downloads) refresh on the 1st
 of a quarter-start month (Jan/Apr/Jul/Oct) — the former
 `downloads_seasonally` tier, renamed 2026-11 when the four index
-composition / linked-ETF steps moved off the monthly tier.
+composition / linked-ETF steps moved off the monthly tier. The
+`downloads_weekly` tier (the SSE stock-PE anchor crawl,
+`downloads.stock.sse.trend_pe`, 2026-11-20 — the archive module's
+former PE half migrated to the trend side) and the `analysis_weekly`
+tier (the hindsight-oracle pipeline, 2026-11-19) carry their own
+weekly gates the same way — the run no-ops until its own clock is ≥ 6
+calendar days old (trend_pe: the last normal exit in
+monitor.service_audit, `WEEKLY_GATE_DAYS` in the module; oracle: the
+last build, `config.WEEKLY_GATE_DAYS`; `--force` / `--code` bypass in
+both).
 
 A pass with failures (or an aborted/interrupted one) KEEPS its record
 in `server_cluster/_state/nightly_pipeline.json` as the recovery

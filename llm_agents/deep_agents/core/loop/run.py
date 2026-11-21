@@ -40,6 +40,10 @@ from llm_agents.deep_agents.core.tools import user_content
 from llm_agents.deep_agents.limits import run_limits
 from llm_agents.deep_agents.payload_guard import guard_text
 
+# The caution trail (monitor.caution_log): AI-found suspicions —
+# validation complaints that survive their repair round — land there.
+from _common.caution_log import record_ai_suspicion
+
 logger = logging.getLogger(__name__)
 
 
@@ -213,6 +217,19 @@ class _RunLoop:
                         logger.warning(
                             "final answer failed output validation "
                             "(shipped anyway): %s", "; ".join(issues))
+                        # The complaints survive the repair round and the
+                        # answer SHIPS — that is an AI-found suspicion
+                        # (monitor.caution_log, the Cautions tab): the
+                        # log line above dies with the process, the row
+                        # stays queryable.
+                        record_ai_suspicion(
+                            f"agent reply shipped past output validation: "
+                            f"{issues[0]}",
+                            dedupe_key="output-validation",
+                            detail={"issues": issues, "steps": step,
+                                    "answer_chars": len(answer or "")},
+                            service="llm_agents.deep_agents",
+                        )
                     logger.info("step %d/%d: final answer", step,
                                 self._max_steps)
                     return AgentResult(

@@ -15,19 +15,5 @@
       }
     ],
     "is_industry_not_strategy": true
-  },
-  "DUMMY_TMT": {
-    "name": "TMT综合指数",
-    "exchange": null,
-    "sector_id": "TECH",
-    "industry_id": "TMT",
-    "tags": [
-      {
-        "sector_id": "TECH",
-        "industry_id": "TMT"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
   }
 }

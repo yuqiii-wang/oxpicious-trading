@@ -78,20 +78,6 @@
     ],
     "is_industry_not_strategy": false
   },
-  "DUMMY_DIV_HK": {
-    "name": "港股红利综合指数",
-    "exchange": null,
-    "sector_id": "DIV",
-    "industry_id": "DIV_HK",
-    "tags": [
-      {
-        "sector_id": "DIV",
-        "industry_id": "DIV_HK"
-      }
-    ],
-    "is_industry_not_strategy": false,
-    "is_dummy": true
-  },
   "H11140": {
     "name": "香港红利",
     "exchange": "HK",

@@ -189,8 +189,44 @@ A/B switch; default = each family's OHLCV_BOOST class flag).
   REDUCED-CONFIDENCE trading record — the deepest-claim breach at an
   extreme corner records its real action with gate.starved +
   gate.conf_scale on the snapshot. Measured-out cells (dir_ave below
-  the bar, any n) still emit NOTHING — that is the gate rejecting on
-  evidence.
+  the bar, any n) emit no TRADING rows — but since 2026-11-16 a cell
+  whose best candidate measured a NEGATIVE dir_ave emits the REJECT
+  tier instead (engines/reject.py, a module fully separate from the
+  positive path, user-directed): the REAL action at NEGATIVE
+  confidence (the [-10000, 10000] bp CHECKs on history_signals +
+  live_signals) — REJECT the action at this price, never the inverse
+  action; the weak band [0, the bar) stays silent. SINCE 2026-11-18
+  (user-directed "only reject on high confidence, there should be
+  very few no action than action") the verdict needs a DEEPLY negative
+  mean — strictly below config REJECT_DIR_AVE_MAX (−2.0%; hairline
+  negatives join the silent band). SINCE 2026-11-18
+  the tier carries the SIGNAL-CLUSTER PROBATION (config
+  REJECT_FIRST_APPEARANCE_DAYS = 20): a cell whose SYSTEM BIRTH — its
+  first-ever history_signal_performance snapshot (the never-purged
+  record of when the cell first MEASURED anything, read through the
+  cell_birth_dates SQL view) — falls within the past 20 of the code's
+  OWN traded rows before the frame horizon is still fresh and does
+  not reject yet (NO BUY / NO SELL alike — the cell stays silent like
+  the weak band; a cell never measured before this run is born NOW
+  and is suppressed too). The in-frame first-TRIGGER age needs no
+  guard: the measurement's full-20d-forward requirement already
+  forces every reject's earliest trigger past the window (the
+  in-frame probe suppressed 0 rows — the birth is the only probation
+  that binds). Reject rules rows
+  ride is_valid FALSE + rule_params.gate.reject_bar_pct; rejects never
+  feed the pooled facts or the boost anchors; a pooled-demoted BUY
+  side's rejects still emit; the live tier FIRES reject cells (the
+  symmetric rules_confidence_bp clamp; a probation-suppressed cell
+  emits no rule row, so live inherits the guard); the strategy tier
+  never replays them (analysis_source + signal_families.sql filter
+  confidence >= 0).
+- `engines/reject.py` — `RejectEval` (2026-11-16): the NEGATIVE-
+  confidence REJECT tier's verdict (dir_ave < REJECT_DIR_AVE_MAX) +
+  the mirrored confidence scale — separate module by user direction.
+  SINCE 2026-11-18 it also owns the whole reject SELECTION
+  (`RejectEval.select(failed, chosen, births, window_start)` — the
+  no-winner + negative-measure + system-birth-probation decision
+  consolidated out of run_cells) and the probation window itself.
 - `engines/evaluation.py` — `CellGate` (the plain gate +
   depth-scaled confidence: base_pct × (1 + factor × min(depth, 2))),
   `cell_stats` (n / dir_ave / dir_std / hit) and `pooled_evidence`
@@ -305,6 +341,7 @@ self-contained mini-run of the per-pair machinery (the ~5.5k-pair
 frame cannot materialize whole on the GPU); every step is per-pair,
 the one cross-pair coupling (the pooled tier) judges per chunk. Portfolio tier: the group IS its orchestrating rows (signal_rule_ids = the pair's own rows; pooled = their combined stats; rule_params.name "trio wash" since 2026-10-25), the benefit/gate/dd audit as before | pair (trend 4, regime 4 — both POOLED) | 5 | no |
 | rf_break | RoofFloorEntry | rf{60,120,255,500}{,_med}_{roof,floor}_deep BUY (the depth tiers) + rf{60,120,255,500}_floor_bounce BUY (the two-method gap study's cross-method leg) — ALL-BUY since the 2026-10-26 legacy cleanup RETIRED the catch-all roof-buy / floor-sell sub types (labels 5600-5633 decode-only; the close vs the PRIOR day's donchian/median level from analysis.mov_ave_spreads_roof_floor_estimates; floor_bounce = median floor broken while the donchian wick floor holds; donchian rf255_roof_deep pooled-rejected, emits nothing) | code×trend (regime 4) | 5 | no |
+| volatility | VolatilityTailEntry (2026-11-18) | hv20_{5,10,15,20}pct + ewma_{5,10,15,20}pct buy/sell (block 6210+; the realized-vol panel analysis.volatility as the value source — hv_20 the 20-row close-to-close vol, ewma_vol the RiskMetrics fast vol λ=0.94; bars per-code adaptive trailing-252d LOCAL quantiles min 60 SHIFTED 1 — the panel's own pct_rank_252 convention; the SAME-DAY first grid 6200-6205 all-history 2520d top-{1,2,3}% RETIRED degenerate — only the 2024-10 mega-cluster ever breached it, 000001 fired 4 events where ~2 dozen local spikes are visible, user-directed "too few signals" + study temp_scripts/vol_spike_count_study.py; BUY = the vol SPIKE above the top tail gated by the fear leg price < close 5 rows ago (the ovix panic/euphoria direction split), SELL = the vol CRUSH below the bottom tail gated by price ≥ 0.98× the prior 60-row high; depth in the axis's own trailing sigma; data-driven universe = the codes with volatility rows at the sec_type, index only while the vol panel runs the 10 study indices; the Short-Term Tech chart SWAPS to the vol plot (SignalVolatilityChart — the Commons Volatility top chart close + HV20 + EWMA, markers on the close curve) on the family's pick, the crowdedness precedent) | code×trend (regime 4) | 5 | no |
 
 Nested widest-first carving everywhere: the deeper tail claims first,
 a deep breach counts once at its deepest claim (3σ ⊃ 2.5σ ⊃ 2σ;
@@ -442,12 +479,28 @@ never a detection, no per-family logic (the rules-era rewire of
    live tier applies the same scale). An
    extreme event's deepest claim still records — as a
    reduced-confidence trading row. Measured-out cells (dir_ave below
-   the bar, any n) emit nothing, and the only wait rows left are the
-   ungated VRP twins (never live). The POOLED n floor is the same
+   the bar, any n) emit no TRADING rows — since 2026-11-16 (user-
+   directed, engines/reject.py) a cell whose best candidate measured a
+   NEGATIVE dir_ave emits the REJECT tier instead (its real action at
+   negative confidence, [-10000, 0] bp — REJECT the action at this
+   price, never the inverse action) — SINCE 2026-11-18 only when the
+   mean is DEEPLY negative (strictly below REJECT_DIR_AVE_MAX −2.0%,
+   the high-confidence bar: hairline negatives stay silent, keeping
+   no-action signals very few vs actions) and the weak band [the
+   reject bar, the gate bar) stays silent — SINCE 2026-11-18 under the
+   SIGNAL-CLUSTER PROBATION: a
+   cell whose system birth (first-ever performance snapshot) falls
+   within the past REJECT_FIRST_APPEARANCE_DAYS (20) of the code's
+   own traded rows is still fresh and does NOT reject yet (the whole
+   selection lives in RejectEval.select), and the only wait rows left
+   are the ungated VRP twins (never live). The POOLED n floor is the
+   same
    kind of reference (same day): the statistics legs (bar / t / year
    majority) are the BUY verdict, n in [POOLED_TRADE_FLOOR,
    POOLED_MIN_N) trades at min(n/10, 1) folded into the in-run
-   confidence, below the trade floor emits nothing.
+   confidence, below the trade floor emits nothing. A pooled-demoted
+   BUY side's reject cells still emit (per-cell negative evidence is
+   a different claim than pooled insufficiency).
 9. The PORTFOLIO tier is CELL-LEVEL-SIGNALS-IN-PORTFOLIO
    (2026-10-20): one portfolio_signal_rules row per portfolio holds
    ALL member ids; the member cells carry is_in_portfolio (since
@@ -1376,3 +1429,72 @@ never a detection, no per-family logic (the rules-era rewire of
   eligible_freq_years went vectorized (packed-key unique passes, the
   per-row python loop retired — A/B identical). The first rebuild ran
   --force at index scope.
+- 2026-11-16: the NEGATIVE-CONFIDENCE REJECT tier (user-directed
+  "allow for negative confidence score which means REJECT the action
+  ... however, does not mean the opposite action should take"; the
+  per-family study + first populations: docs/
+  negative_confidence_reject_study_2026-11-16.md). A cell whose best
+  candidate measures a NEGATIVE sign-aligned dir_ave emits its REAL
+  action at NEGATIVE confidence (REJECT the action at this price,
+  never the inverse action); the weak band [0, the side's bar) stays
+  silent. The logic lives in engines/reject.py (RejectEval — a module
+  fully separate from the positive path, user-directed); run_cells
+  tracks the best FAILED candidate per cell and consults the module
+  after the winners (rejects never feed pooled facts / boost anchors;
+  the ungated twins and the portfolio tier skip it; a pooled-demoted
+  BUY side's rejects survive). Reject rules rows: is_valid FALSE +
+  rule_params.gate.reject_bar_pct; the confidence CHECKs on
+  history_signals + live.live_signals widened to [-10000, 10000] (the
+  DDL files + temp_scripts/apply_negative_confidence_checks.py); the
+  live tier FIRES reject cells (rules_confidence_bp symmetric clamp —
+  first live rejects: ten boll20_2std BUY rows, 931594 at -501bp);
+  the strategy tier NEVER replays them (analysis_source.py +
+  signal_families.sql filter confidence >= 0). UI: the CROSS-TRIANGLE
+  no-buy/no-sell markers (signalMarker.crossedMarkerSpecs — filled
+  action-color triangle + contrasting REJECT_CROSS_COLOR ✕ overlaid,
+  single-color composite legend icon) + NO BUY / NO SELL chips +
+  ✕▲/✕▼ tooltip rows; SignalEventPoint carries confidence and
+  signalEventClass classifies the five marker classes everywhere.
+- 2026-11-18: the SIGNAL-CLUSTER PROBATION on the reject tier (user-
+  directed "implement signal cluster that if a signal is 1st appeared
+  in past 20d, do not set to reject, and do not set no sell, further
+  refactor no sell and negative confidence logic"). THE ANCHOR: the
+  in-frame reading (a cell's own first trigger within the past 20
+  traded rows) is STRUCTURALLY VACUOUS — the measurement needs the
+  full 20-trading-day forward blend realized, so every reject's
+  earliest trigger is already ≥ 20 traded rows old (the in-frame A/B
+  suppressed exactly 0 rows; the bucket event-history anchor also 0) —
+  user-confirmed replacement: the cell's SYSTEM BIRTH, its first-ever
+  history_signal_performance snapshot date (the never-purged record
+  of when the cell first MEASURED anything). A cell born within the
+  past REJECT_FIRST_APPEARANCE_DAYS (20, config — TRADING rows of the
+  code's own calendar before the frame horizon) is still fresh: it
+  does NOT reject (no rule row, no history rows; NO BUY / NO SELL
+  suppressed alike — "no sell" is just the SELL-side reject chip),
+  and a never-measured cell is born NOW and suppressed too. THE
+  REFACTOR: the whole reject selection left run_cells for
+  engines/reject.py RejectEval.select(failed, chosen, births,
+  window_start); rule_base computes only the per-code window boundary
+  (one grouped tail(20) + min, the sanctioned host boundary) and
+  looks up the births map stashed on the entry by run_family's
+  fetch_cell_births (ONE async read through database/sql_views/
+  analysis/analysis_signals/run/cell_birth_dates.sql — the $n render
+  pairs with the asyncpg pool; psycopg's %s binding cannot execute
+  it — the sync run_cells never opens a connection itself).
+  Suppression is at EMISSION, so the live tier and the strategy-tier
+  confidence >= 0 filters inherit the guard. BECAUSE negative-
+  measuring cells only began being RECORDED when the tier launched
+  (2026-11-16), every current reject was born inside the window: the
+  rebuild suppressed ALL 17,653 reject rules at index scope (mov_rsi
+  9,963 / bollinger 4,309 / rf_break 1,772 / macd 1,609) and their
+  83,450 negative history rows — a SOFT LAUNCH; each cell's rejects
+  age back in as its birth passes the sliding 20-trading-day
+  boundary. Winners bit-stable (mov_rsi triple-run identical;
+  bollinger/macd/rf_break/crowdedness/options/hedge_pairs counts ==
+  the pre-change state; the small ma_cross/momentum/rebound deltas
+  are a pre-existing 11-16-build-vs-tree delta, proven not-the-guard
+  by the window=0 control run reproducing them exactly). Remaining
+  UI caveat: live.live_signals keeps 74 negative bollinger rows
+  (2026-11-16..18) whose cells no longer exist — they age out of the
+  live 20d slice, or purge via a one-time cleanup
+  (temp_scripts/inspect_live_negatives.py counts them).

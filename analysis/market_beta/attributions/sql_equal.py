@@ -12,8 +12,10 @@ trading_amt rows.
 
 Two variants:
   FULL        — no date filter, plain INSERT (force mode, after TRUNCATE).
-  INCREMENTAL — date filter, plain INSERT (target dates pruned to
-                genuinely missing ones + transaction-wrapped).
+  INCREMENTAL — date filter, ON CONFLICT DO NOTHING (target dates pruned
+                to genuinely missing ones; the guard makes racing /
+                partially-committed previous runs a no-op instead of a
+                UniqueViolation).
 """
 from __future__ import annotations
 
@@ -62,12 +64,14 @@ WHERE ia.attribution_type = 'trading_amt'
 
 def _build_equal_insert_sql(
     date_filter: str = "",
+    on_conflict: str = "",
 ) -> str:
     """Build an equal-variant INSERT.
 
     Args:
       date_filter: e.g. "" for full, "AND ia.date = ANY($1::date[])" for
         incremental.
+      on_conflict: optional ON CONFLICT clause appended to the INSERT.
     """
     rolling_cols = ",\n".join(
         f"     benchmark_non_this_industry_rolling_{w}days_price"
@@ -81,13 +85,18 @@ def _build_equal_insert_sql(
         rolling_cols=rolling_cols,
         rolling_select=rolling_select,
         date_filter=date_filter,
-    )
+    ) + on_conflict
 
 
 # Full recompute (force mode, after TRUNCATE — plain INSERT).
 EQUAL_INSERT_SQL_FULL = _build_equal_insert_sql()
 
-# Incremental (date filter, plain INSERT).
+# Incremental (date filter, ON CONFLICT DO NOTHING — the idempotency
+# guard; same rationale as sql_broad_market._ON_CONFLICT_DO_NOTHING).
 EQUAL_INSERT_SQL_INCREMENTAL = _build_equal_insert_sql(
     date_filter="AND ia.date = ANY($1::date[])",
+    on_conflict=(
+        "\nON CONFLICT (industry_id, benchmark_code, date, "
+        "attribution_type) DO NOTHING"
+    ),
 )

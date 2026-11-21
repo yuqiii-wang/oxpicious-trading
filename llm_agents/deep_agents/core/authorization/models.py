@@ -26,14 +26,19 @@ from typing import Any, Dict, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-# The standing schema allowlist — the SAME five the AI-summary bridge
+# The standing schema allowlist — the SAME set the AI-summary bridge
 # sends as forced_schemas (KG_SUMMARY_SCHEMAS) and the default scope for
 # runs that carry no UI table picks (daemon/CLI/test runs): the study
 # stores, never the operational ones (llm / monitor / static / live —
 # which the shared readonly_analytics role CAN read; the gate is what
-# keeps agent SQL out of them).
+# keeps agent SQL out of them). analysis_signals joined 2026-11-18 —
+# the SIGNAL AMPLIFICATION tier (signal_amplification_rules/_history)
+# joined the study corpus beside analysis (the replayed-history tables
+# were already reachable through the strategy tier's own reads; the
+# agent's kg_search surfaces the new tables and the gate must follow).
 DEFAULT_STANDING_SCHEMAS: Tuple[str, ...] = (
-    "analysis", "strategy", "stats", "text", "multi_media",
+    "analysis", "analysis_signals", "strategy", "stats", "text",
+    "multi_media",
 )
 
 SOURCE_UI_INIT = "ui_init"

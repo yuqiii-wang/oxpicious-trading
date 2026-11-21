@@ -35,7 +35,7 @@ interface StrategyPageShellProps {
   nav: StrategyNavState;
   title: string;
   subtitle: string;
-  /** Where the back button navigates to. Default: "/strategy/commons". */
+  /** Where the back button navigates to. Default: "/strategy/forecast". */
   backPath?: string;
   /** Render prop — receives the selected searchCode (or null). */
   children: (searchCode: string | null) => ReactNode;
@@ -45,7 +45,7 @@ export default function StrategyPageShell({
   nav,
   title,
   subtitle,
-  backPath = "/strategy/commons",
+  backPath = "/strategy/forecast",
   children,
 }: StrategyPageShellProps) {
   const navigate = useNavigate();
@@ -75,7 +75,7 @@ export default function StrategyPageShell({
             <IconButton
               onClick={() => navigate(backPath)}
               size="small"
-              aria-label="back to strategy commons"
+              aria-label="back to strategy forecast"
             >
               <ArrowBack />
             </IconButton>

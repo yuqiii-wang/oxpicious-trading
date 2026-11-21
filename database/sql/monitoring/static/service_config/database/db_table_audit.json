@@ -1,0 +1,14 @@
+{
+  "service": "database.db_table_audit",
+  "max_parallel": 1,
+  "max_parallel_runs": null,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
+  "is_resident": true,
+  "freq": null,
+  "priority": 80,
+  "schedule": "always-on sampler, a monitor-area resident like db_health; the resident supervisor restarts it when its beat goes stale",
+  "notes": "Per-table DB workload audit sampler — the per-TABLE side of db_health (pg_stat_user_tables deltas -> monitor.db_table_audit; write-heavy flag transitions -> monitor.db_table_alert). is_resident since 2026-11-20 (the always-live flag replaced the former freq \"always\" labeling).",
+  "source_ref": "database/db_table_audit.py;database/stream_watchdog.py",
+  "updated_at": "2026-11-20T15:25:15.716730+00:00"
+}

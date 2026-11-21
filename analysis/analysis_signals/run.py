@@ -71,6 +71,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import date
 
 from _common.db_commons import (
     batched_copy_by_key_async,
@@ -80,11 +81,18 @@ from _common.db_commons import (
 )
 from _common.df_utils import host_array
 from _common.labels import PORTFOLIO_TYPE_CODE, SEC_TYPE_CODE, SIGNAL_TYPE_CODE
+from _common.sql_views import render_sql_view
 
+from analysis.analysis_signals import config as cfg
 from analysis.analysis_signals.audit import (
     audit_family_rows,
+    audit_no_action_rows,
     audit_orphan_rows,
     audit_portfolio_groups,
+)
+from analysis.analysis_signals.engines.no_action import (
+    evaluate_family,
+    positive_fired_rows,
 )
 from analysis.analysis_signals.engines.signal_families import (
     FAMILY_PORTFOLIO_TYPE,
@@ -97,15 +105,20 @@ RULES_TABLE = "analysis_signals.signal_rules"
 HISTORY_TABLE = "analysis_signals.history_signals"
 TREND_TABLE = "analysis.trend_days"
 PERF_TABLE = "analysis_signals.history_signal_performance"
+NO_ACTION_TABLE = "analysis_signals.no_action_signals"
 PORTFOLIO_TABLE = "analysis_signals.portfolio_signal_rules"
 PORTFOLIO_PERF_TABLE = \
     "analysis_signals.history_portfolio_signal_performance"
 PORTFOLIO_HISTORY_TABLE = "analysis_signals.portfolio_history_signals"
 RULE_ID_SEQ = "analysis_signals.signal_rule_id_seq"
 RULES_PK = ["code", "sec_type", "signal_type", "signal_sub_type",
-            "trend", "regime_state", "action", "is_in_portfolio"]
+            "trend", "regime_state", "action", "is_in_portfolio",
+            "is_valid"]  # is_valid joined 2026-11-18: the REJECT verdict
+# row (FALSE, real action) registers independently of the positive row
 HISTORY_PK = ["code", "sec_type", "signal_type", "signal_sub_type",
               "date", "time", "is_in_portfolio"]
+NO_ACTION_PK = ["code", "sec_type", "signal_type", "signal_sub_type",
+                "action", "reason_code", "date", "time"]
 PERF_PK = ["code", "sec_type", "signal_type", "signal_sub_type",
            "trend", "regime_state", "action", "date"]
 PORTFOLIO_PERF_PK = ["code", "portfolio_type", "portfolio_sub_type", "date"]
@@ -180,6 +193,14 @@ def _source_horizon_sql(label: str, sec_type: str) -> tuple[str, tuple]:
                 "analysis.market_crowdedness_year "
                 "WHERE sec_type = $1 AND code = ANY($2) GROUP BY code"
                 ") t GROUP BY code",
+                (SEC_TYPE_CODE[sec_type],))
+    if label == "volatility":
+        # the family's value source: the realized-vol panel
+        # (analysis.volatility — the fetch reads its hv/ewma axes,
+        # the adaptive tail bars compute in-engine)
+        return ("SELECT code, max(date) AS latest FROM "
+                "analysis.volatility "
+                "WHERE sec_type = $1 AND code = ANY($2) GROUP BY code",
                 (SEC_TYPE_CODE[sec_type],))
     if label == "hedge_pairs":
         # the trio's value sources: the legs' composite closes, the
@@ -279,13 +300,40 @@ async def _write_trend_days(conn, sec_type: str, frame,
     return len(rows)
 
 
+async def fetch_cell_births(conn, entry) -> dict[tuple, dict[tuple, date]]:
+    """The SIGNAL-CLUSTER PROBATION's cell-birth map (2026-11-18,
+    engines/reject.py): each measured cell's FIRST-EVER
+    history_signal_performance snapshot date — the never-purged record
+    of when the cell first MEASURED anything — for the entry's whole
+    (sec_type, signal_type) scope, keyed (signal_sub_type, action) ->
+    (code, trend, regime_state) -> birth. Stashed on the entry before
+    run() so the SYNC run_cells never opens a DB connection itself
+    (the $n sql_views render pairs with the ASYNC pool — psycopg's
+    %s binding cannot execute it)."""
+    view = render_sql_view(
+        "analysis/analysis_signals/run/cell_birth_dates",
+        sec_type=entry.sec_type_code,
+        signal_type=entry.signal_type_code,
+    )
+    births: dict[tuple, dict[tuple, date]] = {}
+    for row in await conn.fetch(view.sql, *view.params):
+        key = (int(row["signal_sub_type"]), int(row["action"]))
+        cell = (str(row["code"]), int(row["trend"]),
+                int(row["regime_state"]))
+        births.setdefault(key, {})[cell] = row["born"]
+    return births
+
+
 async def run_family(conn, label: str, sec_type: str, codes: list[str],
-                     force: bool = False,
-                     boost: bool | None = None) -> tuple[int, int]:
+                     force: bool = False, boost: bool | None = None,
+                     no_action: bool = True) -> tuple[int, int]:
     """Run one family's entries over the shared prepared frame and
     write both tables. Returns (n_rules, n_history) rows written.
     ``boost`` (None = each entry's class default) forces the ohlcv
-    boost off (the --no-boost A/B switch)."""
+    boost off (the --no-boost A/B switch). ``no_action`` (the
+    --no-no-action A/B switch) disables the NO-ACTION overlay tier —
+    with it off, the positive tables must stay bit-identical (the
+    tier's isolation bar)."""
     st = SEC_TYPE_CODE[sec_type]
     if not codes:
         logger.info(f"[{label}] no codes for sec_type={sec_type} — skip")
@@ -311,6 +359,11 @@ async def run_family(conn, label: str, sec_type: str, codes: list[str],
             # component frame); the later entries are stateless
             entry = entry0 if i == 0 \
                 else entry_cls(conn, sec_type, codes, boost=boost)
+            # the SIGNAL-CLUSTER PROBATION's births (engines/reject.py):
+            # one async read per entry instance, stashed for the sync
+            # run_cells (a cell born within the past
+            # REJECT_FIRST_APPEARANCE_DAYS traded rows may not reject)
+            entry.reject_cell_births = await fetch_cell_births(conn, entry)
             r, h = entry.run(frame)
             r, h, boost_report = entry.finalize_boost(r, h)
             rules_rows.extend(r)
@@ -337,6 +390,19 @@ async def run_family(conn, label: str, sec_type: str, codes: list[str],
             if n_trend:
                 logger.info(f"[{label}] {sec_type}: wrote {n_trend} "
                             f"trend days")
+
+    # the NO-ACTION overlay tier (engines/no_action — 2026-11-18):
+    # computed AFTER the positive entries, INDEPENDENT of their
+    # verdicts (the frame + the fired rows in, the tier's OWN table
+    # out — the positive tables above stay bit-identical, the A/B
+    # bar). STANDALONE families only (the portfolio tier is out of
+    # scope v1). The audit digest re-measures each rule's marked vs
+    # kept populations on the frame's forward blend — logged below.
+    no_action_rows: list[dict] = []
+    no_action_digest: dict = {}
+    if no_action and label not in FAMILY_PORTFOLIO_TYPE:
+        no_action_rows, no_action_digest = evaluate_family(
+            label, frame, history_rows)
 
     # signal_rules: current-state — wipe THE RUN'S CODE SCOPES of the
     # family's signal_type(s), insert fresh. CODE-SCOPED and
@@ -440,6 +506,35 @@ async def run_family(conn, label: str, sec_type: str, codes: list[str],
             date_column="date",
         )
 
+    # no_action_signals: the overlay tier's OWN table — the
+    # history_signals lifecycle minus the portfolio tier axis (force:
+    # purge the (sec_type, signal_type, codes) scopes then key-
+    # chunked COPY; incremental: split upsert past max date). The
+    # tier never touches a positive table — this is its only write.
+    if no_action_rows:
+        for row in no_action_rows:
+            row["rule_params"] = json.dumps(row["rule_params"])
+    if force:
+        for wipe_type, wipe_codes, tier in entry0.history_purge_scopes():
+            if tier is True:
+                continue  # the sourced portfolio tier — not ours
+            await chunked_purge_async(
+                conn, NO_ACTION_TABLE,
+                where_sql="sec_type = $1 AND signal_type = $2 "
+                          "AND code = ANY($3)",
+                params=(st, wipe_type, sorted(wipe_codes)),
+                key_column="code",
+            )
+        if no_action_rows:
+            await batched_copy_by_key_async(conn, NO_ACTION_TABLE,
+                                            no_action_rows, key="code",
+                                            label="no_action")
+    elif no_action_rows:
+        await copy_or_upsert_split_async(
+            conn, NO_ACTION_TABLE, no_action_rows,
+            key_columns=NO_ACTION_PK, date_column="date",
+        )
+
     # history_signal_performance: the run's MEASURED snapshot per rule
     # cell (every emitted row — trading since the 2026-10-19
     # starvation retreat, plus the ungated twins), keyed by the cell
@@ -494,6 +589,7 @@ async def run_family(conn, label: str, sec_type: str, codes: list[str],
     if port_groups is not None:
         n_bad += audit_portfolio_groups(label, port_groups, rules_rows,
                                         portfolio_events)
+    n_bad += audit_no_action_rows(label, no_action_rows, history_rows)
     n_bad += await audit_orphan_rows(conn, sec_type, label,
                                      entry0.rule_wipe_scopes())
     if n_bad:
@@ -502,9 +598,30 @@ async def run_family(conn, label: str, sec_type: str, codes: list[str],
     else:
         logger.info(f"[audit] {label} {sec_type}: all consistency checks "
                     f"passed")
+    # the no-action tier's CONSERVATISM LOG: the rarity share (the
+    # budget is config NO_ACTION_MAX_SHARE) + each active rule's
+    # marked-vs-kept forward-blend digest (the run-time separation
+    # check — a rule whose marked population stops measuring worse
+    # is retired at the next calibration pass)
+    if no_action or no_action_rows:
+        n_pos = len(positive_fired_rows(history_rows))
+        share = (len(no_action_rows) / n_pos) if n_pos else 0.0
+        budget = cfg.NO_ACTION_MAX_SHARE
+        flag = " — OVER BUDGET" if share > budget else ""
+        logger.info(f"[no-action] {label} {sec_type}: "
+                    f"{len(no_action_rows)} marks / {n_pos} positive "
+                    f"fired days ({share:.1%}, budget "
+                    f"{budget:.0%}{flag})")
+        for reason, d in sorted(no_action_digest.items()):
+            logger.info(f"[no-action] {label} · {reason}: marked "
+                        f"n={d['marked_n']} dir_ave "
+                        f"{d['marked_dir_ave_pct']}% vs kept n="
+                        f"{d['kept_n']} dir_ave "
+                        f"{d['kept_dir_ave_pct']}%")
     logger.info(f"[{label}] {sec_type}: wrote {len(rules_rows)} rules, "
                 f"{len(history_rows)} history rows, "
                 f"{len(perf_rows)} performance snapshots"
+                f"{f', {len(no_action_rows)} no-action marks' if no_action_rows else ''}"
                 f"{f', {n_port} portfolios' if n_port else ''}"
                 f" ({'force' if force else 'incremental'})"
                 )

@@ -32,6 +32,14 @@ from typing import Optional
 MIN_SYS_GB: float = 24.0   # GiB of system memory required
 MIN_GPU_FREE_GB: float = 16.0  # GiB of free VRAM on best GPU required
 
+# Exit code for a resource-starved run (NOT 1): the orchestration tier
+# runner defers exit-11 steps to ONE end-of-tier retry pass — the missing
+# resource (typically GPU VRAM held by the tier's previous GPU-heavy step,
+# e.g. builds.text's LLM digestions right before analysis_daily,
+# 2026-11-20) frees asynchronously and the retry usually passes. Plain
+# exit 1 made all 12 analysis_daily steps fail in ~6s each.
+EXIT_RESOURCE = 11
+
 # Cooldown before the single retry when the first check fails — a
 # concurrent finishing job may be about to release VRAM/RAM.
 _COOLDOWN_SECS: float = 3.0
@@ -216,13 +224,14 @@ def pre_check(
     min_gpu_free_gb: float | None = None,
     require_gpu: bool = True,
 ) -> None:
-    """Entry-point guard: print the report and SystemExit(1) on failure.
+    """Entry-point guard: print the report and SystemExit(EXIT_RESOURCE)
+    on failure.
 
     On first failure, wait ``_COOLDOWN_SECS`` and re-check once — a
     concurrent finishing job may be about to release VRAM/RAM. If the
-    re-check also fails, exit(1).
-
-    ``require_gpu=False`` skips the GPU VRAM check (GPU-less pipelines).
+    re-check also fails, exit(EXIT_RESOURCE): a dedicated code so the
+    orchestration tier runner can defer these steps to one end-of-tier
+    retry pass (VRAM held by a finishing sibling frees asynchronously).
     """
     failures = check_only(
         min_sys_gb=min_sys_gb,
@@ -237,7 +246,7 @@ def pre_check(
         if failures:
             for msg in failures:
                 print(f"[PRE-CHECK] ERROR: {msg}", file=sys.stderr, flush=True)
-            raise SystemExit(1)
+            raise SystemExit(EXIT_RESOURCE)
 
 
-__all__ = ["pre_check", "check_only"]
+__all__ = ["pre_check", "check_only", "EXIT_RESOURCE"]

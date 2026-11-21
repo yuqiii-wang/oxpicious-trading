@@ -23,6 +23,7 @@ export type LabelDomain =
   | 'signal_type'
   | 'signal_sub_type'
   | 'action'
+  | 'oracle_action'
   | 'trend'
   | 'weighting'
   | 'rank_side'
@@ -39,8 +40,13 @@ export type LabelDomain =
   | 'skew_type'
   | 'contract_type'
   | 'sec_type'
+  | 'no_action_reason'
+  | 'signal_amplifier'
+  | 'signal_amplifier_type'
+  | 'signal_amplifier_margin'
   | 'attribution_type'
   | 'trade_side'
+  | 'forecast_direction'
   | 'ext_resource'
   | 'ext_http_source'
   | 'ext_llm_provider'
@@ -52,6 +58,9 @@ export type LabelDomain =
   | 'backup_mode'
   | 'backup_status'
   | 'non_daily_state'
+  | 'orchestration_plan_state'
+  | 'caution_source'
+  | 'caution_severity'
   | 'analysis_cache_kind'
   | 'portfolio_type'
   | 'portfolio_sub_type'
@@ -64,6 +73,7 @@ export type LabelDomain =
   | 'agent_step_type'
   | 'agent_child_kind'
   | 'search_table'
+  | 'news_category'
   | 'kw_category_type'
   | 'kw_market'
   | 'kw_pos'
@@ -75,6 +85,57 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
   regime: { calm: 0, hot: 1, panic: 2, quiet: 3, all: 4 },
   side: { top: 0, bottom: 1, flat: 2 },
   action: { buy: 0, sell: 1, wait: 2 }, // 2 wait (renamed from no_action 2026-10-16)
+  // the hindsight ORACLE tier's action vocabulary (2026-11-19,
+  // analysis.oracle_signals.action — DECOUPLED from the rule tier):
+  // the perfect-foresight decision per 5-trading-day unit; 2 no_action
+  // IS a decision (fluctuating forward path / extremum-gate fail),
+  // never the rule tier's "not trading yet" wait
+  oracle_action: { buy: 0, sell: 1, no_action: 2 },
+  // the NO-ACTION overlay tier's reason vocabulary (2026-11-18,
+  // analysis_signals.no_action_signals.reason_code): why a FIRED
+  // POSITIVE day carries the day-level negative-confidence mark —
+  // the mark advises against the row's OWN action at that price,
+  // never the inverse
+  no_action_reason: {
+    fatigue: 0,                 // >= N distinct fired days of the (code, type, action) in the trailing window — chop
+    rsi_bandwalk_sell: 1,      // NO SELL: top-tail trigger mid-rise with an agreeing guard (tops continue)
+    boll_squeeze_breakdown: 2, // NO BUY: -k breach out of a squeezed band (compression -> breakdown continues)
+    boll_bandwalk_sell: 3,     // NO SELL: +k breach riding an expanding band with a rising SMA20
+    ma_whipsaw: 4,             // NO BUY: reclaim inside a below->above flip chop
+    rebound_pe_deadzone: 5,    // NO BUY: capitulation at middle PE (the barbell dead zone)
+    macd_chop: 6,              // NO BUY/SELL: noise-scale cross inside rapid alternation
+  },
+  // the OHLCV SUB-TYPE amplifier vocabulary (2026-11-18; the sub-type
+  // axis of the 2026-11-20 two-level split): recurring day-level OHLCV
+  // shapes that AMPLIFY (positive amplify_bp) or DISCOUNT (negative)
+  // the bound signal families' claims on that day. Decoded by
+  // signal_amplification_history.sub_type when the parent
+  // amplifier_type = signal_amplifier_type.ohlcv
+  signal_amplifier: {
+    flush_washout: 0,      // 探底洗出: lower-wick top-decile flush + down close + heavy amount — BUY reversion
+    gap_reclaim: 1,        // 低开收复: down open reclaimed by the close — BUY reversion
+    breakout_confirm: 2,   // 放量突破确认: close above the prior high + heavy amount + strong close — BUY continuation
+    spike_blowoff: 3,      // 冲高回落放量: upper-wick top-decile spike faded weak on heavy amount — SELL exit
+    exhaustion_gap: 4,     // 高开低走竭尽: up open + red body — SELL exit
+    dry_rebound: 5,        // 缩量弱反弹: up close on shrinking amount — BUY DISCOUNT (negative bp)
+  },
+  // the amplifier PARENT TYPE axis (2026-11-20): which DATA DOMAIN an
+  // amplifier's day-level anatomy comes from —
+  // signal_amplification_history.amplifier_type; the specific pattern
+  // is the sub_type column (signal_amplifier when ohlcv,
+  // signal_amplifier_margin when margin)
+  signal_amplifier_type: {
+    ohlcv: 0,   // the K-line day anatomy amplifiers (gap / wick / volume shapes)
+    margin: 1,  // the 融资融券 margin-balance level amplifiers (rz_balance vs its own trailing quantile bars)
+  },
+  // the MARGIN sub-type vocabulary (the parent 'margin' branch): the
+  // 融资余额 (rz_balance) LEVEL vs its own trailing-window quantile
+  // bars — low balance = leverage washed out (low risk, price already
+  // lower); high balance = leverage crowding (fragility)
+  signal_amplifier_margin: {
+    margin_washout: 0,  // 融资余额低位: rz_balance <= its trailing-252d q10 bar — BUY reversion amplification
+    margin_crowding: 1, // 融资余额高位: rz_balance >= its trailing-252d q90 bar — SELL exit amplification
+  },
   // the code's own trend classification in force for a signal_rules
   // cell (the PK member that makes rule_params per-PK; 2026-10-14;
   // rise/fall redefined 2026-10-15 as the RSI re-entry episodes —
@@ -99,7 +160,14 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
     // (analysis.market_crowdedness) as rule cells on the index itself —
     // BUY below the pool's own bottom crowding tail (washout
     // reversion), SELL above the top tail (exit timing)
-    crowdedness: 11 },
+    crowdedness: 11,
+    // volatility (12, 2026-11-18): the realized-volatility panel
+    // (analysis.volatility) as rule cells — the leverage-effect tails:
+    // spike BUY a vol axis above its own trailing top-q adaptive tail
+    // with price below its 5-rows-ago close (vol peaks cluster at
+    // price troughs); crush SELL below its bottom tail at the
+    // trailing-high stretch (complacency at the top, exit timing)
+    volatility: 12 },
   // the family config grid (converted 2026-10-11): SERIES codes
   // (curves) 0.., THRESHOLD codes (thresholds/history)
   // (series + 1) * 100 + width ordinal; the SINGLE-WIDTH retest
@@ -149,11 +217,16 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
     rsi10_3pct: 302,
     rsi10_5pct: 304,
     rsi10_10pct: 309,
+    // the Wilder failure-swing pattern subs (2026-11-19, the RSI canon
+    // study's graduate): just past the tail-ordinal decade, within the
+    // window's century block
+    rsi10_fswing: 310,
     rsi14_1pct: 400,
     rsi14_2pct: 401,
     rsi14_3pct: 402,
     rsi14_5pct: 404,
     rsi14_10pct: 409,
+    rsi14_fswing: 410,
     rsi20_1pct: 500,
     rsi20_2pct: 501,
     rsi20_3pct: 502,
@@ -500,6 +573,30 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
     crowd_tech_washout: 6130,
     crowd_tech_euphoria: 6131,
     crowd_tech_euphoria_div: 6132,
+    // the VOLATILITY family (2026-11-18): the (axis × nested tail pct)
+    // grid of the realized-vol leverage-effect family, both actions per
+    // sub type — spike BUY (vol above its own adaptive top tail + the
+    // price fear leg) / crush SELL (vol below its bottom tail at the
+    // trailing-high stretch — exit timing). hv20 = the 20-row
+    // close-to-close realized vol, ewma = the RiskMetrics fast vol
+    // (λ=0.94). The FIRST grid (6200-6205, all-history 2520d
+    // top-{1,2,3}% tails) retired the same day it shipped — degenerate
+    // on the panel's ~7y history; decode-only now. The LOCAL grid
+    // (6210+) trades the trailing-252d quantiles {5,10,15,20}%
+    hv20_1pct: 6200,
+    hv20_2pct: 6201,
+    hv20_3pct: 6202,
+    ewma_1pct: 6203,
+    ewma_2pct: 6204,
+    ewma_3pct: 6205,
+    hv20_5pct: 6210,
+    hv20_10pct: 6211,
+    hv20_15pct: 6212,
+    hv20_20pct: 6213,
+    ewma_5pct: 6214,
+    ewma_10pct: 6215,
+    ewma_15pct: 6216,
+    ewma_20pct: 6217,
   },
   weighting: { equal: 0, amt: 1 },
   rank_side: { HYPE: 0, DRAIN: 1 },
@@ -551,6 +648,9 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
   pair_grain: { index: 0, industry: 1 },
   attribution_type: { equal: 0, trading_amt: 1 },
   trade_side: { BUY: 0, SELL: 1 },
+  // strategy.forecast_next_day.direction — the ±kσ next-day scenario's
+  // side of the move
+  forecast_direction: { down: 0, up: 1 },
   // monitor.external_resource_audit (sub_type's domain is selected by
   // resource_type: http -> ext_http_source, llm -> ext_llm_provider)
   ext_resource: { http: 0, llm: 1 },
@@ -625,6 +725,21 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
   // maintainer's Saturday backfill re-runs 'missing' weekly until loaded.
   // Code order is semantic: unknown -> complete -> missing -> check errored.
   non_daily_state: { unknown: 0, complete: 1, missing: 2, check_failed: 3 },
+  // monitor.orchestration_task_state.state — the ARRANGEMENT verdict of
+  // one orchestration-tier service (the monitor area's OrchestrationArranger
+  // computing the service_config freq window vs the last successful exit,
+  // the same rule as the UI run guard's freq auto-skip): due = run it in
+  // the arranged pass; not_due = the freq window holds (or once + a
+  // success ever) — the nightly chain skips the step instead of spawning
+  // a no-op. Code order is semantic: unknown -> due -> not_due.
+  orchestration_plan_state: { unknown: 0, due: 1, not_due: 2 },
+  // monitor.caution_log — the cross-service caution trail. source: where
+  // the row came from (a running service error, an AI-found suspicion, a
+  // manually-noted pending bug); severity_level: how bad it is (code
+  // order is semantic, best -> worst — service errors default to 'error',
+  // AI suspicions to 'warning', AI [CRITICAL] findings are 'critical').
+  caution_source: { service: 0, ai: 1, manual: 2 },
+  caution_severity: { info: 0, warning: 1, error: 2, critical: 3 },
   // analysis_signals.analysis_cache.kind — the generic
   // intermediate-result cache's tenant (which analysis owns the row)
   analysis_cache_kind: { boost_derivation: 0 },
@@ -754,6 +869,22 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
     llm_qa_by_ask: 4,
     llm_qa_by_research: 5,
   },
+  // text.news_digestions.category — the discourse category of a digested
+  // article (the fake-news detector's classification lane, 2026-11-17):
+  // what KIND of text the item is decides what "fake" can even mean.
+  // 0 discussion = asks / invites discussion (most zhihu items — 明天
+  // 怎么走？), 1 analysis = evidence-based market analysis, 2 opinion =
+  // a personal stance without a definite call, 3 statement = an EXPLICIT
+  // directional call (明天涨) — the only category the disingenuous-
+  // question fake verdict builds on; 99 other = read not confident (and
+  // the legacy-row default).
+  news_category: {
+    discussion: 0,
+    analysis: 1,
+    opinion: 2,
+    statement: 3,
+    other: 99,
+  },
   // static.keyword_maps — the seeded keyword → category map for news-text
   // auditing (2026-11-01). category_type picks the family; category_code
   // decodes via kw_market (market-state description: 下跌 → px_dn, 放量 →
@@ -855,10 +986,13 @@ export function encodeLabelParam(domain: LabelDomain, value: string): number | n
  * SQL scalar-subquery that decodes a SMALLINT label-code column to its
  * TEXT label via static.label_dim — SELECT-list use, keeps response rows
  * string-typed with zero TS churn. `col` is an internal SQL fragment
- * (column reference), never user input.
+ * (column reference), never user input. The label_dim alias is `lbl` —
+ * deliberately collision-proof so a QUALIFIED col reference (e.g.
+ * `d.category` where the outer query aliases its table `d`) still
+ * resolves against the outer query, not the decode subquery.
  */
 export function labelDecodeSql(domain: LabelDomain, col: string): string {
-  return `(SELECT d.label FROM static.label_dim d WHERE d.domain = '${domain}' AND d.code = ${col})`;
+  return `(SELECT lbl.label FROM static.label_dim lbl WHERE lbl.domain = '${domain}' AND lbl.code = ${col})`;
 }
 
 /**

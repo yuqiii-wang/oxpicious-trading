@@ -7,9 +7,10 @@
  *     ([train_date, 9999-12-31], written by each study).
  *   - strategy.training_runs     one header row per Train Model click
  *     (status running/completed/failed + step-5 winner outcome).
- *   - strategy.training_trials   per-point log for BOTH loss types
- *     ('set_a_omega' = Stage A signal TPE trials, 'set_b_calmar' =
- *     Stage B execution grid points) — the UI displays them separately.
+ *   - strategy.training_trials   per-point log for ALL loss types
+ *     ('set_a_omega' = Stage A signal TPE trials, 'set_c_calmar' =
+ *     mixed-mode Set C comb-grid cells, 'set_b_calmar' = Stage B
+ *     execution grid points) — the UI displays them separately.
  *
  * Trials are returned for the LATEST run only (keeps the payload sane;
  * the UI run selector re-fetches when the user picks an older run via
@@ -46,9 +47,22 @@ export interface TrainRunRow {
   best_b_metrics: Record<string, unknown> | null;
   kelly: Record<string, unknown> | null;
   error_text: string | null;
+  /** The run's final report bundle (training_runs.full_series_metrics):
+   *  the flat full-series sanity check, plus — since the 2026-11-19
+   *  train gate — optional ``gate`` (winner vs the untrained default on
+   *  the untouched tail: {passed, winner:{metrics}, default:{metrics}})
+   *  and ``pbo`` ({pbo, n_pairs, spearman_rho}) blocks. Null on old runs
+   *  (the flat bundle is returned as-is there and simply lacks those
+   *  keys). */
+  report: Record<string, unknown> | null;
+  /** REAL per-loss-type trial counts (the header `trials` column is the
+   *  --trials CLI arg — unused by the mixed-mode Set C comb grid). */
+  n_set_a: number;
+  n_set_c: number;
+  n_set_b: number;
 }
 
-export type TrainLossType = "set_a_omega" | "set_b_calmar";
+export type TrainLossType = "set_a_omega" | "set_c_calmar" | "set_b_calmar";
 
 export interface TrainTrialRow {
   run_id: number;
@@ -73,7 +87,7 @@ export interface TrainInfoResponse {
 
 // ---------------------------------------------------------------------------
 //  SQL — the SELECTs live in the sql views
-//  data_viz/api/services/strategy/train-history/{default_config,
+//  strategy/train-history/{default_config,
 //  trained_configs, runs, trials}
 // ---------------------------------------------------------------------------
 //  Helpers
@@ -141,15 +155,15 @@ export async function fetchTrainInfo(
 
   const [defaultRows, trainedRows, runRows] = await Promise.all([
     querySqlView<RawConfigRow>(
-      "data_viz/api/services/strategy/train-history/default_config",
+      "strategy/train-history/default_config",
       configArgs,
     ),
     querySqlView<RawConfigRow>(
-      "data_viz/api/services/strategy/train-history/trained_configs",
+      "strategy/train-history/trained_configs",
       configArgs,
     ),
     querySqlView<Record<string, unknown>>(
-      "data_viz/api/services/strategy/train-history/runs",
+      "strategy/train-history/runs",
       configArgs,
     ),
   ]);
@@ -175,6 +189,10 @@ export async function fetchTrainInfo(
     kelly: parseJsonObj(r.kelly),
     error_text: r.error_text === null || r.error_text === undefined
       ? null : String(r.error_text),
+    report: parseJsonObj(r.full_series_metrics),
+    n_set_a: Number(r.n_set_a ?? 0),
+    n_set_c: Number(r.n_set_c ?? 0),
+    n_set_b: Number(r.n_set_b ?? 0),
   }));
 
   // Trials: for the ?run_id-selected run, else the latest run.
@@ -184,7 +202,7 @@ export async function fetchTrainInfo(
 
   const trialRows = targetRunId !== null
     ? await querySqlView<Record<string, unknown>>(
-        "data_viz/api/services/strategy/train-history/trials",
+        "strategy/train-history/trials",
         { run_id: targetRunId },
       )
     : [];

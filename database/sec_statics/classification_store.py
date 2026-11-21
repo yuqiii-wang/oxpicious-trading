@@ -141,9 +141,21 @@ def write_state(state: Dict[str, Any]) -> None:
             json.dump(sector, f, ensure_ascii=False, indent=2)
 
     shards: Dict[tuple, Dict[str, Any]] = {}
+    # Dummy indices (is_dummy, the synthetic parents for orphan ETFs —
+    # builds/classification/sector_industry/index/dummy.py) are regenerated
+    # per build and belong ONLY in the DB (sec_classification /
+    # sec_index_tags, for ETF parent resolution); they are NEVER persisted
+    # to this cache. The former json_io.save_json enforced the same
+    # contract — dropped in the 2026-11 shard refactor, after which 123
+    # shards carried DUMMY_* codes and downloaders fetched (404-ing)
+    # composition CSVs for them.
+    persisted = 0
     for code, entry in indices.items():
+        if entry.get("is_dummy"):
+            continue
         key = (entry.get("sector_id", "OTHER"), entry.get("industry_id", "OTHER"))
         shards.setdefault(key, {})[code] = entry
+        persisted += 1
     for (sector_id, industry_id), entries in shards.items():
         sector_dir = tmp_dir / INDICES_DIRNAME / sector_id
         sector_dir.mkdir(exist_ok=True)
@@ -156,5 +168,5 @@ def write_state(state: Dict[str, Any]) -> None:
         shutil.rmtree(DATA_DIR)
     tmp_dir.replace(DATA_DIR)
     logger.info(f"    [JSON] Saved {DATA_DIR} "
-                f"({len(indices)} indices in {len(shards)} shards, "
+                f"({persisted} indices in {len(shards)} shards, "
                 f"{len(catalog)} catalog sectors)")

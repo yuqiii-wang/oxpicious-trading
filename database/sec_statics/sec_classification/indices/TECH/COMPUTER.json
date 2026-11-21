@@ -140,20 +140,6 @@
     ],
     "is_industry_not_strategy": true
   },
-  "DUMMY_COMPUTER": {
-    "name": "计算机综合指数",
-    "exchange": null,
-    "sector_id": "TECH",
-    "industry_id": "COMPUTER",
-    "tags": [
-      {
-        "sector_id": "TECH",
-        "industry_id": "COMPUTER"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
-  },
   "H30182": {
     "name": "计算机",
     "exchange": "HK",

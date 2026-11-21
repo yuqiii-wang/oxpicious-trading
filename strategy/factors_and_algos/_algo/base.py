@@ -73,6 +73,17 @@ class AlgoBase(ABC):
     REQUIRED_COLUMNS: tuple = ()
     ALGO_PARAM_KEYS: tuple = ()
 
+    # Replay-fidelity flags — algos that do NOT consume the generic dust
+    # threshold / exec-date delays / holding-period gate set them False:
+    # ``run_backtest`` skips the corresponding step (whatever a params
+    # dict carries), the FT stress pass skips the same tuning, and the
+    # trainer's space builders (``space.py`` suggest_set_a_params /
+    # set_b_grid) drop the axes so no ignored param is ever tuned or
+    # stored.
+    DUST_FILTER: bool = True        # zero |conf| < conf_threshold before the engine
+    TUNES_EXEC_DELAYS: bool = True  # shift BUY/SELL execution N bars later
+    TUNES_MIN_HOLDING: bool = True  # engine SELL gate: N bars since last BUY
+
     # JSON-serializable declaration of the algo's TUNABLE model params —
     # the search space the optimization engine (``_optm_engine``) samples.
     # Empty dict = no tunable model params (only the COMMON trading space
@@ -192,30 +203,50 @@ class AlgoBase(ABC):
             # sub-threshold |signal_confidence| so dust trades are ignored
             # by the engine. The threshold is param-driven (default
             # SIGNAL_CONFIDENCE_THRESHOLD) so the optimizer can tune it.
-            df = tune_signals(
-                df,
-                threshold=float(
-                    params.get("conf_threshold", SIGNAL_CONFIDENCE_THRESHOLD)
-                    or SIGNAL_CONFIDENCE_THRESHOLD
-                ),
-            )
+            # Algos whose replay must keep every graded signal
+            # (``DUST_FILTER`` False — the oracle) skip the filter
+            # entirely; a params ``conf_threshold`` is then inert.
+            if self.DUST_FILTER:
+                df = tune_signals(
+                    df,
+                    threshold=float(
+                        params.get("conf_threshold", SIGNAL_CONFIDENCE_THRESHOLD)
+                        or SIGNAL_CONFIDENCE_THRESHOLD
+                    ),
+                )
             # Execution-date tuning (inherited by all sub-algos): shift
             # BUY/SELL execution N trading days after the signal bar.
             # Default delays are 0 (execute on the signal bar), so normal
             # runs are unchanged; optimizer-tuned params flow through the
-            # DB algo_configs row.
-            df = apply_exec_delays(
-                df,
-                buy_delay=int(params.get("buy_exec_delay", 0) or 0),
-                sell_delay=int(params.get("sell_exec_delay", 0) or 0),
-            )
+            # DB algo_configs row. Algos whose decisions must land on the
+            # signal bar (``TUNES_EXEC_DELAYS`` False — the oracle) skip
+            # the shift entirely.
+            if self.TUNES_EXEC_DELAYS:
+                df = apply_exec_delays(
+                    df,
+                    buy_delay=int(params.get("buy_exec_delay", 0) or 0),
+                    sell_delay=int(params.get("sell_exec_delay", 0) or 0),
+                )
+        # Engine params — full-fidelity algos (``TUNES_MIN_HOLDING``
+        # False, e.g. the oracle) pin ``min_holding_period`` to 1 so the
+        # engine's SELL-holding gate never blocks a pivot exit (any
+        # later-bar sell passes: a bar is never both sides, so
+        # bars_held >= 1 always holds). A stale trained row's tuned
+        # value is overridden here, not just ignored. The copy keeps the
+        # caller's params dict (the optimizer's cached base) untouched.
+        engine_params = params
+        if not self.TUNES_MIN_HOLDING:
+            engine_params = {**params, "min_holding_period": 1}
         decisions = _run_backtest_engine(
-            df, params, sec_type, codes,
+            df, engine_params, sec_type, codes,
             signal_reason_fn=self.build_signal_reason,
         )
 
         ft = float(params.get("fault_tolerance", 0) or 0)
-        if ft > 0 and decisions:
+        # ft_annotate=False (set by the trainer's statics) skips the
+        # post-hoc stressed-conf ANNOTATION — pure per-trial overhead in
+        # studies; the engine's BUY-fill stress stays on regardless.
+        if ft > 0 and decisions and params.get("ft_annotate", True):
             from strategy.factors_and_algos._algo.fault_tolerance import run_ft_stress
             decisions = run_ft_stress(
                 self, df, params, sec_type, codes,

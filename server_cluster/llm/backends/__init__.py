@@ -20,7 +20,8 @@ _BACKEND_CLASSES = {
 
 
 def build_backend(spec: ModelBackendSpec,
-                  default_idle_offload_s: float) -> ModelBackend:
+                  default_idle_offload_s: float,
+                  default_idle_unload_s: float) -> ModelBackend:
     """Spec → backend instance. Construction is LIGHT (weights load
     lazily on first use) — the factory may run at host startup before
     any model is on the GPU; unknown kinds raise (config typo)."""
@@ -29,7 +30,7 @@ def build_backend(spec: ModelBackendSpec,
         raise ValueError(
             f"unknown backend kind {spec.kind!r} for model "
             f"{spec.model_id!r} — known: {sorted(_BACKEND_CLASSES)}")
-    return cls(spec, default_idle_offload_s)
+    return cls(spec, default_idle_offload_s, default_idle_unload_s)
 
 
 __all__ = [

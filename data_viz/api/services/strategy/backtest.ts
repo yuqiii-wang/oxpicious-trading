@@ -113,6 +113,20 @@ export interface StrategyBacktestResponse {
   };
   /** Fault tolerance percentage (0-20) applied to this run. 0 = baseline. */
   fault_tolerance: number;
+  /** The displayed run's strategy_identity.seq_id (null = no run found). */
+  seq_id: number | null;
+  /** Display counter of the displayed run (null = no run found). */
+  seq_no: number | null;
+  /** The displayed run's stored config (params JSONB: trading keys + the
+   *  comb block + params_version on portfolio runs). null = no run found. */
+  params: Record<string, unknown> | null;
+}
+
+// JSONB cells arrive as JSON strings (no pg codec registered in this app).
+function parseJsonObj(v: unknown): Record<string, unknown> | null {
+  if (v === null || v === undefined) return null;
+  const parsed = typeof v === "string" ? JSON.parse(v) : v;
+  return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -122,6 +136,9 @@ export async function runSingletonBacktest(
   rawCode: string,
   rawSecType: string | undefined | null,
   strategyName: string = DEFAULT_STRATEGY_NAME,
+  /** When given, load THIS run (the run-history selector) instead of the
+   *  latest/active one. */
+  seqId?: number | null,
 ): Promise<StrategyBacktestResponse> {
   const secType = (rawSecType as MaSpreadSecType) ?? "index";
 
@@ -147,10 +164,14 @@ export async function runSingletonBacktest(
     ma60: r.long_value ?? null,
   }));
 
-  // 2. Fetch the latest strategy_seq for this (sec_type, code) from the DB.
-  const seqRows = await querySqlView<SeqRow>(
-    "data_viz/api/services/strategy/_shared/seq",
-    { sec_type: secType, code: rawCode, strategy_name: strategyName });
+  // 2. Resolve the displayed run: the seq_id-selected run (run-history
+  //    selector) when given, else the latest/active one.
+  const seqRows = seqId != null
+    ? await querySqlView<SeqRow>(
+        "strategy/_shared/seq_by_id", { seq_id: seqId })
+    : await querySqlView<SeqRow>(
+        "strategy/_shared/seq",
+        { sec_type: secType, code: rawCode, strategy_name: strategyName });
 
   // No backtest run found — return chart-only response with empty decisions.
   if (seqRows.length === 0) {
@@ -167,10 +188,13 @@ export async function runSingletonBacktest(
         first_buy_date: null, first_buy_fill_price: null,
       },
       fault_tolerance: 0,
+      seq_id: null,
+      seq_no: null,
+      params: null,
     };
   }
 
-  const { seq_id, fault_tolerance: ftRaw } = seqRows[0];
+  const { seq_id, seq_no, fault_tolerance: ftRaw, params: paramsRaw } = seqRows[0];
   const faultTolerance = toNum(ftRaw) ?? 0;
 
   // 3. Fetch the 1:1 strategy_results row (run RESULTS: total_buy_cost, first-
@@ -178,7 +202,7 @@ export async function runSingletonBacktest(
   //    here rather than recomputed from decisions so it stays consistent
   //    with the Python-written values.
   const infoRows = await querySqlView<InfoRow>(
-    "data_viz/api/services/strategy/_shared/info", { seq_id });
+    "strategy/_shared/info", { seq_id });
   const info = infoRows[0];
   const totalBuyCost = toNum(info?.total_buy_cost) ?? 0;
   const firstBuyDate = info?.first_buy_date ? formatDate(info.first_buy_date) : null;
@@ -190,12 +214,12 @@ export async function runSingletonBacktest(
   // 4. Fetch trade_decision rows for this seq (seq is per-code, so no code
   //    filter needed).
   const decisionRows = await querySqlView<TradeDecisionRow>(
-    "data_viz/api/services/strategy/_shared/decisions", { seq_id });
+    "strategy/_shared/decisions", { seq_id });
   const decisions = decisionRows.map(mapDecision);
 
   // 5. Fetch strategy_daily rows (daily portfolio state with unrealized_pnl).
   const dailyRows = await querySqlView<DailyRow>(
-    "data_viz/api/services/strategy/_shared/daily", { seq_id });
+    "strategy/_shared/daily", { seq_id });
   const daily = dailyRows.map(mapDaily);
 
   // 6. final_cash = cash_after of the last decision (cash starts at 0; goes
@@ -237,5 +261,8 @@ export async function runSingletonBacktest(
       first_buy_fill_price: firstBuyFillPrice,
     },
     fault_tolerance: faultTolerance,
+    seq_id,
+    seq_no,
+    params: parseJsonObj(paramsRaw),
   };
 }

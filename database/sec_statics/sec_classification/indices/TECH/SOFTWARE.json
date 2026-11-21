@@ -29,20 +29,6 @@
     ],
     "is_industry_not_strategy": true
   },
-  "DUMMY_SOFTWARE": {
-    "name": "软件综合指数",
-    "exchange": null,
-    "sector_id": "TECH",
-    "industry_id": "SOFTWARE",
-    "tags": [
-      {
-        "sector_id": "TECH",
-        "industry_id": "SOFTWARE"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
-  },
   "H30202": {
     "name": "软件指数",
     "exchange": "HK",

@@ -7,6 +7,7 @@
  * documented TriggerAnchor stash (see the assignment near the end).
  */
 import type { EChartsOption } from "echarts";
+import type { ReactNode } from "react";
 import {
   makeCodeTrendTooltipFormatter,
 } from "@/shared/charts/CodeTrendTooltip";
@@ -61,6 +62,9 @@ import type { OhlcMode } from "@/lib/ohlc";
 import type { ThemeMode } from "@/store/filters";
 import type { MarketRegimeSpans } from "@shared/types";
 import {
+  crossedMarkerSpecs,
+  NO_BUY_MARK_NAME,
+  NO_SELL_MARK_NAME,
   REJECTION_MARK_NAME,
   rejectionMarkerSpec,
   signalMarkerSpec,
@@ -103,12 +107,18 @@ export interface OhlcOptionArgs {
   streakInfoByDateRef: StreakInfoByDateRef;
   /** Date → the forecast-action labels, read the same way. */
   forecastActionByDateRef: ForecastActionByDateRef;
+  /** Opt-in extra axes / series / tooltip rows — see OhlcChartProps
+   *  (the singleton code trend's strategy overlays). */
+  extraYAxis?: EChartsOption["yAxis"];
+  extraSeries?: EChartsOption["series"];
+  tooltipExtraRows?: (date: string) => ReactNode | null;
 }
 
 export function buildOhlcOption({
   rows, ohlcMode, themeMode, dataZoomStart, dataZoomEnd,
   dividends, regimeSpans, trendSpans, tradeSignals, showPe,
   triggerAnchorRef, markPointDataRef, streakInfoByDateRef, forecastActionByDateRef,
+  extraYAxis, extraSeries, tooltipExtraRows,
 }: OhlcOptionArgs): EChartsOption {
   const c = axisColors(themeMode);
   const enableDataZoom = dataZoomStart !== undefined;
@@ -258,38 +268,63 @@ export function buildOhlcOption({
   // signals. The symbol geometry is THE shared buy/sell triangle
   // (signalMarker.ts); a REJECTED signal (is_rejection — the gate's
   // explicit no-action record) draws the grey diamond ON the close
-  // instead of any triangle.
+  // instead of any triangle; a NEGATIVE-confidence signal (the REJECT
+  // tier, 2026-11-16) draws the CROSS-TRIANGLE of its own action at
+  // the action's usual anchor — do NOT buy/sell at this price, never
+  // the inverse action.
   const signalsByDate = new Map<string, OhlcTradeSignal[]>();
   if (tradeSignals.length > 0) {
     const byDateAction = new Map<string, OhlcTradeSignal>();
     for (const s of tradeSignals) {
       const rejected = s.is_rejection === true;
-      const buy = !rejected && s.action === "buy";
-      const sell = !rejected && s.action === "sell";
-      if (!buy && !sell && !rejected) continue;
+      const negative = !rejected && s.confidence < 0
+        && (s.action === "buy" || s.action === "sell");
+      const buy = !rejected && !negative && s.action === "buy";
+      const sell = !rejected && !negative && s.action === "sell";
+      if (!buy && !sell && !rejected && !negative) continue;
       const idx = dateToCloseIdx.get(s.date);
       if (idx === undefined) continue; // signal day not in visible window
       const anchor = rejected
         ? broken.arrays[3][idx] // the rejected diamond centers on the close
-        : (buy ? broken.arrays[2][idx] : broken.arrays[1][idx])
+        : ((buy || (negative && s.action === "buy"))
+            ? broken.arrays[2][idx]
+            : broken.arrays[1][idx])
           ?? broken.arrays[3][idx]; // arrays[2]=low, [1]=high, [3]=close
       if (anchor == null || !Number.isFinite(anchor)) continue;
-      const key = `${s.date}|${s.action}|${rejected ? "rej" : "act"}`;
+      const key = `${s.date}|${s.action}|${
+        rejected ? "rej" : negative ? "neg" : "act"
+      }`;
       if (!byDateAction.has(key)) {
         byDateAction.set(key, s);
-        markPointData.push(
-          rejected
-            ? {
-                name: REJECTION_MARK_NAME,
-                coord: [s.date, anchor],
-                ...rejectionMarkerSpec(),
-              }
-            : {
-                name: buy ? "Buy" : "Sell",
-                coord: [s.date, anchor],
-                ...signalMarkerSpec(s.action),
-              },
-        );
+        if (negative) {
+          // the two-glyph overlay: the action's filled triangle + the
+          // contrasting ✕ on top (same anchor — cross-triangle)
+          const glyphs = crossedMarkerSpecs(s.action);
+          markPointData.push(
+            {
+              name: s.action === "buy" ? NO_BUY_MARK_NAME : NO_SELL_MARK_NAME,
+              coord: [s.date, anchor],
+              ...glyphs.triangle,
+            },
+            {
+              name: s.action === "buy" ? NO_BUY_MARK_NAME : NO_SELL_MARK_NAME,
+              coord: [s.date, anchor],
+              ...glyphs.cross,
+            },
+          );
+        } else if (rejected) {
+          markPointData.push({
+            name: REJECTION_MARK_NAME,
+            coord: [s.date, anchor],
+            ...rejectionMarkerSpec(),
+          });
+        } else {
+          markPointData.push({
+            name: buy ? "Buy" : "Sell",
+            coord: [s.date, anchor],
+            ...signalMarkerSpec(s.action),
+          });
+        }
       }
       const list = signalsByDate.get(s.date) ?? [];
       list.push(s);
@@ -611,8 +646,48 @@ export function buildOhlcOption({
     });
   }
 
+  // ---- Opt-in extras (the strategy overlays) ---------------------------
+  // Append the caller's extra axes (widening the right margin for the
+  // offset axis labels — the strategy chart's multi-axis look), then
+  // append the extra series, patching the negative yAxisIndex sentinels
+  // (-1 → 1st extra axis, -2 → 2nd …) into a SHALLOW COPY — the
+  // built-axis count varies (margin/PE axes are data-conditional), so
+  // callers cannot know it, and the sentinel must stay resolvable
+  // across rebuilds with different axis counts.
+  const extraAxes =
+    extraYAxis == null
+      ? []
+      : Array.isArray(extraYAxis)
+        ? extraYAxis
+        : [extraYAxis];
+  const extraSeriesArr =
+    extraSeries == null
+      ? []
+      : Array.isArray(extraSeries)
+        ? extraSeries
+        : [extraSeries];
+  if (extraAxes.length > 0) {
+    (yAxis as Array<unknown>).push(...extraAxes);
+  }
+  for (const s of extraSeriesArr) {
+    const idx = (s as { yAxisIndex?: number }).yAxisIndex;
+    (series as Array<unknown>).push(
+      typeof idx === "number" && idx < 0
+        ? // Sentinel -k → the k-th appended axis: the extra axes end at
+          // length-1, so -1 maps to length-1, -2 to length-2, …
+          { ...s, yAxisIndex: (yAxis as Array<unknown>).length - 1 + (-idx - 1) }
+        : s,
+    );
+  }
+  const gridRight =
+    extraAxes.length > 0
+      ? Math.max(hasPe ? 60 : 50, 130)
+      : hasPe
+        ? 60
+        : 50;
+
   return baseChartOption(themeMode, {
-    grid: commonGrid({ left: 50, right: hasPe ? 60 : 50, bottom: enableDataZoom ? 50 : 28 }),
+    grid: commonGrid({ left: 50, right: gridRight, bottom: enableDataZoom ? 50 : 28 }),
     ...(enableDataZoom
       ? { dataZoom: commonDataZoom({}, dataZoomStart, dataZoomEnd ?? 100) }
       : {}),
@@ -644,6 +719,7 @@ export function buildOhlcOption({
         signalsByDate,
         streakInfoByDateRef,
         forecastActionByDateRef,
+        extraRows: tooltipExtraRows,
       }),
     }),
     // legend: base default commonLegend(mode) == the previous explicit

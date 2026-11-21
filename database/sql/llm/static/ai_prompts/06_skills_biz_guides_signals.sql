@@ -98,7 +98,61 @@ INSERT INTO llm.ai_prompts (prompt_key, prompt_sub_type, prompt_type, title, ver
      'The portfolio lens (signals/hedge-pairs).',
      ARRAY['对冲', '配对', 'hedge'],
      ARRAY['hedge pairs', 'pair portfolio', 'rsi wash', 'long short spread', 'benefit audit'],
-     25)
+     25),
+    ('signal-amplification-guide',
+     'biz_guide',
+     1,
+     'Signal amplification guide',
+     1,
+     'signal-amplification-guide: the SIGNAL AMPLIFICATION pair is '
+     'the close-only signal families'' OHLCV-anatomy strengthener — '
+     'the intraday open/high/low and the volume (trading_amount) the '
+     'triggers do not read, recorded as recurring day-level anatomy '
+     'and BOUND to the families it strengthens or discounts. The '
+     'pair: analysis_signals.signal_amplification_rules — ONE row '
+     'per (code, sec_type, signal_type) whose rule_params JSONB is '
+     'the binding config (amplifiers[] with the action side, '
+     'base_bp, depth scale and bar_def, plus the measured per-'
+     'amplifier evidence: n, the family''s own base forward mean vs '
+     'the amplifier-day mean, delta, hit rate, is_valid = n >= 3 '
+     'AND a sign-correct delta); analysis_signals.'
+     'signal_amplification_history — the ORIGINAL RECORD KEEPER, '
+     'one row per amplifier day (code, sec_type, amplifier_type, '
+     'date) with the day''s anatomy facts (gap_pct / wick_pct / '
+     'amt_ratio / close_pos / depth) and a bindings JSONB array of '
+     '{signal_type, action, base_bp, amplify_bp, fired, fired_n}. '
+     'The six amplifiers (decode amplifier_type via the '
+     '''signal_amplifier'' label domain): flush_washout 探底洗出 '
+     '(lower-wick top-decile flush + down close + heavy amount — '
+     'BUY reversion), gap_reclaim 低开收复 (down open reclaimed by '
+     'the close — BUY), breakout_confirm 放量突破确认 (close over '
+     'the prior high + heavy amount + strong close — BUY '
+     'continuation), spike_blowoff 冲高回落放量 (upper-wick '
+     'top-decile faded weak on heavy amount — SELL exit), '
+     'exhaustion_gap 高开低走竭尽 (up open + red body — SELL exit), '
+     'dry_rebound 缩量弱反弹 (up close on SHRINKING amount — BUY '
+     'DISCOUNT, negative bp). amplify_bp sign semantics: > 0 '
+     'STRENGTHENS the bound family''s claim that day, < 0 '
+     'DISCOUNTS it (the fade-prone rebound); the day''s per-family '
+     'sum maps linearly to a factor, 1 + sum/2000 clamped to '
+     '[0.5, 1.5] — the same convention the singleton strategy''s '
+     'comb amplifier group uses to size its picked-up events. '
+     'Answer questions by scope: "was this signal day '
+     'volume/gap/wick-confirmed?" reads history_signals by (code, '
+     'date) and the history rows'' bindings for that family; "does '
+     'the amplifier actually improve this family here?" reads '
+     'rules.rule_params.evidence (an unproven config is '
+     'observational, is_valid FALSE — not disproven); every '
+     'amplifier day is recorded whether or not a bound family '
+     'fired — the anatomy fact is the record. Decode SMALLINT '
+     'codes via static.label_dim (signal_amplifier / signal_type / '
+     'action); the extended per-day stats the amplifiers read live '
+     'in analysis.ohlcv_ext.',
+     'How to read the signal amplification pair — the OHLCV-anatomy amplifiers (gap/wick/volume day shapes) bound to the signal families, their measured evidence and the per-day amplify_bp.',
+     'The signals scope''s OHLCV-anatomy strengthener (rules + history pair).',
+     ARRAY['信号放大', 'amplification', '量价确认'],
+     ARRAY['signal amplification', 'amplifier', 'volume confirmation', 'gap reclaim', 'flush washout', 'dry rebound', 'blowoff', 'ohlcv anatomy'],
+     14)
 ON CONFLICT (prompt_key, prompt_sub_type) DO UPDATE
     SET prompt_type = EXCLUDED.prompt_type,
         title       = EXCLUDED.title,

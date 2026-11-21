@@ -10,9 +10,15 @@ import type { StrategyDailyRow } from "../../../shared/types.js";
 // Algo default — must match the Python DEFAULT_ALGO in
 // strategy/factors_and_algos/_algo/registry.py.
 // The DB strategy_name is EITHER an algo name (binary mode:
-// "macd") OR a portfolio name (mixed mode: "portfolio:macd*0.5").
+// "macd") OR a portfolio name (mixed mode: "portfolio:bb+macd").
 // Default: macd (binary).
 export const DEFAULT_STRATEGY_NAME = "macd";
+
+// Fault tolerance pinned to 10% (2026-11-17, user-directed) — must match
+// DEFAULT_FAULT_TOLERANCE in strategy/_trading/constants.py. The UI no
+// longer varies it; the param stays on the POST /run query for API
+// compatibility.
+export const DEFAULT_FAULT_TOLERANCE = 10;
 
 // ---------------------------------------------------------------------------
 //  DB row types
@@ -42,7 +48,10 @@ export interface TradeDecisionRow {
 
 export interface SeqRow {
   seq_id: number;
+  seq_no: number;
   fault_tolerance: string | number | null;
+  /** JSON string (no pg codec) — the run's stored config. */
+  params: unknown;
 }
 
 export interface InfoRow {
@@ -72,12 +81,12 @@ export interface DailyRow {
 // ---------------------------------------------------------------------------
 //  SQL — the backtest reads (latest strategy_seq, run results, trade
 //  decisions, daily state) live in the sql views
-//  data_viz/api/services/strategy/_shared/{seq,info,decisions,daily},
+//  strategy/_shared/{seq,info,decisions,daily},
 //  rendered by services/strategy/backtest.ts via querySqlView.
 //  Latest-run priority: 1. is_active = TRUE (strategy_identity) — the run
 //  the UI loads by default; 2. seq_no DESC fallback — highest sequence.
-//  strategy_name = algo name (binary mode) or "portfolio:bb*0.5+macd*0.5"
-//  (mixed mode).
+//  strategy_name = the ft-suffixed run identity (algo name + "_ft{N}",
+//  binary mode) or "portfolio:bb+macd_ft{N}" (mixed mode).
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------

@@ -33,9 +33,19 @@ export interface ServiceConfigEntry {
   maxParallelRuns: number | null;
   includedParallelServices: string[];
   excludedParallelServices: string[];
-  /** always | daily | monthly | quarterly | semiannually | once |
-   *  occasionally | on_demand (the default.json fallback's value). */
-  freq: string;
+  /** true = an always-live resident daemon (the resident supervisor /
+   *  ensure-up path keeps it up); false = a one-time task whose freq
+   *  orchestrates when it starts. */
+  isResident: boolean;
+  /** daily | weekly | monthly | quarterly | semiannually | once |
+   *  occasionally | on_demand — the one-time task's start cadence; null
+   *  for a resident (always lives, cadence does not apply). */
+  freq: string | null;
+  /** The orchestration give-way rank — higher wins conflicts (a build
+   *  stops for a download; less frequent gives way to more frequent; a
+   *  resident outranks daily); derived from isResident/freq + service
+   *  domain when the file carries none. */
+  priority: number;
   schedule: string | null;
   notes: string | null;
   sourceRef: string;
@@ -51,8 +61,12 @@ export interface ServiceConfigResponse {
 }
 
 /** Body of a service-config save — `service` picks the tree file
- *  ("default" edits the fallback); updatedAt is stamped server-side. */
-export type ServiceConfigSave = Omit<ServiceConfigEntry, "updatedAt">;
+ *  ("default" edits the fallback); updatedAt is stamped server-side.
+ *  priority null = derive from isResident/freq + service domain
+ *  server-side; freq null = a resident (isResident true). */
+export type ServiceConfigSave = Omit<ServiceConfigEntry, "updatedAt"> & {
+  priority: number | null;
+};
 
 export function fetchServiceConfig(): Promise<ServiceConfigResponse> {
   return fetch("/api/config/service").then((r) => r.json());
@@ -82,6 +96,80 @@ export function deleteServiceConfig(service: string): Promise<void> {
       throw new Error(body.error ?? `HTTP ${r.status}`);
     }
   });
+}
+
+// ---------------------------------------------------------------------------
+//  Server cluster (the Service tab's cluster view — resident FastAPI
+//  area servers, their heartbeat + exposed API surface)
+// ---------------------------------------------------------------------------
+
+/** One resident FastAPI area server (server_cluster/<area>.py) with its
+ *  heartbeat state — the monitor.service_heartbeat row of
+ *  server_cluster.<area>, the same liveness vocabulary the Service
+ *  Monitor's resident rows use. */
+export interface ClusterServerStatus {
+  area: string;
+  service: string;
+  port: number;
+  baseUrl: string;
+  /** The FastAPI Swagger UI page (the human twin of the openapi surface). */
+  docsUrl: string;
+  status: "live" | "stale" | "stopped" | "down";
+  pid: number | null;
+  startedAt: string | null;
+  beatAt: string | null;
+  beatAgeS: number | null;
+  stopReason: string | null;
+  isNormalExit: boolean | null;
+  stoppedAt: string | null;
+  liveParallel: number | null;
+}
+
+export interface ClusterServersResponse {
+  success: true;
+  generatedAt: string;
+  staleAfterS: number;
+  rows: ClusterServerStatus[];
+}
+
+/** One exposed endpoint of an area server, parsed from its openapi.json. */
+export interface ClusterApiOperation {
+  method: string;
+  path: string;
+  summary: string;
+}
+
+/** Endpoints grouped by the FastAPI router tag ("untagged" for none). */
+export interface ClusterApiGroup {
+  tag: string;
+  operations: ClusterApiOperation[];
+}
+
+export interface ClusterOpenApiSurface {
+  success: true;
+  area: string;
+  title: string;
+  version: string;
+  docsUrl: string;
+  count: number;
+  groups: ClusterApiGroup[];
+}
+
+export function fetchClusterServers(): Promise<ClusterServersResponse> {
+  return fetch("/api/config/cluster").then((r) => r.json());
+}
+
+/** ONE server's exposed API surface (its FastAPI /openapi.json,
+ *  tag-grouped). Rejects with the API's error body message when the
+ *  server is unreachable. */
+export function fetchClusterOpenApi(area: string): Promise<ClusterOpenApiSurface> {
+  return fetch(`/api/config/cluster/${encodeURIComponent(area)}/openapi`).then(
+    async (r) => {
+      const body = await r.json();
+      if (!r.ok) throw new Error(body.error ?? `HTTP ${r.status}`);
+      return body;
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -214,13 +302,15 @@ export function saveSecStaticsFile(
  *  step-number order — download tiers in diff-src-parallel waves
  *  (consecutive steps with distinct srcHost run concurrently; null =
  *  fully serial). canBeParallel is the legacy flag, false for every
- *  step today. */
+ *  step today. priority is the step's give-way rank from its script's
+ *  service_config entry (higher = wins conflicts). */
 export interface OrchestrationStep {
   step: number;
   script: string;
   args: string[];
   srcHost: string | null;
   canBeParallel: boolean;
+  priority: number;
   note: string | null;
 }
 

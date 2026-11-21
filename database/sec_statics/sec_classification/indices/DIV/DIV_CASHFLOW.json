@@ -54,19 +54,5 @@
       }
     ],
     "is_industry_not_strategy": false
-  },
-  "DUMMY_DIV_CASHFLOW": {
-    "name": "现金流综合指数",
-    "exchange": null,
-    "sector_id": "DIV",
-    "industry_id": "DIV_CASHFLOW",
-    "tags": [
-      {
-        "sector_id": "DIV",
-        "industry_id": "DIV_CASHFLOW"
-      }
-    ],
-    "is_industry_not_strategy": false,
-    "is_dummy": true
   }
 }

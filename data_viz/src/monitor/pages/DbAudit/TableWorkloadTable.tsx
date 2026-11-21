@@ -26,7 +26,15 @@
  * (GET /db/partitions via fetchDbPartitions — the panel loads main tables
  * only), refetched when the window selector moves while rows stay open,
  * and cached while closed. Partition sub-rows render with the same
- * columns; clicking one drills into THAT partition's trend below.
+ * columns (static rows — the former click-to-drill into the page-level
+ * trend chart retired with that chart; the family aggregate above is the
+ * trend surface).
+ *
+ * The table renders with a FIXED layout (colgroup-pinned percentage
+ * columns, the name column taking the remainder): it always fits its
+ * container's width — no horizontal scrollbar; long names and metrics
+ * clip to an ellipsis (hover shows the full name) instead of widening
+ * the panel.
  */
 import { useCallback, useEffect, useState } from "react";
 import {
@@ -82,9 +90,39 @@ function shortTime(iso: string | null): string {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
+/** Fixed-layout cells never spill past their column: long content clips
+ *  to an ellipsis so the nine-column table always fits its container's
+ *  width — the panel renders without a horizontal scrollbar. */
+const CELL_CLIP = {
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+} as const;
+
+/** The nine columns' fixed-layout width plan (colgroup): percentages of
+ *  the container, the flexible FIRST col taking whatever remains for the
+ *  table/partition name. Shared by the main table and the nested
+ *  partition sub-table so both keep the same column rhythm. */
+function ColWidthPlan() {
+  return (
+    <colgroup>
+      <col />
+      <col style={{ width: "8%" }} />
+      <col style={{ width: "8%" }} />
+      <col style={{ width: "13%" }} />
+      <col style={{ width: "11%" }} />
+      <col style={{ width: "8%" }} />
+      <col style={{ width: "7%" }} />
+      <col style={{ width: "8%" }} />
+      <col style={{ width: "8%" }} />
+    </colgroup>
+  );
+}
+
 /** The first cell: the expand affordance for partitioned families (row
  *  click toggles — the icon is the visual cue), a partition-count chip,
- *  else the bare name. */
+ *  else the bare name. Long names clip to an ellipsis (hover shows the
+ *  full name) instead of widening the table. */
 function NameCell({
   row,
   expanded,
@@ -94,25 +132,37 @@ function NameCell({
 }) {
   const expandable = (row.partitionCount ?? 0) > 0;
   return (
-    <TableCell sx={{ fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
-      <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+    <TableCell sx={{ fontVariantNumeric: "tabular-nums", ...CELL_CLIP }}>
+      <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, minWidth: 0 }}>
         {expandable && (
           <IconButton
             size="small"
             edge="start"
             aria-label={expanded ? "collapse partitions" : "expand partitions"}
-            sx={{ ml: -0.75, p: 0.25 }}
+            sx={{ ml: -0.75, p: 0.25, flexShrink: 0 }}
           >
             {expanded ? <ExpandedIcon sx={{ fontSize: 18 }} /> : <CollapsedIcon sx={{ fontSize: 18 }} />}
           </IconButton>
         )}
-        {row.schema}.{row.table}
+        <Tooltip title={`${row.schema}.${row.table}`}>
+          <Box
+            component="span"
+            sx={{
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {row.schema}.{row.table}
+          </Box>
+        </Tooltip>
         {expandable && (
           <Chip
             size="small"
             variant="outlined"
             label={`${row.partitionCount} parts`}
-            sx={{ ml: 0.5, height: 18, fontSize: "0.7rem" }}
+            sx={{ ml: 0.5, height: 18, fontSize: "0.7rem", flexShrink: 0 }}
           />
         )}
       </Box>
@@ -122,7 +172,9 @@ function NameCell({
 
 /** One workload row's nine metric cells (shared by main rows and
  *  partition sub-rows so both stay column-aligned). SOURCE-AWARE: live
- *  rows tooltip the audit window; archive rows carry lifetime sums. */
+ *  rows tooltip the audit window; archive rows carry lifetime sums.
+ *  Cells clip under the fixed layout (CELL_CLIP) — a narrow panel
+ *  ellipsizes a long metric instead of forcing a horizontal scrollbar. */
 function MetricCells({ row, source }: { row: DbTableEntry; source: DbAuditSource }) {
   const chip = flagChip(row.writeFlag);
   return (
@@ -130,6 +182,7 @@ function MetricCells({ row, source }: { row: DbTableEntry; source: DbAuditSource
       <TableCell
         align="right"
         sx={{
+          ...CELL_CLIP,
           fontVariantNumeric: "tabular-nums",
           color:
             row.writeFlag === 2
@@ -141,7 +194,7 @@ function MetricCells({ row, source }: { row: DbTableEntry; source: DbAuditSource
       >
         {fmtRate(row.writeRate)}
       </TableCell>
-      <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
+      <TableCell align="right" sx={{ ...CELL_CLIP, fontVariantNumeric: "tabular-nums" }}>
         {fmtRate(row.readRate)}
       </TableCell>
       <Tooltip
@@ -151,23 +204,23 @@ function MetricCells({ row, source }: { row: DbTableEntry; source: DbAuditSource
             : `window ${row.windowS ?? "—"}s · deltas over the last active pass`
         }
       >
-        <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
+        <TableCell align="right" sx={{ ...CELL_CLIP, fontVariantNumeric: "tabular-nums" }}>
           {fmtCount(row.insRows)} / {fmtCount(row.updRows)} / {fmtCount(row.delRows)}
         </TableCell>
       </Tooltip>
-      <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
+      <TableCell align="right" sx={{ ...CELL_CLIP, fontVariantNumeric: "tabular-nums" }}>
         {fmtCount(row.nLiveTup)} / {fmtCount(row.nDeadTup)}
       </TableCell>
-      <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
+      <TableCell align="right" sx={{ ...CELL_CLIP, fontVariantNumeric: "tabular-nums" }}>
         {fmtBytes(row.sizeBytes)}
       </TableCell>
-      <TableCell align="center">
+      <TableCell align="center" sx={CELL_CLIP}>
         <Chip size="small" color={chip.color} label={chip.label} variant="outlined" />
       </TableCell>
-      <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
+      <TableCell align="right" sx={{ ...CELL_CLIP, fontVariantNumeric: "tabular-nums" }}>
         {stamp(row.writeCheckedAt, source)}
       </TableCell>
-      <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
+      <TableCell align="right" sx={{ ...CELL_CLIP, fontVariantNumeric: "tabular-nums" }}>
         {stamp(row.readCheckedAt, source)}
       </TableCell>
     </>
@@ -188,15 +241,13 @@ interface PartitionsState {
 
 interface Props {
   rows: DbTableEntry[];
-  selected: { schema: string; table: string } | null;
-  onSelect: (row: DbTableEntry) => void;
   hours: number;
   source: DbAuditSource;
 }
 
 const ROWS_PER_PAGE_OPTIONS = [25, 50, 100];
 
-export default function TableWorkloadTable({ rows, selected, onSelect, hours, source }: Props) {
+export default function TableWorkloadTable({ rows, hours, source }: Props) {
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(50);
   const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set());
@@ -284,18 +335,19 @@ export default function TableWorkloadTable({ rows, selected, onSelect, hours, so
   return (
     <Paper variant="outlined">
       <TableContainer sx={{ maxHeight: 480 }}>
-        <Table stickyHeader size="small">
+        <Table stickyHeader size="small" sx={{ tableLayout: "fixed", width: "100%" }}>
+          <ColWidthPlan />
           <TableHead>
             <TableRow>
-              <TableCell>Table</TableCell>
-              <TableCell align="right">Write</TableCell>
-              <TableCell align="right">Reads</TableCell>
-              <TableCell align="right">Ins / Upd / Del</TableCell>
-              <TableCell align="right">Live / Dead tup</TableCell>
-              <TableCell align="right">Size</TableCell>
-              <TableCell align="center">Flag</TableCell>
-              <TableCell align="right">Last write</TableCell>
-              <TableCell align="right">Last read</TableCell>
+              <TableCell sx={CELL_CLIP}>Table</TableCell>
+              <TableCell align="right" sx={CELL_CLIP}>Write</TableCell>
+              <TableCell align="right" sx={CELL_CLIP}>Reads</TableCell>
+              <TableCell align="right" sx={CELL_CLIP}>Ins / Upd / Del</TableCell>
+              <TableCell align="right" sx={CELL_CLIP}>Live / Dead tup</TableCell>
+              <TableCell align="right" sx={CELL_CLIP}>Size</TableCell>
+              <TableCell align="center" sx={CELL_CLIP}>Flag</TableCell>
+              <TableCell align="right" sx={CELL_CLIP}>Last write</TableCell>
+              <TableCell align="right" sx={CELL_CLIP}>Last read</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -303,25 +355,18 @@ export default function TableWorkloadTable({ rows, selected, onSelect, hours, so
               const key = `${r.schema}.${r.table}`;
               const expandable = (r.partitionCount ?? 0) > 0;
               const expanded = expandedKeys.has(key);
-              const selectedRow =
-                selected != null &&
-                selected.schema === r.schema &&
-                selected.table === r.table;
               const parts = partitions[key];
               return (
                 [
                   <TableRow
                     key={key}
-                    hover
-                    selected={selectedRow}
-                    onClick={() => {
-                      if (expandable) {
-                        toggleExpand(r); // the family's expand affordance
-                      } else {
-                        onSelect(r);
-                      }
-                    }}
-                    sx={{ cursor: "pointer" }}
+                    hover={expandable}
+                    onClick={
+                      expandable
+                        ? () => toggleExpand(r) // the family's expand affordance
+                        : undefined
+                    }
+                    sx={{ cursor: expandable ? "pointer" : undefined }}
                   >
                     <NameCell row={r} expanded={expanded} />
                     <MetricCells row={r} source={source} />
@@ -357,47 +402,41 @@ export default function TableWorkloadTable({ rows, selected, onSelect, hours, so
                             </Typography>
                           )}
                           {parts?.rows.length != null && parts.rows.length > 0 && (
-                            <Table size="small" sx={{ bgcolor: "background.paper" }}>
+                            <Table
+                              size="small"
+                              sx={{ tableLayout: "fixed", width: "100%", bgcolor: "background.paper" }}
+                            >
+                              <ColWidthPlan />
                               <TableHead>
                                 <TableRow>
-                                  <TableCell sx={{ pl: 2 }}>Partition</TableCell>
-                                  <TableCell align="right">Write</TableCell>
-                                  <TableCell align="right">Reads</TableCell>
-                                  <TableCell align="right">Ins / Upd / Del</TableCell>
-                                  <TableCell align="right">Live / Dead tup</TableCell>
-                                  <TableCell align="right">Size</TableCell>
-                                  <TableCell align="center">Flag</TableCell>
-                                  <TableCell align="right">Last write</TableCell>
-                                  <TableCell align="right">Last read</TableCell>
+                                  <TableCell sx={{ pl: 2, ...CELL_CLIP }}>Partition</TableCell>
+                                  <TableCell align="right" sx={CELL_CLIP}>Write</TableCell>
+                                  <TableCell align="right" sx={CELL_CLIP}>Reads</TableCell>
+                                  <TableCell align="right" sx={CELL_CLIP}>Ins / Upd / Del</TableCell>
+                                  <TableCell align="right" sx={CELL_CLIP}>Live / Dead tup</TableCell>
+                                  <TableCell align="right" sx={CELL_CLIP}>Size</TableCell>
+                                  <TableCell align="center" sx={CELL_CLIP}>Flag</TableCell>
+                                  <TableCell align="right" sx={CELL_CLIP}>Last write</TableCell>
+                                  <TableCell align="right" sx={CELL_CLIP}>Last read</TableCell>
                                 </TableRow>
                               </TableHead>
                               <TableBody>
-                                {parts.rows.map((p) => {
-                                  const selectedPart =
-                                    selected != null &&
-                                    selected.schema === r.schema &&
-                                    selected.table === p.table;
-                                  return (
-                                    <TableRow
-                                      key={p.table}
-                                      hover
-                                      selected={selectedPart}
-                                      onClick={() => onSelect(p)}
-                                      sx={{ cursor: "pointer" }}
-                                    >
+                                {parts.rows.map((p) => (
+                                  <TableRow key={p.table}>
+                                    <Tooltip title={`${r.schema}.${p.table}`}>
                                       <TableCell
                                         sx={{
                                           pl: 2,
+                                          ...CELL_CLIP,
                                           fontVariantNumeric: "tabular-nums",
-                                          whiteSpace: "nowrap",
                                         }}
                                       >
                                         {r.schema}.{p.table}
                                       </TableCell>
-                                      <MetricCells row={p} source={source} />
-                                    </TableRow>
-                                  );
-                                })}
+                                    </Tooltip>
+                                    <MetricCells row={p} source={source} />
+                                  </TableRow>
+                                ))}
                               </TableBody>
                             </Table>
                           )}

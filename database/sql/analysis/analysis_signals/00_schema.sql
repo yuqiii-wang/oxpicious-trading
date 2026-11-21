@@ -60,6 +60,27 @@
 --      classification of the prepared frame (trends.attach_trend),
 --      shared by the trend-spans API (chart shading) and the live
 --      tier's day-context rule-cell matching.
+--    - no_action_signals (2026-11-18): one row per (fired positive
+--      day x declined action x reason) — the NO-ACTION OVERLAY
+--      TIER, the day-level negative-confidence marks of
+--      engines/no_action (per-family trigger-time invalidation
+--      conditions + the cross-family FATIGUE filter). OVERLAY only:
+--      rows re-state the fired day's own identity/values and never
+--      suppress a positive row; the seams reading history_signals
+--      never see this table. Same lifecycle as history_signals
+--      minus the portfolio tier axis.
+--    - signal_amplification_rules + signal_amplification_history
+--      (2026-11-18): the SIGNAL AMPLIFICATION pair — the close-only
+--      families' OHLCV-anatomy strengthener. rules: one row per
+--      (code, sec_type, signal_type) whose rule_params JSONB binds
+--      the amplifiers (which amplifier types, action side, base_bp,
+--      depth scale, bars) + the measured per-amplifier evidence;
+--      history: the ORIGINAL RECORD KEEPER — one row per amplifier
+--      day with the day's anatomy facts + the per-binding
+--      amplification applied. Sourced from analysis.ohlcv_ext +
+--      stats basic bars by python -m
+--      analysis.analysis_signals.signal_amplification (runs inside
+--      the analysis_signals daily pipeline after the families).
 --
 --  Population convention:
 --    - `python -m analysis.analysis_signals` runs incrementally at

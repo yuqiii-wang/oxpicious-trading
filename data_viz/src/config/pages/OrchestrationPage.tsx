@@ -64,6 +64,7 @@ interface StepRow {
   args: string[];
   srcHost: string | null;
   canBeParallel: boolean;
+  priority: number;
   note: string | null;
   file: string;
   freq: string;
@@ -107,6 +108,7 @@ export default function OrchestrationPage() {
           args: s.args,
           srcHost: s.srcHost,
           canBeParallel: s.canBeParallel,
+          priority: s.priority,
           note: s.note,
           file: `${t.tier}.json`,
           freq: t.freq,
@@ -204,7 +206,8 @@ export default function OrchestrationPage() {
                 <TableCell align="right" sx={{ width: 40 }}>#</TableCell>
                 <TableCell sx={{ minWidth: 220 }}>Script</TableCell>
                 <TableCell sx={{ width: 150 }}>Args</TableCell>
-                <TableCell sx={{ width: 90 }}>Mode</TableCell>
+                <TableCell sx={{ width: 110 }}>Mode</TableCell>
+                <TableCell align="right" sx={{ width: 64 }}>P</TableCell>
                 <TableCell>Note</TableCell>
               </TableRow>
             </TableHead>
@@ -260,6 +263,13 @@ export default function OrchestrationPage() {
                       </Tooltip>
                     )}
                   </TableCell>
+                  <TableCell align="right">
+                    <Tooltip
+                      title={`give-way priority ${r.priority} — higher wins conflicts (a strictly lower-priority step holds back / stops while a higher one runs)`}
+                    >
+                      <span>{r.priority}</span>
+                    </Tooltip>
+                  </TableCell>
                   <TableCell sx={{ maxWidth: 320 }}>
                     <Tooltip title={r.note ?? ""}>
                       <Typography variant="body2" noWrap sx={{ maxWidth: 320 }}>
@@ -271,7 +281,7 @@ export default function OrchestrationPage() {
               ))}
               {tiers != null && visible.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={7} align="center">
+                  <TableCell colSpan={8} align="center">
                     <Typography
                       variant="caption"
                       color="text.secondary"

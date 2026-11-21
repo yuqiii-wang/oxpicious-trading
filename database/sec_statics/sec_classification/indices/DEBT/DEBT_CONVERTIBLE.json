@@ -61,19 +61,5 @@
       }
     ],
     "is_industry_not_strategy": true
-  },
-  "DUMMY_DEBT_CONVERTIBLE": {
-    "name": "转债综合指数",
-    "exchange": null,
-    "sector_id": "DEBT",
-    "industry_id": "DEBT_CONVERTIBLE",
-    "tags": [
-      {
-        "sector_id": "DEBT",
-        "industry_id": "DEBT_CONVERTIBLE"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
   }
 }

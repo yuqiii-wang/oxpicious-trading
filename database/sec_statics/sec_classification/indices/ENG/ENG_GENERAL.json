@@ -195,19 +195,5 @@
       }
     ],
     "is_industry_not_strategy": true
-  },
-  "DUMMY_ENG_GENERAL": {
-    "name": "能源综合指数",
-    "exchange": null,
-    "sector_id": "ENG",
-    "industry_id": "ENG_GENERAL",
-    "tags": [
-      {
-        "sector_id": "ENG",
-        "industry_id": "ENG_GENERAL"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
   }
 }

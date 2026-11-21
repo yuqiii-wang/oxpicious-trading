@@ -35,6 +35,18 @@ function sentimentChip(level: number | null): { label: string; color: "success" 
   return { label: `情绪 ${level.toFixed(1)}`, color: "default" };
 }
 
+/** Discourse-category chip (text.news_digestions.category, decoded
+ *  server-side to the news_category label): what KIND of text the item
+ *  is — most zhihu items are discussions, an explicit 涨/跌 call is a
+ *  statement. `other` (low-confidence read) and null (not digested yet)
+ *  hide the chip. */
+const CATEGORY_CHIPS: Record<string, { label: string; color: "info" | "warning" }> = {
+  discussion: { label: "讨论", color: "info" },
+  analysis: { label: "分析", color: "info" },
+  opinion: { label: "观点", color: "info" },
+  statement: { label: "断言", color: "warning" },
+};
+
 export default function NewsPostCard({ item }: { item: NewsItem }) {
   // Comments state — a separate lazy fetch (below the expand toggle).
   const [showComments, setShowComments] = useState(false);
@@ -45,6 +57,7 @@ export default function NewsPostCard({ item }: { item: NewsItem }) {
 
   const name = item.author ?? item.source ?? "新闻";
   const sentiment = sentimentChip(item.sentiment_level ?? null);
+  const category = item.category ? CATEGORY_CHIPS[item.category] : undefined;
 
   const loadComments = async () => {
     if (commentsLoading) return;
@@ -107,6 +120,8 @@ export default function NewsPostCard({ item }: { item: NewsItem }) {
           {!item.industry_id && item.sector_id && <PostChip label={item.sector_id} color="secondary" />}
           {item.industry_id && <PostChip label={item.industry_id} color="secondary" />}
           {item.is_big_fluctuation && <PostChip label="On Big Fluctuations" color="warning" />}
+          {category && <PostChip label={category.label} color={category.color} />}
+          {item.is_fake_news && <PostChip label="假新闻" color="error" />}
           {sentiment && <PostChip label={sentiment.label} color={sentiment.color} />}
         </>
       }

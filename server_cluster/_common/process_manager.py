@@ -110,6 +110,15 @@ class ProcessManager:
         if grace_s is None:
             grace_s = self._config.stop_grace_s
         addressed = False
+        # PLANNED stop: mark before the signal so the child's heartbeat
+        # SIGTERM handler records the stop WITHOUT the duplicate
+        # "stopped abnormally" caution — this stop is intentional and
+        # already logged here / by the supervisor that asked for it.
+        try:
+            from _common.service_heartbeat import mark_planned_stop
+            mark_planned_stop(pid)
+        except Exception:  # noqa: BLE001 — best effort; the stop proceeds
+            pass
         try:
             os.kill(pid, signal.SIGTERM)
             addressed = True

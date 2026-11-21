@@ -409,16 +409,32 @@ _INCREMENTAL_SLOTS = dict(
 )
 
 
-def _build_merged_broad_market_insert_sql(slots: dict) -> str:
+def _build_merged_broad_market_insert_sql(slots: dict,
+                                          on_conflict: str = "") -> str:
     """Assemble the merged broad-market INSERT for the given slot preset."""
     return _MERGED_BROAD_MARKET_INSERT_SQL_TEMPLATE.format(
         composition_ctes=_format_composition_ctes(""),
         rolling_select=_rolling_select(),
         rolling_cols=_rolling_cols(),
         rolling_select_cols=_rolling_select_cols(),
-        on_conflict="",
+        on_conflict=on_conflict,
         **slots,
     )
+
+
+# Idempotency guard for the INCREMENTAL variants: a racing writer can
+# already hold a target-date row — a stopped-but-still-committing previous
+# run (SIGTERM stays pending while asyncpg awaits a long INSERT, so its
+# batches keep committing after the supervisor declared it dead) or a
+# killed run's partially-committed batches. Values are deterministic
+# functions of the same source data, so skipping an existing row is a
+# no-op refresh — the same rationale as the target-date pruning
+# (2026-11-20 UniqueViolation incident: (AI, 932000, 2020-07-02,
+# trading_amt) inserted by a batch of the dying run).
+_ON_CONFLICT_DO_NOTHING = (
+    "\nON CONFLICT (industry_id, benchmark_code, date, attribution_type) "
+    "DO NOTHING"
+)
 
 
 # Force mode (all industries at once, plain INSERT after TRUNCATE).
@@ -427,10 +443,11 @@ MERGED_BROAD_MARKET_INSERT_SQL_FULL = _build_merged_broad_market_insert_sql(
     _FULL_SLOTS)
 
 # Incremental mode (date-filtered, needed-pairs-pruned, liquidity-split,
-# trading-day-precise lookback cap, plain INSERT — target dates are pruned
-# to genuinely missing ones + transaction-wrapped, so no ON CONFLICT).
+# trading-day-precise lookback cap, ON CONFLICT DO NOTHING — target dates
+# are pruned to genuinely missing ones, and the guard makes a racing or
+# partially-committed previous run's rows a no-op instead of a crash).
 MERGED_BROAD_MARKET_INSERT_SQL_INCREMENTAL = _build_merged_broad_market_insert_sql(
-    _INCREMENTAL_SLOTS)
+    _INCREMENTAL_SLOTS, on_conflict=_ON_CONFLICT_DO_NOTHING)
 
 # Re-exported for the member-index SQL module (shared composition CTEs).
 __all__ = [

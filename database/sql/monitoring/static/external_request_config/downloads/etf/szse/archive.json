@@ -41,8 +41,15 @@
     "add_random_param": true,
     "enable_host_tracking": true,
     "host_block_cooldown_sec": null,
-    "notes": "Daily market-archive pagination (market.py) — paces at 5s, unlike the 90s quarterly-reports sweep in the default row; migrated 2026-10-10 from market.py's code constant so both paths read this file.",
+    "urls": {
+      "show_report": "https://www.szse.cn/api/report/ShowReport",
+      "referer_archive": "https://www.szse.cn/market/trend/archive/index.html",
+      "anl_list": "https://www.szse.cn/api/disc/announcement/annList",
+      "pdf_base": "https://disc.static.szse.cn",
+      "referer_page": "https://www.szse.cn/disclosure/fund/notice/index.html"
+    },
+    "notes": "Daily market-archive pagination (market.py) — paces at 5s, unlike the 90s quarterly-reports sweep in the default row; migrated 2026-10-10 from market.py's code constant so both paths read this file. urls added 2026-11-21: run_szse_download reads the roles from the SELECTED row (service_urls(service, request_type)) — the row had pacing only, so the market path raised KeyError 'show_report' (the 10-17 URL migration missed this row).",
     "source_ref": "downloads/etf/szse/archive/market.py (row written 2026-10-10 when pacing switched to JSON-driven)",
-    "updated_at": "2026-10-10T00:00:00.000000+00:00"
+    "updated_at": "2026-11-21T00:00:00.000000+00:00"
   }
 ]

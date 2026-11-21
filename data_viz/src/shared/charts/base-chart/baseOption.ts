@@ -5,7 +5,7 @@
  * themed legend / tooltip / grid fragments, on top of `axisColors`.
  *
  * Builders spread their chart-specific keys (series, axes, title, dataZoom)
- * through `overrides`; a fragment set to `null` is omitted entirely (e.g. a
+ * through `overrides`; a fragment key set to `null` is omitted entirely (e.g. a
  * single-series chart with no legend, an item-trigger scatter with its own
  * tooltip).
  */
@@ -37,31 +37,57 @@ export interface BaseChartOptionOverrides
 }
 
 /**
+ * Merge a partial `legend`/`tooltip` override over its themed common fragment,
+ * so a builder passing `legend: { data: [...] }` inherits the unified legend
+ * theming (`legendColors(mode)`) instead of falling back to ECharts' hard
+ * defaults — `#333` label text, which is invisible on the dark background
+ * (the Volatility page's legends were the reported case). This is what keeps
+ * the legend/tooltip color scheme unified app-wide: builders tune layout keys
+ * only and the colors ride in from the shared fragments.
+ *
+ * The `textStyle` sub-object merges one level deeper, so an override that only
+ * tunes `fontSize` keeps the themed text color. `undefined` → base untouched;
+ * `null` is handled by the caller (omit the fragment).
+ */
+function mergeFragment<T extends object>(base: T, override: T | null | undefined): T {
+  if (override == null) return base;
+  const merged: T = { ...base, ...override };
+  const baseStyle = (base as { textStyle?: object }).textStyle;
+  const overrideStyle = (override as { textStyle?: object }).textStyle;
+  if (baseStyle && overrideStyle) {
+    (merged as { textStyle?: object }).textStyle = { ...baseStyle, ...overrideStyle };
+  }
+  return merged;
+}
+
+/**
  * Build an option with the shared chart preamble. The three common fragments
- * default to `commonLegend(mode)` / `commonTooltip(mode)` / `commonGrid()`
- * and can be replaced per key or dropped with `null`; every other key is
- * spread verbatim after the preamble.
+ * default to `commonLegend(mode)` / `commonTooltip(mode)` / `commonGrid()`;
+ * partial `legend`/`tooltip` overrides MERGE over the themed fragments
+ * (`null` drops a fragment entirely), `grid` replaces verbatim (build its
+ * partials through `commonGrid(overrides)`); every other key is spread
+ * verbatim after the preamble.
  */
 export function baseChartOption(
   mode: ThemeMode,
   overrides: BaseChartOptionOverrides = {},
 ): EChartsOption {
   const {
-    legend = commonLegend(mode),
-    tooltip = commonTooltip(mode),
+    legend: legendOverride,
+    tooltip: tooltipOverride,
     grid = commonGrid(),
     ...rest
   } = overrides;
   const option: EChartsOption = {
     backgroundColor: "transparent",
     animation: false,
-    legend,
-    tooltip,
+    legend: mergeFragment(commonLegend(mode), legendOverride),
+    tooltip: mergeFragment(commonTooltip(mode), tooltipOverride),
     grid,
     ...rest,
   };
-  if (legend === null) delete option.legend;
-  if (tooltip === null) delete option.tooltip;
+  if (legendOverride === null) delete option.legend;
+  if (tooltipOverride === null) delete option.tooltip;
   if (grid === null) delete option.grid;
   return option;
 }

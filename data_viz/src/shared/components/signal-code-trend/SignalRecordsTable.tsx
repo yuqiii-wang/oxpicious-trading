@@ -94,6 +94,20 @@ export default function SignalRecordsTable({
               <TableCell>Signal</TableCell>
             )}
             <TableCell>Action</TableCell>
+            <Tooltip
+              title={
+                "The NO-ACTION overlay (2026-11-18): a fired day marked " +
+                "\"do NOT take this action at this price\" — negative " +
+                "confidence on the fired twin's own values, never the " +
+                "inverse action. The reason names the invalidation " +
+                "condition (e.g. boll_squeeze_breakdown: the -kσ breach " +
+                "came out of a squeezed band — compression breaks DOWN, " +
+                "it does not revert)."
+              }
+              arrow
+            >
+              <TableCell>No-action</TableCell>
+            </Tooltip>
             <TableCell align="right">Signal value</TableCell>
             <TableCell align="right">Threshold</TableCell>
             <TableCell align="right">Excess</TableCell>
@@ -143,6 +157,17 @@ export default function SignalRecordsTable({
                   confidence={s.confidence}
                   rejected={s.is_rejection === true}
                 />
+              </TableCell>
+              <TableCell
+                sx={{
+                  whiteSpace: "nowrap",
+                  color: s.is_no_action
+                    ? theme.palette.warning.dark
+                    : theme.palette.text.disabled,
+                  fontSize: "0.7rem",
+                }}
+              >
+                {s.is_no_action ? (s.no_action_reason ?? "marked") : "—"}
               </TableCell>
               <TableCell align="right">{s.signal.toFixed(4)}</TableCell>
               <TableCell align="right">

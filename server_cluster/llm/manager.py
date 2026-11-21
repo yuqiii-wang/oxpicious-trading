@@ -1,19 +1,24 @@
 """server_cluster.llm.manager — the model registry + lifecycle.
 
 The migrated + generalized management layer: what used to be the word
-segmenter's private lifecycle (lazy load, one-hour idle offload to CPU
+segmenter's private lifecycle (lazy load, idle offload to CPU
 with weights kept in RAM, transparent GPU rehydrate, warm-up) is here
 ONE registry driving EVERY model uniformly:
 
 * ``models`` — the configured backends (:meth:`build_backend` factory);
   construction is light, weights load lazily,
-* :meth:`load` / :meth:`offload` — the admin API's engine (idempotent,
-  lock-serialized per model; sync — the server routes run them via
-  ``asyncio.to_thread`` so the event loop never blocks),
-* :meth:`start` — ONE idle-offload watchdog daemon thread sweeping
-  every ``check_s`` (the segmenter's own cadence:
-  ``max(1, min(30, idle_offload_s/10))``) and offloading models whose
-  ``last_use`` is older than their policy age,
+* :meth:`load` / :meth:`offload` / :meth:`unload` — the admin API's
+  engine (idempotent, lock-serialized per model; sync — the server
+  routes run them via ``asyncio.to_thread`` so the event loop never
+  blocks); :meth:`offload_all` is the collection-level save-memory
+  action behind ``POST /v1/models/offload-all``,
+* :meth:`start` — ONE idle-watchdog daemon thread sweeping every
+  ``check_s`` (``max(1, min(30, min_policy_age/10))``) driving the
+  TWO-tier idle policy per model: a ``loaded`` model idle past its
+  ``idle_offload_s`` (30 min by default) offloads GPU → CPU, and an
+  ``offloaded`` model a further ``idle_unload_s`` (1 hr by default)
+  past that drops its RAM weights entirely (the next use cold-loads
+  from disk),
 * :meth:`warmup_all` — the startup warm-up pass (background thread):
   each ``warmup``-enabled model loads onto the GPU and runs a tiny
   inference, so first real requests never pay cold-start. A failed
@@ -51,7 +56,7 @@ class ModelManager:
         self._models: dict[str, ModelBackend] = {}
         for spec in config.enabled_models():
             self._models[spec.model_id] = build_backend(
-                spec, config.idle_offload_s)
+                spec, config.idle_offload_s, config.idle_unload_s)
         # Request counters per model (stamped by the server routes).
         self._stats: dict[str, dict] = {
             mid: {"requests": 0, "errors": 0} for mid in self._models}
@@ -78,13 +83,14 @@ class ModelManager:
 
     # ------------------------------------------------------------ lifecycle
     def start(self) -> None:
-        """Start the idle-offload watchdog (idempotent)."""
+        """Start the idle-policy watchdog (idempotent)."""
         if self._watchdog is not None:
             return
-        min_idle = min(
-            (b.idle_offload_s for b in self._models.values()),
-            default=self._config.idle_offload_s)
-        check_s = max(1.0, min(30.0, min_idle / 10.0))
+        ages = ([b.idle_offload_s for b in self._models.values()]
+                + [b.idle_unload_s for b in self._models.values()])
+        min_age = min(ages, default=min(self._config.idle_offload_s,
+                                        self._config.idle_unload_s))
+        check_s = max(1.0, min(30.0, min_age / 10.0))
         self._watchdog = threading.Thread(
             target=self._idle_watchdog_loop, args=(check_s,),
             name="lmh-idle-watchdog", daemon=True)
@@ -132,6 +138,37 @@ class ModelManager:
         backend.offload()
         return backend.status()
 
+    def offload_all(self) -> list[ModelStatus]:
+        """Offload EVERY loaded model's weights GPU → CPU now — the
+        manual save-memory action behind ``POST /v1/models/offload-all``
+        (an operator freeing VRAM for the GPU-hungry pipelines; the
+        idle watchdog's tier-1 policy on demand). Models not currently
+        ``loaded`` are skipped, and one model's offload failure is
+        logged + skipped so the rest still offload; the answer lists
+        only models that actually reached ``offloaded`` (the dummy
+        simulation's no-op offload stays off it). The next request to
+        an offloaded model rehydrates it onto the GPU transparently."""
+        out: list[ModelStatus] = []
+        for model_id, backend in self._models.items():
+            if backend.state != "loaded":
+                continue
+            try:
+                backend.offload()
+            except Exception:  # noqa: BLE001 — logged, keep the rest
+                logger.exception(
+                    "local model host: manual offload failed for %s "
+                    "(skipped)", model_id)
+                continue
+            status = backend.status()
+            if status.state == "offloaded":
+                out.append(status)
+        return out
+
+    def unload(self, model_id: str) -> ModelStatus:
+        backend = self.get(model_id)
+        backend.unload()
+        return backend.status()
+
     # -------------------------------------------------------------- status
     def status_all(self) -> list[ModelStatus]:
         return [b.status() for b in self._models.values()]
@@ -165,18 +202,30 @@ class ModelManager:
 
     # ------------------------------------------------------------- watchdog
     def _idle_watchdog_loop(self, check_s: float) -> None:
-        """The one-hour policy, per model: sweep; offload whatever sat
-        idle past its own ``idle_offload_s``."""
+        """The two-tier idle policy, per model: sweep; tier 1 offloads a
+        model idle past its ``idle_offload_s`` to CPU (weights kept in
+        RAM), tier 2 drops an offloaded model's RAM weights after a
+        further ``idle_unload_s`` of no use."""
         while not self._halt.wait(check_s):
             for model_id, backend in self._models.items():
-                if backend.state != "loaded":
-                    continue
-                idle = backend.idle_for_s
-                if idle is None or idle < backend.idle_offload_s:
-                    continue
-                try:
-                    backend.offload()
-                except Exception:  # noqa: BLE001 — logged, retried next sweep
-                    logger.exception(
-                        "local model host: idle offload failed for %s",
-                        model_id)
+                state = backend.state
+                if state == "loaded":
+                    idle = backend.idle_for_s
+                    if idle is None or idle < backend.idle_offload_s:
+                        continue
+                    try:
+                        backend.offload()
+                    except Exception:  # noqa: BLE001 — logged, retried next sweep
+                        logger.exception(
+                            "local model host: idle offload failed for %s",
+                            model_id)
+                elif state == "offloaded":
+                    cpu_idle = backend.offloaded_for_s
+                    if cpu_idle is None or cpu_idle < backend.idle_unload_s:
+                        continue
+                    try:
+                        backend.unload()
+                    except Exception:  # noqa: BLE001 — logged, retried next sweep
+                        logger.exception(
+                            "local model host: idle unload failed for %s",
+                            model_id)

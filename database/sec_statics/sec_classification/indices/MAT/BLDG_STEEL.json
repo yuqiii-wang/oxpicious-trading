@@ -36,19 +36,5 @@
       }
     ],
     "is_industry_not_strategy": true
-  },
-  "DUMMY_BLDG_STEEL": {
-    "name": "建材/钢铁综合指数",
-    "exchange": null,
-    "sector_id": "MAT",
-    "industry_id": "BLDG_STEEL",
-    "tags": [
-      {
-        "sector_id": "MAT",
-        "industry_id": "BLDG_STEEL"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
   }
 }

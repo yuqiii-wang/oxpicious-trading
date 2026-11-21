@@ -21,15 +21,13 @@ the maintainer area (``maintainer/bring_up.py``, 2026-11) — its fire
 hits this area's ``POST /residents/ensure-up`` so the UI button and
 the scheduled pass share ONE implementation.
 
-HTTP fan-out uses urllib in ``asyncio.to_thread`` (stdlib only — no new
-client dependency for three loopback GETs).
+HTTP fan-out rides :mod:`_common.internal_request` (the repo's ONE
+internal HTTP executor — stdlib urllib under the hood, no new client
+dependency for three loopback GETs) in ``asyncio.to_thread``.
 """
 from __future__ import annotations
 
-import json
 import logging
-import urllib.error
-import urllib.request
 
 from fastapi import APIRouter, Request
 
@@ -37,6 +35,7 @@ from .data_definitions import (
     AreaFleet, AreaProcess, AlwaysOnService, EnsureUpAction,
     EnsureUpResponse, FleetResponse, HealthCheckItem, HealthCheckResponse,
 )
+from _common.internal_request import InternalRequestError, request_json
 from _common.service_heartbeat import STALE_AFTER_S, always_on_roster
 
 logger = logging.getLogger(__name__)
@@ -49,15 +48,13 @@ _REQUEST_TIMEOUT_S = 5.0
 
 
 def _fetch_json(base_url: str, path: str, method: str = "GET") -> tuple[bool, object | str]:
-    """One loopback JSON call — (ok, decoded-body-or-error-text)."""
-    url = f"{base_url}{path}"
-    req = urllib.request.Request(
-        url, method=method,
-        headers={"Content-Type": "application/json"})
+    """One loopback JSON call — (ok, decoded-body-or-error-text); the
+    request rides _common.internal_request and this wrapper folds its
+    ONE failure type into the fleet's (ok, error) row contract."""
     try:
-        with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT_S) as resp:
-            return True, json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+        return True, request_json(method, f"{base_url}{path}",
+                                  timeout_s=_REQUEST_TIMEOUT_S)
+    except InternalRequestError as exc:
         return False, str(exc)
 
 
@@ -205,9 +202,9 @@ class FleetOps:
                            if a.action in ("started", "spawned") and a.ok))
 
     async def snapshot_async(self) -> FleetResponse:
-        """The event-loop wrapper: the core is blocking (urllib +
-        psycopg) — run it in a worker thread (the llm-area to_thread
-        discipline)."""
+        """The event-loop wrapper: the core is blocking (internal
+        requests + psycopg) — run it in a worker thread (the llm-area
+        to_thread discipline)."""
         import asyncio
 
         return await asyncio.to_thread(self.snapshot)

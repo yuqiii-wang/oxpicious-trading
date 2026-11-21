@@ -22,7 +22,7 @@
  */
 import fs from "fs";
 import path from "path";
-import { readJsonCached } from "./static-config.service.js";
+import { readJsonCached, serviceConfigLooseFor } from "./static-config.service.js";
 
 const ORCHESTRATION_DIR = path.resolve(
   import.meta.dirname ?? __dirname,
@@ -44,6 +44,7 @@ const ORCHESTRATION_DIR = path.resolve(
 const TIER_RUN_ORDER = [
   "monitoring_occasionally",
   "downloads_daily",
+  "downloads_weekly",
   "downloads_monthly",
   "downloads_quarterly",
   "downloads_semiannually",
@@ -53,14 +54,17 @@ const TIER_RUN_ORDER = [
   "builds_once",
   "builds_monthly",
   "analysis_daily",
+  "analysis_weekly",
+  "strategy_daily",
   "strategy_once",
 ];
 
-/** Cadence suffixes a tier name can end with (the freq vocab of the
- *  service_config tree; "always" currently has no orchestration file). */
+/** Cadence suffixes a tier name can end with (the non-resident freq
+ *  vocab of the service_config tree — residents carry is_resident and
+ *  no freq, and have no orchestration tier of their own). */
 const TIER_FREQS = [
-  "always",
   "daily",
+  "weekly",
   "monthly",
   "quarterly",
   "semiannually",
@@ -83,6 +87,12 @@ export interface OrchestrationStep {
   /** false for every step today — the runner executes strictly
    *  serially and only warns if a step ever sets this true. */
   canBeParallel: boolean;
+  /** The step's give-way rank, joined from its script's service_config
+   *  entry (explicit ``priority`` else derived from freq + domain —
+   *  same chain as the monitor runner's priority_for; higher = wins
+   *  conflicts: a strictly lower-priority step holds back / stops
+   *  while a higher one runs). */
+  priority: number;
   /** Ordering/dependency comment, ignored by the runner (null when
    *  absent). */
   note: string | null;
@@ -130,6 +140,7 @@ function normalizeStep(key: string, value: unknown): OrchestrationStep | null {
       : [],
     srcHost: typeof d.src_host === "string" && d.src_host !== "" ? d.src_host : null,
     canBeParallel: d.can_be_parallel === true,
+    priority: serviceConfigLooseFor(d.script).priority,
     note: typeof d.note === "string" && d.note !== "" ? d.note : null,
   };
 }

@@ -1,0 +1,13 @@
+{
+  "service": "analysis.volatility",
+  "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
+  "is_resident": false,
+  "freq": "daily",
+  "priority": 70,
+  "schedule": "every A-share trading date, after builds_daily in the 16:00 nightly chain (analysis_daily loop order, after market_participation)",
+  "notes": "Per-security daily realized-volatility panel (analysis.volatility; structured for etf/index/stock, RUN SCOPE = index only for now — the 10 study indices): close-to-close historical vol across 5/10/20/60/120/252-row windows, RiskMetrics EWMA vol (lambda=0.94), Parkinson / Garman-Klass / Rogers-Satchell / Yang-Zhang 20-row OHLC estimators, overnight-vs-intraday vol split, Wilder ATR(14)/NATR(14), Bollinger band width, vol-of-vol, short/long vol ratio (hv_20/hv_252), trailing-252 percentile ranks + shifted-1-row z-scores, and the 5-minute realized vol with bipower jump ratio where the sec_type's stats.*_intraday_5min table has bars (~90-day retention — NULL on older dates). All *vol* columns percent annualized (x sqrt(252) x 100). Serves the Commons Volatility page (GET /api/analysis/volatility/*). Incremental by missing dates scoped to the run's codes (sec_type's own basic-stats bars minus target dates); --force deletes the resolved sec_types' rows and COPY-rebuilds.",
+  "source_ref": "scripts/orchestration/analysis_daily.json",
+  "updated_at": "2026-11-20T15:25:15.716730+00:00"
+}

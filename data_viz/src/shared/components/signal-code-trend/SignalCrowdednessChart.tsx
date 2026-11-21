@@ -78,6 +78,8 @@ export default function SignalCrowdednessChart({
         date: h.date,
         action: h.action,
         is_rejection: h.is_rejection ?? false,
+        // NEGATIVE = the REJECT tier (the cross-triangle marker)
+        confidence: h.confidence_pct,
       })),
     [population],
   );

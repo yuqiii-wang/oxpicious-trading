@@ -20,6 +20,8 @@
 \ir analysis_signals/history_signals.sql
 \ir analysis_signals/portfolio_history_signals.sql
 \ir analysis_signals/portfolio_signal_rules.sql
+\ir analysis_signals/signal_amplification_history.sql
+\ir analysis_signals/signal_amplification_rules.sql
 \ir analysis_signals/signal_rules.sql
 \ir futures_ext.sql
 \ir industry_correlations.sql
@@ -45,6 +47,7 @@
 \ir mov_ave_spreads/mov_ave_spreads_roof_floor_rebounds.sql
 \ir mov_ave_spreads/mov_ave_trading_amt.sql
 \ir mov_ave_spreads/mov_ave_trading_amt_ratios.sql
+\ir ohlcv_ext.sql
 \ir options_expiry_identity.sql
 \ir options_moneyness_series.sql
 \ir options_oi_stats.sql
@@ -54,6 +57,7 @@
 \ir static/analysis_insight_metrics/insight_page_docs.sql
 \ir trends/trend_days.sql
 \ir trends/trend_episode_days.sql
+\ir volatility.sql
 \ir analysis_composites/industry_corr_benchmark_offsets.sql
 \ir dividend_deliveries.sql
 \ir dividend_est.sql

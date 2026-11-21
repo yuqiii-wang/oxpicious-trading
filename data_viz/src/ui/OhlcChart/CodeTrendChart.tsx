@@ -70,6 +70,7 @@ import type {
   CodeTrendRow,
   CodeTrendSource,
 } from "./codeTrendTypes";
+import type { OhlcChartProps } from "./types";
 import { CODE_TREND_SOURCES } from "./codeTrendSources";
 import {
   CodeTrendHeaderActions,
@@ -90,10 +91,13 @@ const NO_SPANS: Partial<MarketRegimeSpans> = {};
 const NO_TREND_SPANS: Record<string, TrendSpan[]> = {};
 const NO_DIVIDENDS: StockDividend[] = [];
 
-export default class CodeTrendChart extends React.Component<
-  CodeTrendChartProps,
-  CodeTrendChartState
-> {
+export default class CodeTrendChart<
+  /** Subclasses with EXTRA props re-declare the component over their
+   *  extended props type (extends CodeTrendChartProps) — this.props then
+   *  carries the extra fields; the default keeps every existing usage
+   *  unchanged. */
+  Props extends CodeTrendChartProps = CodeTrendChartProps,
+> extends React.Component<Props, CodeTrendChartState> {
   /** Monotonic token — only the newest fetch may settle into state. */
   private loadSeq = 0;
   /** Separate token for the board-tag fetch (it must not be invalidated
@@ -122,7 +126,7 @@ export default class CodeTrendChart extends React.Component<
     this.load();
   }
 
-  componentDidUpdate(prev: CodeTrendChartProps) {
+  componentDidUpdate(prev: Props) {
     if (
       prev.secType !== this.props.secType ||
       prev.code !== this.props.code ||
@@ -176,7 +180,6 @@ export default class CodeTrendChart extends React.Component<
     ohlcMode: OhlcMode,
     height: number,
   ): React.ReactNode {
-    const { chartOptions } = this.props;
     const industry = this.state.data?.industry;
     if (industry) {
       return (
@@ -185,11 +188,27 @@ export default class CodeTrendChart extends React.Component<
           height={height}
           onChartReady={(c) => {
             this.chartInstance = c;
-            chartOptions?.onChartReady?.(c);
+            this.props.chartOptions?.onChartReady?.(c);
           }}
         />
       );
     }
+    return <OhlcChart {...this.ohlcChartProps(rows, ohlcMode, height)} />;
+  }
+
+  /** The security-mode inner chart's props — the inheritance seam for
+   *  subclasses that overlay their own data on the shared trend:
+   *  override, spread super's value, then add / replace the overlay
+   *  props (tradeSignals, highlightSpans, focusDateRequest, ...). The
+   *  key order mirrors the JSX precedence it replaces — later keys win,
+   *  so a subclass adding AFTER the spread cannot be clobbered by the
+   *  base's own explicit props. */
+  protected ohlcChartProps(
+    rows: CodeTrendRow[],
+    ohlcMode: OhlcMode,
+    height: number,
+  ): OhlcChartProps {
+    const { chartOptions } = this.props;
     // Default windowing: the in-chart ECharts dataZoom slider (shared
     // commonDataZoom — same style as the MA-Spread chart) over the FULL
     // history. Only suppressed when the caller opted into the MUI range
@@ -198,30 +217,26 @@ export default class CodeTrendChart extends React.Component<
       (this.props.showRangeSlider ?? false) || chartOptions?.dataZoomStart !== undefined
         ? {}
         : { dataZoomStart: 0, dataZoomEnd: 100 };
-    return (
-      <OhlcChart
-        rows={rows}
-        ohlcMode={ohlcMode}
-        height={height}
-        {...chartOptions}
-        {...dataZoom}
-        dividends={chartOptions?.dividends ?? this.state.data?.dividends ?? NO_DIVIDENDS}
-        regimeSpans={
-          this.state.showRegimes
-            ? shadedRegimeSpans(this.state.regimeSpans)
-            : NO_SPANS
-        }
-        trendSpans={
-          this.state.showTrend
-            ? this.state.trendSpans ?? NO_TREND_SPANS
-            : NO_TREND_SPANS
-        }
-        onChartReady={(c) => {
-          this.chartInstance = c;
-          chartOptions?.onChartReady?.(c);
-        }}
-      />
-    );
+    return {
+      rows,
+      ohlcMode,
+      height,
+      ...chartOptions,
+      ...dataZoom,
+      dividends: chartOptions?.dividends ?? this.state.data?.dividends ?? NO_DIVIDENDS,
+      regimeSpans:
+        this.state.showRegimes
+          ? shadedRegimeSpans(this.state.regimeSpans)
+          : NO_SPANS,
+      trendSpans:
+        this.state.showTrend
+          ? this.state.trendSpans ?? NO_TREND_SPANS
+          : NO_TREND_SPANS,
+      onChartReady: (c) => {
+        this.chartInstance = c;
+        chartOptions?.onChartReady?.(c);
+      },
+    };
   }
 
   /** Header title (card variant). */

@@ -116,8 +116,32 @@ measurements, not taste:
   000001's 2025-04-08 tariff-crash wait rows that prompted the
   change) — the record is now a REDUCED-CONFIDENCE trading row, not a
   not-trading-yet wait. Measured-out cells (dir_ave below the bar,
-  any n) still emit nothing — that is rejection on evidence, not
-  starvation.
+  any n) emit no TRADING rows — since 2026-11-16 (user-directed,
+  engines/reject.py — a module separate from the positive path) a
+  cell whose best candidate measured a NEGATIVE dir_ave emits the
+  REJECT tier: its real action at NEGATIVE confidence = "do NOT take
+  this action at this price", never the inverse action (a negative
+  SELL means do-not-sell, not buy) — SINCE 2026-11-18 (user-directed
+  "only reject on high confidence, there should be very few no action
+  than action") only when the mean is DEEPLY negative: strictly below
+  REJECT_DIR_AVE_MAX (−2.0%, 8× the buy gate bar in the adverse
+  direction — at that bar ~38% of the hairline-era 11-16 rejects
+  would qualify, ≈8% of the action-rule count, recorded confidences
+  ≈ −150..−600bp); the band [the reject bar, the gate bar) stays
+  silent — unproven or not strongly negative, never rejected. SINCE
+  2026-11-18 (user-directed)
+  the tier carries the SIGNAL-CLUSTER PROBATION (config
+  REJECT_FIRST_APPEARANCE_DAYS = 20, the whole decision in
+  RejectEval.select): a cell whose SYSTEM BIRTH — its first-ever
+  history_signal_performance snapshot, the never-purged record of
+  when the cell first measured anything — falls within the past 20
+  of the code's own traded rows before the frame horizon is still
+  fresh and does NOT reject yet (NO BUY / NO SELL suppressed alike —
+  "no sell" is the SELL-side reject rendering, not a separate tier;
+  the in-frame first-trigger age needs no guard, the full-20d-forward
+  measurement requirement already implies it).
+  Reject semantics per family:
+  docs/negative_confidence_reject_study_2026-11-16.md.
 - THE POOLED STARVATION RETREAT (2026-10-19, later the same day —
   the per-cell retreat one level up): the pooled tier's n ≥ 10 floor
   stopped BLOCKING too. The statistics legs (the 0.25% bar, t ≥ 1,
@@ -660,6 +684,97 @@ no sell rides it). The inventory:
 - The trigger day's own level never sets its own bar (shift 1);
   regime-free with a trend split (the ma_cross precedent — and both
   studies' starving corners were regime artifacts).
+- **THE ROOF SIDE SCALE (2026-11-18, user-directed "roof break
+  signals are reduced unless very confident"; the floor-bias study's
+  product step — temp_scripts/rf_floor_bias_retest_squeeze_study.py +
+  rf_roof_scale_study.py, docs/rf_floor_bias_retest_squeeze_study_
+  2026-11-18.md)**: the FLOOR-BIAS CONFIRMATION (matched-depth
+  floor/roof 1.24–1.35x at every band ≥1%, shipped pools +1.78% vs
+  +1.39%, year majority 7/7 vs 3/6, floor monotone-UP with window
+  while roof flat) implemented as the roof_deep legs' CONFIDENCE
+  RECIPROCAL — every rf{W}{infix}_roof_deep history row rides
+  ×RF_ROOF_CONF_SCALE (0.78) UNLESS its own breach pct sits inside
+  RF_ROOF_CONF_ZONE [2, 5]% ("very confident": both studies' sweet
+  band, (1,2] the weakest at +0.50/+1.25 and (2,3] the strongest at
+  +1.66/+2.08). The >5% blow-off stays REDUCED (mixed evidence: the
+  donchian plain pool −2.08 @22% hit n=18 does not reproduce on the
+  cell winners +1.84 — conflict reads as caution, not an extra-low
+  tier; the C3 0.5 blow-off tier MEASURED WORSE than baseline on the
+  alignment study and is an honest negative). Per-trigger via the
+  generic run_cells `conf_scale_fn` hook (positive trading rows only,
+  REJECT rows keep their mirrored scale; `confidence_params`
+  documents the constants on every roof rule's
+  rule_params.confidence.side_scale), floor legs untouched at 1.0.
+  Measured on the production cell winners: the zone scale improves
+  confidence alignment (lift 1.596 vs 1.593, wasted mass 0.330 →
+  0.327); flat-only (order-blind, lift unchanged) and the cell-t leg
+  (+0.008 lift) rejected. The same study CONFIRMED the H2/H3
+  negatives as design boundaries: no monotone retest premium on
+  either side (the TWICE-TESTED floor is the weakest bucket +0.18 —
+  fresh-level breaks are the strong class, +2.85/+2.04), and 120d
+  narrowness measured BACKWARDS on the floor (wide-band floor breaks
+  +2.44 @6/6 yrs vs narrow ≤0.6 −0.26 @1/6 — the bollinger
+  squeeze-breakdown negative reproduced from the roof/floor
+  machinery); the hypothesized strong corner (narrow + multi-tested
+  floor) is the measured NEGATIVE pocket (−0.24 vs +1.61). Do not
+  re-add retest-count or narrowness conditioning without new
+  evidence.
+- **THE PERSISTENCE + TREND CONFIRMATION (2026-11-18, user-directed
+  "update the roof/floor break to as multiple days remained exceeded
+  the bands and the upward/downward trend maintained")**: the break
+  trigger is no longer the episode-first CROSS — the close must have
+  REMAINED beyond the band for RF_BREAK_PERSIST_DAYS (3) CONSECUTIVE
+  trading days of the window's own level (the signal day = the
+  CONFIRMATION day the run reaches its Nth day; the episode
+  K-absorb still dedupes re-qualifications), AND the code's own
+  trend state must agree with the break direction
+  (RF_BREAK_TREND_GATE: roof legs only on rise/top, floor legs only
+  on fall/bottom — the trend gate is a POPULATION condition, so the
+  family's cells only exist in the direction-matched trends). The
+  candidate's own day condition (the deep k bar, the bounce's
+  wick-intact guard) rides on the confirmation day; bar_def
+  documents persist_days + trend_gate on every rule. The forward
+  blend measures from the confirmation day — a built-in N−1-day
+  delay vs the first cross, the confirmation's cost by design.
+  First rebuild: 8,960 cells / 31,527 events (the confirmation
+  honestly shrinks the 11,096 / 57,979 cross-semantics build).
+  Implementation warning from the verification pass: the
+  persistence mask multiplies grouped shifts of the RAW breach
+  indicator — shifting the ACCUMULATED run computes an (N+1)-day
+  window product instead of the N-day one (the first cut's bug,
+  caught by the DB spot-check reconstructing breach runs from the
+  estimates table).
+- **THE DEPTH-UNIT FIX (2026-11-18, user-approved; caution-logged
+  the same day)**: `cand.depth = br / _RF_DEPTH_UNIT` had divided a
+  PERCENT breach by the FRACTION 0.02 since the 2026-10-16 first
+  build — the depth term pinned at its cap 2.0 on EVERY rf row (any
+  breach > 0.04%) and the deeper-pierce-stronger-claim invariant
+  never varied. `_RF_DEPTH_UNIT = 2.0` (percent units) now; the
+  whole family's confidences were re-priced by the same-day
+  rebuild. Prior rf confidence records are void for depth-shape
+  comparisons.
+- **THE ROOF GAP GUARD (2026-11-18, user-directed "stop rf break
+  signal if one day rise/drop is too large that the day opportunity
+  is lost"; temp_scripts/rf_gap_guard_study.py)**: a roof_deep
+  trigger is STOPPED when the max ONE-DAY rise over the
+  confirmation window (the last RF_BREAK_PERSIST_DAYS traded days)
+  reaches RF_BREAK_GAP_BAR_PCT (7%) — the move came from a single
+  spent jump. Measured on the shipped persistence+trend population:
+  trigger-day rises ≤7% all +1.45..+2.72% blend, the ≥7% class
+  −1.41% @32.2% hit (the bar drops 974 triggers; kept +2.41% vs
+  pool +2.19%). **ROOF-ONLY BY EVIDENCE — do not symmetrize**: the
+  floor side measured the EXACT INVERSE, big-drop days monotone UP
+  as the washout's edge ((5,7] +5.22 @88.8%, >7% +6.84 @98.2% hit;
+  every exclusion bar makes the floor worse, kept +2.5..+3.0 vs
+  dropped +5.1..+8.0) — the 2025-04-07 / 2026-10-15 capitulation
+  events fire on exactly such days. Guard semantics: a mask-level
+  exclusion, so the episode can re-fire once the huge day exits the
+  3-day window (a fresh episode, the gate judges what survives);
+  bar_def.gap_guard documents the constants on every roof rule.
+  Final build: 8,958 rules / 30,365 events (the guard shaved ~1,162
+  roof events); exhaustive leak check on the extreme-day dates
+  (2024-09-30 / 2024-10-08 / 2025-04-07 / 2026-10-15): 164/164 roof
+  events reconstruct under the bar, 0 leaks.
 
 ## The 2026-10-16 event-study additions to the existing families
 
@@ -803,6 +918,72 @@ defaults are the classic 12/26/9.
   buy edge + the rise-trend continuation is exactly the measured
   asymmetry shape.
 
+## volatility — the realized-vol leverage-effect tail family (2026-11-18)
+
+The analysis.volatility panel (the daily per-security realized-vol
+build) as rule cells. THE RESEARCH PREMISE (the user's phrasing
+"local top volatility signals local low price"): the LEVERAGE EFFECT
+(Black 1976; French, Schwert & Stambaugh 1987, JF — negative returns
+raise future volatility more than positive ones) puts realized-vol
+PEAKS at price TROUGHS (the VIX record closes 2008-10-24 /
+2020-03-16 landed within days of the exact price lows), and GARCH
+clustering + mean reversion (Engle/Bollerslev) make a top-tail vol
+breach an EPISODE, not a regime. The low-volatility anomaly
+(Ang-Hodrick-Xing-Zhang 2006; Blitz-van Vliet) is CROSS-SECTIONAL —
+high-vol names underperform across securities; it is never a
+time-series sell, which is why the crush sell carries its own
+price-stretch gate and stays exit timing. The repo's own measured
+populations (rf floor_deep, rebound_capit, ovix panic_peak) are the
+same washout class.
+
+- **spike BUY**: the vol axis (hv_20 — the 20-row close-to-close
+  realized vol — or ewma_vol, the RiskMetrics fast vol λ=0.94 that
+  reacts in days) pierces ABOVE its own trailing-YEAR top-q adaptive
+  quantile (252 rows, min 60, shifted 1 — the panel's own
+  pct_rank_252 convention, LOCAL not all-history) AND price sits
+  below its 5-rows-ago close — the FEAR LEG (the ovix panic/euphoria
+  direction split: keeps upside euphoria like 2024-09-30 out of the
+  buy population). Nested carving {5,10,15,20}%; depth = the breach
+  in the axis's own trailing sigma (same local window, shifted 1),
+  factor 0.5. THE SAME-DAY REWORK (user-directed "too few signals —
+  a rough check on 000001 volatility should have 2 dozens local
+  volatility spikes"): the first grid's trailing-2520d top-{1,2,3}%
+  all-history tails were DEGENERATE on the panel's ~7y history — the
+  whole-history tail sits so high only the 2024-10 mega-cluster ever
+  breached it (000001: 4 events total, all 2024-10); the local-year
+  tails match the visible spikes (000001 episodes with the fear leg:
+  5%→6, 10%→9, 15%→15, 20%→19) AND keep the edge — pooled over the
+  10 study indices every tail clears the buy bar hugely (study
+  temp_scripts/vol_spike_count_study.py: +1.15..+1.88% blend,
+  t=3.3..4.9, hit 57-67%); the first grid's labels 6200-6205 are
+  decode-only now.
+- **crush SELL** (exit timing): the vol axis below its own bottom-q
+  local tail while price sits within 2% (0.98×) of its
+  trailing-60-row high (shifted 1) — COMPLACENCY AT THE TOP. A naked
+  low-vol sell would fire through every calm uptrend.
+- REGIME-FREE with a trend split (the ma_cross/macd/rf_break
+  precedent — the vol tail breach already carries the stress state);
+  plain K=5 absorb; OHLCV boost off; NOT live-wired; data-driven
+  universe (the codes with volatility rows at the sec_type — index
+  only while the vol panel's run scope is the 10 study indices;
+  etf/stock resolve empty and skip). Sub types hv20_{5,10,15,20}pct +
+  ewma_{5,10,15,20}pct (labels 6210-6217); the vol panel's own
+  252-row pct_rank/z gauges are panel-side readings, never the
+  family's bars. DISPLAY: the Short-Term Tech chart swaps to the
+  family's trigger source on the volatility pick
+  (SignalVolatilityChart — the Commons Volatility top chart: close +
+  HV 20d + EWMA % annualized, markers ON the close curve; the
+  crowdedness precedent).
+- First LOCAL-tail force rebuild (index, 2026-11-18): 171 cells /
+  582 events — 000001 alone 74 events across ~45 dates (2020-07
+  burst, the 2022-03/04/05 crash cluster, 2024-01, 2024-10,
+  2025-04-07 tariff crash, the 2026 spikes — the ~two dozen visible
+  local spikes now covered); every sub's avg dir_ave clears its bar
+  (buys +1.50..+3.05%, sells +0.65..+3.07%, hit 50-100%); 0
+  no-action marks. (The degenerate first build: 61 cells / 87
+  events, buys +3.5..+5.4% — the edge was never in question, the
+  population was.)
+
 ## Does it hold against published best practice? (audited 2026-10-14; momentum + the 2026-10-16 study folded in)
 
 **RSI — HOLDS, stricter than the standard.** Per-code percentile bars
@@ -917,9 +1098,17 @@ hysteresis, trigger-time-observable conditioning only.
     monotone guarantee (a
     deeper fluctuation never yields less record than a milder one)
     kept as a reduced-confidence trading record; the dir_ave bar is
-    the only verdict, so measured-out cells (any n) emit nothing and
-    the only wait rows left are the ungated VRP twins (never trade,
-    never fire live).
+    the only verdict, so measured-out cells (any n) emit no trading
+    rows — since 2026-11-16 the NEGATIVE-measuring ones emit the
+    REJECT tier (engines/reject.py: the real action at negative
+    confidence — REJECT the action at this price, never the inverse)
+    — SINCE 2026-11-18 only when the mean clears the high-confidence
+    bar (REJECT_DIR_AVE_MAX −2.0%) AND the cell is out of the
+    system-birth probation (first-ever measurement snapshot within
+    the past 20 traded rows ⇒ still fresh, no reject;
+    RejectEval.select decides)
+    — and the only wait rows left are the ungated VRP twins (never
+    trade, never fire live).
 14. The POOLED floor is a CONFIDENCE reference too (2026-10-19): the
     statistics legs (bar / t / year majority) are the BUY side's
     verdict; n in [POOLED_TRADE_FLOOR, POOLED_MIN_N) trades at
@@ -932,6 +1121,20 @@ hysteresis, trigger-time-observable conditioning only.
     ungated; the deep zone-edge breach is the family's only
     edge-carrying population (strike walls / near-edge / center /
     nearest-expiry all measured out).
+15. rf_break breaks are CONFIRMED breaks (2026-11-18): the trigger
+    is the Nth consecutive trading day beyond the band
+    (RF_BREAK_PERSIST_DAYS = 3 — the confirmation day, not the
+    first cross) AND the direction-matched trend state
+    (RF_BREAK_TREND_GATE — roof rise/top, floor fall/bottom; the
+    cells only exist in those trends). The roof_deep legs'
+    confidence additionally rides the roof side scale ×0.78 unless
+    the breach is very confident (2–5% beyond the roof), and the
+    roof gap guard STOPS the trigger when one day's rise over the
+    window reaches 7% (RF_BREAK_GAP_BAR_PCT — ROOF-ONLY: big-drop
+    days are the floor washout's measured edge, never exclude
+    them). The trigger day's breach pct feeds the depth term at
+    PERCENT units (the 2026-11-18 depth fix — 2% beyond the level
+    = depth 1.0, capped 2).
 
 ## Where the numbers live (single sources of truth)
 

@@ -74,19 +74,5 @@
       }
     ],
     "is_industry_not_strategy": true
-  },
-  "DUMMY_ADVMFG": {
-    "name": "高端制造综合指数",
-    "exchange": null,
-    "sector_id": "IND",
-    "industry_id": "ADVMFG",
-    "tags": [
-      {
-        "sector_id": "IND",
-        "industry_id": "ADVMFG"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
   }
 }

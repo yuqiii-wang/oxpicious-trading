@@ -17,7 +17,11 @@
 --  across all types), maintenance.src_data_backup (backup_mode /
 --  backup_status), monitor.db_table_audit.write_flag +
 --  monitor.db_table_alert.severity (db_write_flag),
---  monitor.non_daily_task_state.state (non_daily_state).
+--  monitor.non_daily_task_state.state (non_daily_state),
+--  monitor.caution_log (caution_source / caution_severity),
+--  monitor.orchestration_task_state.state (orchestration_plan_state —
+--  the arrangement verdict due / not_due of ONE orchestration-tier
+--  service, written by the monitor area's OrchestrationArranger).
 -- ============================================================================
 
 INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
@@ -144,3 +148,32 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     ('non_daily_state', 1, 'complete',      1),
     ('non_daily_state', 2, 'missing',       2),
     ('non_daily_state', 3, 'check_failed',  3);
+
+INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
+    -- caution_source: monitor.caution_log.source — where a caution row
+    -- came from: a running service hitting an error, an AI run flagging
+    -- something suspicious, or a pending bug noted by hand
+    -- (python -m _common.caution_log, the dev-skill rule)
+    ('caution_source', 0, 'service', 0),
+    ('caution_source', 1, 'ai',      1),
+    ('caution_source', 2, 'manual',  2),
+    -- caution_severity: monitor.caution_log.severity_level — how bad the
+    -- caution is. Code order is semantic, best -> worst (service errors
+    -- default to 2, AI suspicions to 1, AI [CRITICAL] findings are 3)
+    ('caution_severity', 0, 'info',     0),
+    ('caution_severity', 1, 'warning',  1),
+    ('caution_severity', 2, 'error',    2),
+    ('caution_severity', 3, 'critical', 3);
+
+INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
+    -- orchestration_plan_state: monitor.orchestration_task_state.state —
+    -- the ARRANGEMENT verdict of ONE orchestration-tier service, computed
+    -- by the monitor area's OrchestrationArranger from the service_config
+    -- freq window vs the last successful exit (the same rule as the UI
+    -- run guard's FREQ_PERIOD_MS): due = run it in the arranged pass;
+    -- not_due = the freq window holds (or once + a success ever) — the
+    -- nightly chain skips the step instead of spawning a no-op. Code
+    -- order is semantic: unknown -> due -> not_due.
+    ('orchestration_plan_state', 0, 'unknown',  0),
+    ('orchestration_plan_state', 1, 'due',      1),
+    ('orchestration_plan_state', 2, 'not_due',  2);

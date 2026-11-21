@@ -49,6 +49,163 @@ FORWARD_BLEND_WEIGHTS = (0.10, 0.15, 0.50, 0.15, 0.10)
 GATE_DIR_AVE_MIN = {"buy": 0.0025, "sell": 0.0}
 SAMPLE_FLOOR = {"buy": 3, "sell": 2}
 
+# the NEGATIVE-CONFIDENCE REJECT tier (2026-11-16, user-directed — the
+# semantics live in engines/reject.py, a module fully SEPARATE from the
+# positive-confidence path): a cell whose best candidate measures a
+# sign-aligned dir_ave strictly below this bar emits its REAL action at
+# NEGATIVE confidence — REJECT the action at this price (a negative SELL
+# means "do not sell here", NEVER "buy"); the weak band [this bar, the
+# side's gate bar) stays silent (unproven, not rejected). The magnitude
+# is the measured negative dir_ave depth/starvation-scaled, mirrored
+# against CONFIDENCE_CAP_PCT.
+# HIGH-CONFIDENCE BAR (2026-11-18, user-directed "only reject on high
+# confidence, there should be very few no action than action"): the bar
+# moved OFF zero to a DEEPLY negative level — only a strongly losing
+# measured mean may claim against its action (hairline negatives join
+# the silent band; at −2.0% about 38% of the 2026-11-16 hairline-era
+# rejects would still qualify — ~8% of the action-rule count, with
+# recorded confidences ≈ −150..−600bp after the depth/starvation
+# scales). 8× the buy gate bar in the adverse direction.
+REJECT_DIR_AVE_MAX = -0.02
+
+# the SIGNAL-CLUSTER PROBATION (2026-11-18, user-directed "implement
+# signal cluster that if a signal is 1st appeared in past 20d, do not
+# set to reject"): a rule cell whose SYSTEM BIRTH — its first-ever
+# history_signal_performance snapshot date, the never-purged record of
+# when the cell first MEASURED anything — falls within the past N of
+# the code's own traded rows before the prepared frame's horizon is
+# still FRESH: the reject tier may not claim against its action yet,
+# so the cell stays silent exactly like the weak band above (both
+# sides — a fresh negative SELL would render the UI's "NO SELL" chip,
+# suppressed the same as a fresh "NO BUY"). TRADING rows, not calendar
+# (the code's own traded rows define the window, the same convention
+# as the episode absorb). NOTE the in-frame first-trigger reading is
+# structurally implied, never a guard: the measurement itself needs a
+# FULL 20d forward blend realized, so every reject's earliest trigger
+# is already >= 20 traded rows old. The births ride one scoped SQL
+# read (sql_views .../rule_base/cell_birth_dates.sql) into
+# RejectEval.select (engines/reject.py); the LIVE tier inherits the
+# probation (a suppressed cell emits no rule row to fire).
+REJECT_FIRST_APPEARANCE_DAYS = 20
+
+# the NO-ACTION OVERLAY TIER (2026-11-18, user-directed — the module
+# engines/no_action, fully independent of the positive-confidence
+# path and of engines/reject.py; docs/no_action_module_design_
+# 2026-11-18.md): per-family trigger-time INVALIDATION conditions +
+# the cross-family FATIGUE filter, marking FIRED POSITIVE days only
+# (overlay — never a suppression), written to the tier's OWN table
+# analysis_signals.no_action_signals. VERY CONSERVATIVE by contract:
+# calibration-gated rules (temp_scripts/no_action_calibration_
+# study.py — a rule ships only with measured separation AND rarity
+# <= NO_ACTION_MAX_SHARE), run-time audit digest, and the standing
+# asymmetry (never a BUY-side plunge rule). Flip False for the A/B
+# isolation check (positive tables must stay bit-identical).
+NO_ACTION_ENABLED = True
+
+# the CALIBRATION VERDICT (2026-11-18, temp_scripts/
+# no_action_calibration_study.py — the shipping gate): of the study
+# doc's candidate rules only boll_squeeze_breakdown SEPARATES on
+# the fired population (marked 1.36% vs kept 2.30% aligned blend at
+# the tercile cut — the 2026-10-16 honest negative reproduced
+# INSIDE the fired set); every other candidate marked populations
+# that measure BETTER, not worse — the positive tier's measured
+# GATES already absorbed their invalidation (a cell fires only
+# where its population measured positive; the noisy corners were
+# measured out), and within what still fires the conditions select
+# STRONGER events, not weaker. The retired rules stay implemented
+# (the vocabulary + the audit machinery) but OUT of the active set;
+# re-activate only with new measurements. THE FATIGUE FILTER IS
+# RETIRED THE SAME WAY: same-type recency marks the CRISIS CLUSTERS
+# (marked buys 3.23% vs kept 1.75% aligned blend at N4/W20, every
+# family, both actions, every cell of the N x W grid) — marking
+# them no-action would advise against the system's best signals.
+# THE HURT RE-STUDY (2026-11-19, full universe — temp_scripts/
+# no_action_hurt_study.py + docs/no_action_hurt_study_2026-11-19.md)
+# re-confirmed every retirement AT SCALE and measured the damage:
+# fatigue marks the crisis clusters (bollinger fatigue marked buys
+# +3.97% @ 84% hit vs kept +1.71% — the record's best cohort;
+# mov_rsi +3.18% @ 75%), ma_whipsaw and boll_bandwalk_sell marked
+# BETTER populations in 7/7 years each (the whipsaw-range reclaims
+# bounce hardest; the band-walk sells capture the deepest rolls),
+# macd_chop marks ~1/3 of the family with both actions better,
+# rebound_pe_deadzone marked better 4/6 years, rsi_bandwalk_sell is
+# vacuous (marks ~100% of fired sells). The shipped squeeze rule is
+# the ONLY candidate whose marked population measures worse — and
+# it does so in 6-7 of 7 years at every cut of the sweep.
+NO_ACTION_ACTIVE_RULES = ("boll_squeeze_breakdown",)
+NO_ACTION_FATIGUE_ENABLED = False
+
+# the FATIGUE filter (implemented + calibrated, RETIRED — see the
+# verdict above): >= this many DISTINCT FIRED DAYS of the
+# (code, signal_type, action) within the trailing window of the
+# code's own traded rows (STRICTLY BEFORE the fired day) marks the
+# fired days beyond the bar; the calibration swept N {3,4,5} x
+# W {10,20,40} and every grid cell measured the marked population
+# better than the kept one.
+NO_ACTION_FATIGUE_MIN_DAYS = 4
+NO_ACTION_FATIGUE_WINDOW_ROWS = 20
+
+# bollinger's bandwidth percentile memory (sigma20/sma20 trailing
+# quantiles, shifted — the day never sets its own bar). The squeeze
+# cut is the bottom NO_ACTION_BOLL_SQUEEZE_Q quantile of the code's
+# own trailing bandwidth. THE CUT (2026-11-19 full-universe sweep,
+# temp_scripts/no_action_hurt_study.py): every deeper cut keeps the
+# separation (marked vs kept aligned blend — q0.10 0.66% vs 1.86% at
+# 10.5% share, q0.05 0.74% vs 1.79% at 5.5%, q0.03 0.81% vs 1.76% at
+# 3.3%, q0.02 0.76% vs 1.75% at 2.4%; separation 6-7 of 7 years at
+# every cut) — the shipped cut is the DEEPEST one meeting the
+# tightened < 3% rarity budget (q0.03 measured 3.29% — over).
+NO_ACTION_BOLL_BW_WINDOW = 255
+NO_ACTION_BOLL_BW_MIN_PERIODS = 60
+NO_ACTION_BOLL_SQUEEZE_Q = 0.02
+
+# ma_cross whipsaw: below->above MA flips in the trailing traded
+# rows (per fired sub type's own window: ma20_cross counts gap20,
+# ma60_cross gap60)
+NO_ACTION_MA_WHIPSAW_FLIPS = 3
+NO_ACTION_MA_WHIPSAW_WINDOW = 20
+
+# macd chop: distinct cross flips in the trailing rows AND the
+# trigger's |histogram| below its own trailing p-quantile (shifted)
+NO_ACTION_MACD_CHOP_EPISODES = 2
+NO_ACTION_MACD_CHOP_WINDOW = 10
+NO_ACTION_MACD_HIST_PCTL = 0.25
+
+# rebound's PE dead zone (the 2026-10-26 barbell): today's PE among
+# the code's own PRIOR readings (stats.index_valuation, >= the min
+# observations) inside [lo, hi) — not cheap enough to be the floor,
+# not rich enough for the violent snapback (middle PE has NO 60d
+# edge)
+NO_ACTION_PE_DEADZONE = (0.4, 0.6)
+NO_ACTION_PE_MIN_PERIODS = 252
+
+# the recorded negative confidence per reason (bp) — a SMALL
+# DELIBERATE magnitude: the marker is the product, the magnitude a
+# severity hint. Keys are the no_action_reason label vocabulary
+# (static.label_dim + _common.labels.NO_ACTION_REASON_CODE + the TS
+# mirror).
+NO_ACTION_CONF_BP = {
+    "fatigue": -120,
+    "rsi_bandwalk_sell": -150,
+    "boll_squeeze_breakdown": -150,
+    "boll_bandwalk_sell": -100,
+    "ma_whipsaw": -100,
+    "rebound_pe_deadzone": -150,
+    "macd_chop": -100,
+}
+
+# the rarity budget (TIGHTENED 2026-11-19, user-directed — the hurt
+# study): no-action rows stay under this share of the family's
+# same-action positive fired rows — < 3%, down from 10%. The hurt
+# study's full-universe re-measurement put the retired candidates'
+# shares at 4-34% of their families (macd_chop ~1/3) — dilution this
+# wide marked BETTER-than-kept populations every time; rarity is the
+# first line of defense. Logged in the run summary (the OVER BUDGET
+# flag); a rule that cannot meet it at any separating cut does not
+# ship. The combined negative tier — rejects + no-action — stays
+# well under the positive count.
+NO_ACTION_MAX_SHARE = 0.03
+
 # the POOLED EVIDENCE TIER (2026-10-16): the per-cell floors cannot
 # reach statistical significance — a typical index's per-event blend
 # sigma is ~2.6%, so n=3 gives SE ~1.5% and the 0.25% cell bar is
@@ -117,6 +274,24 @@ RSI_BAR_MIN_PERIODS = 252
 # the per-cell sell gate keeps it exit-timing only). The fetch
 # layer's RSI_WINDOWS (3, 6, 10, 14, 20, 60) stays the data superset.
 RSI_ENTRY_WINDOWS = (14, 10, 6)
+
+# the Wilder FAILURE SWING (2026-11-19, the RSI canon study's graduate —
+# temp_scripts/rsi_new_rules_study.py: rsi14 +1.78% hit 73% t=3.07,
+# rsi10 +2.14% hit 75% t=3.38 pooled on the tail3 episode population;
+# BUY-ONLY — the sell side unmeasured, never symmetrized): inside a
+# tail3 breach episode the trough (min RSI within the first
+# RSI_FSWING_TROUGH_WINDOW rows), the bounce high (max RSI in the next
+# RSI_FSWING_BOUNCE_WINDOW rows), the re-dip that HOLDS above the
+# trough (a new low is ordinary continuation, not a failure swing),
+# and the trigger = the first RSI cross back above the bounce high
+# within RSI_FSWING_HORIZON rows of the trough (a pattern segment
+# shorter than RSI_FSWING_MIN_SEG is noise). The sub types ride
+# RSI_FSWING_WINDOWS (rsi6 unmeasured — do not add).
+RSI_FSWING_WINDOWS = (14, 10)
+RSI_FSWING_TROUGH_WINDOW = 40
+RSI_FSWING_BOUNCE_WINDOW = 20
+RSI_FSWING_HORIZON = 60
+RSI_FSWING_MIN_SEG = 5
 
 # ---------------------------------------------------------------------------
 # boll_std — the Bollinger fixed-σ family
@@ -248,6 +423,40 @@ OVIX_PEAK_DN_WINDOW = 5         # the downside leg's slope-matched window
 # methods per (date, period) — the cross-method CONSENSUS level,
 # method 5).
 RF_BREAK_WINDOWS = (60, 120, 252, 504)
+# the PERSISTENCE + TREND confirmation (2026-11-18, user-directed
+# "update the roof/floor break to as multiple days remained exceeded
+# the bands and the upward/downward trend maintained"): the break
+# trigger is no longer the episode-first CROSS — the close must have
+# REMAINED beyond the band for RF_BREAK_PERSIST_DAYS CONSECUTIVE
+# trading days (the signal day = the confirmation day the run reaches
+# the Nth day; the episode K-absorb still dedupes re-qualifications),
+# AND the code's own trend state must agree with the break direction
+# at that day: roof legs fire only on rise/top (the upward structure
+# maintained), floor legs only on fall/bottom (downward maintained).
+# The candidate's own day condition (the deep k bar / the bounce's
+# wick-intact guard) rides on the confirmation day as before.
+RF_BREAK_PERSIST_DAYS = 3
+# the direction-matched trend gates (static.label_dim 'trend' codes):
+# roof = the upward states, floor = the downward states
+RF_BREAK_TREND_GATE = {"roof": (0, 2), "floor": (1, 3)}
+# the ROOF GAP GUARD (2026-11-18, user-directed "stop rf break signal
+# if one day rise/drop is too large that the day opportunity is
+# lost"; temp_scripts/rf_gap_guard_study.py): a roof_deep trigger is
+# STOPPED when the max ONE-DAY rise over the confirmation window (the
+# last RF_BREAK_PERSIST_DAYS traded days) reaches this bar — the move
+# came from a single spent jump, the day's opportunity is gone.
+# Measured on the shipped persistence+trend population: trigger-day
+# rises <= 7% all measure +1.45..+2.72% blend, the >= 7% class
+# measures -1.41% @32.2% hit (run-move bar 7 drops 974 such triggers,
+# the kept population +2.41% vs pool +2.19%). ROOF-ONLY by evidence:
+# the floor side measures the EXACT INVERSE — big-drop days are the
+# capitulation washout's edge, monotone up (5-7% drops +5.22 @88.8%,
+# >7% +6.84 @98.2% hit) and every exclusion bar makes the floor
+# worse (kept +2.5..+3.0 vs dropped +5.1..+8.0) — excluding drops
+# would amputate the floor_deep/floor_bounce class the depth-split
+# study graduated. Do not symmetrize this guard without new
+# measurements.
+RF_BREAK_GAP_BAR_PCT = 7.0
 # (label infix, static.label_dim 'roof_floor_method' code) — the infix
 # joins the sub_type label: rf{W}_{side} donchian, rf{W}_med_{side}
 # median
@@ -265,6 +474,27 @@ RF_BREAK_METHODS = (("", 1), ("_med", 5))
 # the breach depth.
 RF_ROOF_DEEP_BARS = (1.0, 2.0, 3.0)
 RF_FLOOR_DEEP_BARS = (2.0, 3.0, 5.0)
+# the ROOF SIDE-CONFIDENCE SCALE (2026-11-18, the floor-bias study's
+# product step — user-directed "roof break signals are reduced unless
+# very confident"; temp_scripts/rf_roof_scale_study.py + docs/
+# rf_floor_bias_retest_squeeze_study_2026-11-18.md): the H1
+# matched-depth floor bias (floor/roof 1.24-1.35x at every band, year
+# majority 7/7 vs 3/6) implemented as the roof_deep legs' confidence
+# reciprocal — every roof_deep trigger rides x0.78 UNLESS its breach
+# is VERY CONFIDENT: inside the measured strong zone [2, 5]% beyond
+# the roof (both studies' sweet band: matched-depth +1.66/+2.06 vs the
+# shallow (1,2] +0.50/+1.25; the >5% blow-off is mixed across cuts —
+# donchian plain pool -2.08 @22% hit — so it stays at the REDUCED
+# scale too, honest to the conflict). Per-trigger on the history rows
+# (the breach pct is the trigger's own value), POSITIVE trading rows
+# only; the floor legs stay 1.0 — the bias lives on the roof side.
+# Alignment measured: C2 lift 1.596 > the no-scale baseline 1.593,
+# wasted confidence mass 0.330 -> 0.327; the rejected alternatives:
+# flat-only (order-blind, lift unchanged), the 0.5 blow-off tier
+# (measured WORSE than baseline on the cell winners), the cell-t leg
+# (+0.008 lift — not worth the complexity).
+RF_ROOF_CONF_SCALE = 0.78
+RF_ROOF_CONF_ZONE = (2.0, 5.0)
 
 # ---------------------------------------------------------------------------
 # SHARED VARIANT AXES — the PE-conditioning + OHLCV-boost gates (2026-10-26)
@@ -718,3 +948,213 @@ STUDY_INDEX_CODES = (
 # (fetch/inputs._shared.resolve_options_universe; options_wall drops the
 # SSE ETF underlyings, whose chain OI is an accumulated-volume
 # estimator). The study indices carry no options data.
+
+# ---------------------------------------------------------------------------
+# volatility — the realized-vol tail family (2026-11-18)
+# ---------------------------------------------------------------------------
+# The analysis.volatility panel (the daily realized-vol build) as rule
+# cells: the LEVERAGE-EFFECT family — realized-vol peaks cluster at
+# price TROUGHS (Black 1976; French-Schwert-Stambaugh 1987 — negative
+# returns raise future vol more than positive ones; "local top
+# volatility signals local low price", the user's phrasing), and vol
+# spikes are EPISODES, not levels (GARCH clustering + mean reversion
+# — a top-tail breach is an event). The repo's own capitulation
+# populations (rf floor_deep, rebound_capit, ovix panic) measured the
+# same washout class; the equity asymmetry keeps the sell side EXIT
+# TIMING (tops continue).
+#   spike  BUY   the vol axis pierces ABOVE its own trailing top-q
+#                adaptive tail while price sits BELOW its 5-rows-ago
+#                close — the fear leg (the ovix panic/euphoria
+#                direction split: keeps upside euphoria like
+#                2024-09-30 out of the buy);
+#   crush  SELL  the vol axis below its own bottom-q adaptive tail
+#                while price sits within 2% of its trailing-60-row
+#                high — complacency AT THE TOP, exit timing (a naked
+#                low-vol sell would fire through every calm uptrend;
+#                the low-vol anomaly is cross-sectional, not a
+#                time-series sell).
+# Axes: hv20 = the canonical 20-row close-to-close realized vol,
+# ewma = the RiskMetrics fast vol (λ=0.94). Bars are per-code
+# adaptive trailing quantiles — the mov_rsi convention (shifted one
+# row); nested widest-first carving (the deepest claim counts once).
+# Data-driven universe: the codes with volatility rows
+# at the sec_type (index only while the panel's run scope is the 10
+# study indices — etf/stock skip until the panel widens).
+VOL_AXES = (
+    # (sub-type prefix, frame column)
+    ("hv20", "hv_20"),
+    ("ewma", "ewma_vol"),
+)
+# the tail grid — LOCAL (trailing-year) tails, widened 2026-11-18 from
+# the first build's all-history {1,2,3}% (user-directed "a rough check
+# on 000001 volatility should have 2 dozens local volatility spikes"):
+# the 2520d all-history top-1/2/3% tails are DEGENERATE on the panel's
+# ~7y history — the whole-history tail sits so high only the 2024-10
+# mega-cluster ever breaches it (000001: 1-2 episodes, 4 events total).
+# The LOCAL trailing-252d tails match the visible spikes (000001
+# episodes with the fear leg: 5%→6, 10%→9, 15%→15, 20%→19; both axes
+# union ≈ the two dozen) AND keep the edge — pooled over the 10 study
+# indices every tail clears the buy bar hugely (study
+# temp_scripts/vol_spike_count_study.py: +1.15..+1.88% blend,
+# t=3.3..4.9, hit 57-67%).
+VOL_TAIL_PCTS = (5, 10, 15, 20)
+# the adaptive bar + depth-sigma windows — LOCAL (the panel's own
+# pct_rank_252 convention: trailing 252 rows, >= 60 obs), shifted one
+# row (no look-ahead).
+VOL_BAR_WINDOW_DAYS = 252
+VOL_BAR_MIN_PERIODS = 60
+# the spike BUY's fear-leg window: price below its N-rows-ago close
+VOL_SPIKE_LEG_WINDOW = 5
+# the crush SELL's price-stretch context: within this fraction of the
+# trailing VOL_CRUSH_HIGH_WINDOW-row high (both shifted 1 — no
+# look-ahead)
+VOL_CRUSH_HIGH_WINDOW = 60
+VOL_CRUSH_HIGH_FRAC = 0.98
+
+# ---------------------------------------------------------------------------
+# signal amplification — the amplifier tier (2026-11-18; the 2026-11-20
+# two-level amplifier axis + the margin type)
+# ---------------------------------------------------------------------------
+# The close-only signal families' intraday strengthener
+# (analysis_signals.signal_amplification_rules + _history, written by
+# python -m analysis.analysis_signals.signal_amplification): every
+# trigger in the nine standalone families reads the CLOSE (RSI, σ-depth,
+# MA gap, momentum, histogram); the intraday open/high/low and the
+# volume (trading_amount) ride along unused. This tier records the
+# recurring day-level anatomy (the amplifier) and BINDS it to the signal
+# families it strengthens/discounts. The amplifier axis is TWO-LEVEL:
+# the PARENT TYPE (ohlcv — K-line day anatomy / margin — 融资融券
+# margin-balance level) + the per-type SUB TYPE vocabulary
+# (SIGNAL_AMPLIFIER_CODE when ohlcv, SIGNAL_AMPLIFIER_MARGIN_CODE when
+# margin).
+#
+# Two tables:
+#   signal_amplification_rules   one row per (code, sec_type, signal_type)
+#                                — the binding config (amplifiers[], bars,
+#                                base_bp, measured evidence).
+#   signal_amplification_history the ORIGINAL RECORD KEEPER — one row per
+#                                amplifier day (code, sec_type,
+#                                amplifier_type, sub_type, date) with the
+#                                day's anatomy facts + the per-binding
+#                                amplification applied.
+# Data sources: analysis.ohlcv_ext (this tier's own extended tech-stats
+# build from stats.*_basic_stats — gaps/wicks/close_pos/prev-day refs/
+# amt ratios) + the margin series (stats.{etf,stock}_liquidity_margin
+# .rz_balance; indices read analysis.margin_index_series' weighted
+# aggregate — NULL for codes without margin data, so no margin amplifier
+# days fire there) + history_signals (which bound families fired).
+#
+# Amplifier strength = base_bp depth-scaled, the CellGate convention:
+#   amplify_bp = round(base_bp * (1 + AMP_DEPTH_FACTOR * min(depth, AMP_DEPTH_CAP)))
+# capped at |AMP_CAP_BP|; dry_rebound's base is NEGATIVE (a discount).
+AMP_DEPTH_FACTOR = 0.5
+AMP_DEPTH_CAP = 2
+AMP_CAP_BP = 600
+# the per-binding measured-evidence floor (rules.evidence.is_valid):
+# an amplifier binding is valid when at least this many amplifier days
+# had a measurable bound-family response AND the amplifier-day forward
+# mean improves on the family's own base with the claimed sign
+AMP_EVIDENCE_MIN_N = 3
+
+# the anatomy bars (ohlcv_ext conventions):
+AMP_WICK_WINDOW = 252          # trailing window of the wick top-decile bar
+AMP_WICK_MIN_PERIODS = 120     # min trailing obs (the ohlc_gaps convention)
+AMP_WICK_Q = 0.90              # the top-decile quantile
+AMP_AMT_HEAVY_RATIO = 1.5      # 放量: amt_ratio_20 >= this (the AMT_CLIMAX_HEAVY grade)
+AMP_AMT_DRY_RATIO = 0.8        # 缩量: amt_ratio_20 <= this (the dry_rebound bar)
+AMP_GAP_OPEN_BAR = 0.005       # the up/down-open bar (±0.5% overnight gap)
+AMP_BREAKOUT_CLOSE_POS = 0.7   # breakout_confirm's strong-close bar
+AMP_BLOWOFF_CLOSE_POS = 0.3    # spike_blowoff's weak-close bar
+# the depth-sigma window (gap/breakout depth in the code's own trailing
+# return sigma, shifted one row — no look-ahead)
+AMP_RET_SIGMA_WINDOW = 252
+AMP_RET_SIGMA_MIN_PERIODS = 60
+
+# the MARGIN amplifier bars (the 'margin' parent type, 2026-11-20): the
+# 融资余额 (rz_balance; indices read analysis.margin_index_series'
+# weighted aggregate) LEVEL vs its own trailing quantile bars — LOW
+# balance = leverage washed out (low risk, lower price → BUY
+# amplification), HIGH balance = leverage crowding (fragility → SELL
+# amplification). Trailing window with the day's own row INCLUDED (the
+# anatomy module's wick-bar convention — post-close records, same-day
+# observable).
+AMP_MARGIN_WINDOW = 252          # trailing window of the margin quantile bars
+AMP_MARGIN_MIN_PERIODS = 120     # min trailing obs before a bar exists
+AMP_MARGIN_LOW_Q = 0.10          # margin_washout fires at/below this quantile
+AMP_MARGIN_HIGH_Q = 0.90         # margin_crowding fires at/above this quantile
+
+# THE BINDING MATRIX — which amplifier strengthens which family, at
+# which action side, at what base strength (bp; NEGATIVE = discount).
+# NESTED per the two-level amplifier axis (2026-11-20): the outer key is
+# the PARENT TYPE (decodes via SIGNAL_AMPLIFIER_TYPE_CODE — "ohlcv" /
+# "margin"), the inner key the specific pattern ('signal_amplifier'
+# vocabulary when ohlcv, 'signal_amplifier_margin' vocabulary when
+# margin). Family labels decode via SIGNAL_TYPE_CODE. The v1 scope is
+# the standalone close-price families whose signals the day anatomy can
+# genuinely qualify — the options families (their own universe/derivative
+# axis), the portfolio tier (hedge_pairs / hp_rsi) and the market-level
+# breadth rules are out of scope. Bases are priors (the CellGate
+# convention: a measured base scaled by depth), not fitted — the
+# evidence block on the rules row is the honest verdict.
+AMP_BINDINGS: dict[str, dict[str, tuple[tuple[str, str, int], ...]]] = {
+    "ohlcv": {
+        # BUY-side reversion amplifiers — capitulation/washout anatomy
+        # strengthens the buy side of the reversion families
+        "flush_washout": (
+            ("mov_rsi", "buy", 150), ("bollinger", "buy", 120),
+            ("rebound", "buy", 180), ("rf_break", "buy", 120),
+            ("volatility", "buy", 100), ("crowdedness", "buy", 100),
+        ),
+        "gap_reclaim": (
+            ("mov_rsi", "buy", 120), ("bollinger", "buy", 100),
+            ("rebound", "buy", 150), ("macd", "buy", 100),
+        ),
+        # BUY continuation — a volume-confirmed breakout strengthens the
+        # breakout/continuation families' buy
+        "breakout_confirm": (
+            ("rf_break", "buy", 180), ("ma_cross", "buy", 120),
+            ("macd", "buy", 100), ("momentum", "buy", 100),
+            ("rebound", "buy", 100),
+        ),
+        # SELL-side exit amplifiers — blow-off/exhaustion anatomy
+        # strengthens the exit-timing sell
+        "spike_blowoff": (
+            ("mov_rsi", "sell", 120), ("bollinger", "sell", 100),
+            ("momentum", "sell", 100), ("volatility", "sell", 100),
+            ("crowdedness", "sell", 100),
+        ),
+        "exhaustion_gap": (
+            ("ma_cross", "sell", 100), ("macd", "sell", 100),
+            ("momentum", "sell", 100),
+        ),
+        # the BUY DISCOUNT — 缩量弱反弹 (an up close on shrinking
+        # participation) is fade-prone: the bound families' buy is
+        # DISCOUNTED (negative base), deeper dryness discounts harder
+        "dry_rebound": (
+            ("rebound", "buy", -120), ("ma_cross", "buy", -100),
+            ("macd", "buy", -100),
+        ),
+    },
+    "margin": {
+        # margin_washout (融资余额低位, 2026-11-20): rz_balance at/below
+        # its own trailing-252d q10 bar — leverage washed out. LOW
+        # margin indicates LOW risk and a LOWER price: the de-risked
+        # balance strengthens the reversion families' BUY (the
+        # flush_washout binding set — the same reversion thesis on the
+        # leverage axis)
+        "margin_washout": (
+            ("mov_rsi", "buy", 120), ("bollinger", "buy", 100),
+            ("rebound", "buy", 150), ("rf_break", "buy", 120),
+            ("volatility", "buy", 100), ("crowdedness", "buy", 100),
+        ),
+        # margin_crowding (融资余额高位, 2026-11-20): rz_balance at/above
+        # its own trailing-252d q90 bar — leverage crowding, the
+        # fragile side; strengthens the exit-timing families' SELL
+        # (the spike_blowoff binding set's mirror)
+        "margin_crowding": (
+            ("mov_rsi", "sell", 100), ("bollinger", "sell", 100),
+            ("momentum", "sell", 100), ("volatility", "sell", 100),
+            ("crowdedness", "sell", 120),
+        ),
+    },
+}

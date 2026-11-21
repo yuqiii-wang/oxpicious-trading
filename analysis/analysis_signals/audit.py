@@ -122,11 +122,17 @@ def audit_family_rows(label: str, rules_rows: list[dict],
             bad.append(f"{where}: no performance snapshot emitted")
         rule_cells.add((r.get("code"), r.get("signal_type"),
                         r.get("signal_sub_type"), r.get("action"),
-                        r.get("is_in_portfolio")))
+                        r.get("is_in_portfolio"), r.get("is_valid")))
     for h in history_rows:
+        # the history row carries no validity flag — negative confidence
+        # IS the reject tier (rule_base emits negative bp only from
+        # reject_eval, whose cells are exactly the is_valid FALSE ones),
+        # so the sign reconstructs the rule row's is_valid for the match
+        is_valid = not (h.get("confidence") is not None
+                        and h["confidence"] < 0)
         key = (h.get("code"), h.get("signal_type"),
                h.get("signal_sub_type"), h.get("action"),
-               h.get("is_in_portfolio"))
+               h.get("is_in_portfolio"), is_valid)
         if key not in rule_cells:
             bad.append(f"history {h.get('code')}@{h.get('date')}/"
                        f"{h.get('signal_sub_type')}: its rule cell did "
@@ -288,5 +294,44 @@ async def audit_orphan_rows(conn, sec_type: str, label: str,
     return len(bad)
 
 
-__all__ = ["audit_family_rows", "audit_portfolio_groups",
-           "audit_orphan_rows"]
+# ------------------------------------------------------------- no-action
+def audit_no_action_rows(label: str, no_action_rows: list[dict],
+                         history_rows: list[dict]) -> int:
+    """The NO-ACTION overlay tier's checks (11): every emitted row's
+    reason code decodes, its action is a real buy/sell (never wait —
+    the mark declines an action), its confidence is NEGATIVE, and —
+    the OVERLAY contract — its (code, sub type, date, action)
+    matches a POSITIVE fired row of the same run (a no-action row
+    without its positive twin is a standalone claim this tier must
+    never make)."""
+    from _common.labels import NO_ACTION_REASON_LABEL
+
+    from analysis.analysis_signals.engines.no_action import (
+        positive_fired_rows,
+    )
+
+    bad: list[str] = []
+    fired_keys = {(r["code"], r["signal_sub_type"], r["date"],
+                   r["action"]) for r in positive_fired_rows(history_rows)}
+    for i, r in enumerate(no_action_rows):
+        where = f"row {i} ({r.get('code')}@{r.get('date')})"
+        if r.get("reason_code") not in NO_ACTION_REASON_LABEL:
+            bad.append(f"{where}: undecodable reason code "
+                       f"{r.get('reason_code')}")
+        if r.get("action") not in (0, 1):
+            bad.append(f"{where}: action {r.get('action')} — the mark "
+                       f"declines a real action, never wait")
+        conf = r.get("confidence")
+        if not isinstance(conf, int) or conf >= 0:
+            bad.append(f"{where}: confidence {conf} — the overlay tier "
+                       f"carries negative bp only")
+        if (r.get("code"), r.get("signal_sub_type"), r.get("date"),
+                r.get("action")) not in fired_keys:
+            bad.append(f"{where}: no positive fired twin — the overlay "
+                       f"contract broken (standalone claim)")
+    _violations(label, "no_action", bad)
+    return len(bad)
+
+
+__all__ = ["audit_family_rows", "audit_no_action_rows",
+           "audit_portfolio_groups", "audit_orphan_rows"]

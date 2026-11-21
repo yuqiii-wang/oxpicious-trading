@@ -180,8 +180,29 @@ For a new feature that needs testing, add `--sec-type index` so only index
 data is processed; if the feature involves margin, use `--sec-type etf`
 instead. Skip the scoping only for full data rebuilds.
 
+A pipeline run produces or refreshes the data a change needs — it is not
+the test itself. To test a change, send the request from the UI and check
+the logs (see Verification); never write an ad-hoc Python script that
+imports and calls the changed code directly.
+
 Throwaway scripts and their outputs (console output, screenshots) go in
 `temp_scripts/`.
+
+Pending bugs found while running anything manually get a CAUTION row
+(`monitor.caution_log`, the Monitor → Cautions tab) — never a loose note:
+
+```
+wsl -d Ubuntu-22.04 -- bash -lc "source ~/miniconda3/etc/profile.d/conda.sh && conda activate base && cd /mnt/e/oxpicious-trading && python -m _common.caution_log --service builds.index.daily --severity warning --title 'one-line issue summary' --detail-json '{\"key\": \"context\"}'"
+```
+
+(source=manual; resolve it in the Cautions tab once fixed. Service errors
+and AI-found suspicions are recorded there automatically — abnormal
+pipeline exits via `_common/service_heartbeat.py`, orchestration step
+failures, maintainer job crashes, the data_viz API's own unhandled
+errors + never-started py-runner runs, and the deep-agent suspicion
+seams — all through the fire-and-forget `_common/caution_log` /
+`data_viz/api/services/caution-log.service.ts` writers; recurring issues
+dedupe onto one open row.)
 
 LLM-touching tests and probes (deep agents, langgraph) run on the DUMMY
 LLM double — `test/dummy_llm` at the project root (`DummyLlmProvider`
@@ -193,11 +214,33 @@ HTTP-sim against the resident local-model host's dummy-1 model
 error injection via its POST /control) — zero provider spend,
 deterministic; details in `deep-agent-blueprint`.
 
-## Verification
+## Verification — send the request from the UI, check the logs
 
-After implementing a change, verify it by checking API responses and the UI
-console logs — not just by reading the code. The Vite dev server runs at
-http://localhost:5173.
+After implementing a change, test it by sending the request from the UI
+and checking the logs — NOT by directly testing in Python. Every UI-test
+request is sent from the browser into the real stack and lands on the
+RESPECTIVE SERVER — the Express API (via the Vite proxy) for `data_viz`
+pages, which itself delegates Python work to the respective
+`server_cluster/` area server (ports in `server_cluster/cluster_config.json`:
+llm 8767, downloader 8769, builder 8770, analyzer 8771, strategist 8772,
+monitor 8773, config 8774, maintainer 8775) — the same no-cmd rule the
+py-runner already enforces server-side. Never send a test request by cmd:
+no `curl` / `node fetch` / ad-hoc Python HTTP one-liner from the shell;
+if a scope has no UI entry point, send it from the open page's own
+context through the browser tooling (the `ui-test` fallback). Exercise the
+feature in the browser (Vite at http://localhost:5173; Express API at
+http://localhost:3001 via `npm run server:dev`, or `npm run dev` for
+both) so the request flows the real path (Vite proxy → API route → SQL →
+pipeline-produced rows), then check the logs that request produced: the
+Express server's stdout — the terminal / background task running
+`npm run server:dev` (`console.log`/`console.error`; route hit, SQL
+errors, stack traces) — and the browser console. Never verify by
+importing/calling the changed Python code from an ad-hoc script, and
+never substitute a `python -m` run for the UI path — pipeline runs
+produce data (see "Running and testing"), they are not the test. Reading
+the code alone is not verification either. The `data_viz/` tiers (UI
+request + payload/log assertions, then one screenshot pass) are in the
+`ui-test` skill.
 
 ## React UI (`data_viz/`)
 

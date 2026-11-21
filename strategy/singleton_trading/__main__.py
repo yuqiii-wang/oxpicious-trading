@@ -48,11 +48,12 @@ bootstrap_runtime()
 from strategy._common.db import print_wall_time  # noqa: F401
 from strategy._common.strategy_base import StrategyPipeline
 from strategy._common.constants import ALL_SEC_TYPES, DEFAULT_BUY_NOTIONAL
+from strategy._trading.constants import DEFAULT_FAULT_TOLERANCE
 from strategy.singleton_trading import DEFAULT_ALGO, STRATEGY_PARAMS
 from strategy._risks import RiskRunner
 from strategy.factors_and_algos import (
     AlgoSignalCollector,
-    ensure_default_config, load_params,
+    ensure_default_config, load_config_source, load_params,
     portfolio_name,
 )
 # PortfolioRunner comes from the module directly — the lazy facade's
@@ -125,12 +126,24 @@ class SingletonTradingStrategy(StrategyPipeline):
         parser.add_argument("--force", action="store_true")
         parser.add_argument("--dry-run", action="store_true")
         parser.add_argument(
-            "--fault-tolerance", type=float, default=0,
-            help="Fault tolerance percentage (0-20). When >0, runs a two-pass "
-                 "stress test: baseline run finds decision dates, then OHLC is "
-                 "adversely perturbed on those dates (BUY up, SELL down) by "
-                 "ft%% of |delta_close|, indicators are recomputed, and the "
-                 "algo re-runs on stressed data. Strategy name gets _ft{N} suffix.",
+            "--fault-tolerance", type=float, default=DEFAULT_FAULT_TOLERANCE,
+            help="Fault tolerance percentage (0-20), pinned to 10 by default "
+                 "(see strategy/_trading/constants.py). When >0, BUY fills are "
+                 "adversely shifted by ft%% of |delta_close| (engine stress) "
+                 "and a two-pass stress annotation runs: baseline decisions, "
+                 "then OHLC perturbed on those dates, indicators recomputed, "
+                 "and the algo re-run on stressed data. Strategy name gets "
+                 "_ft{N} suffix.",
+        )
+        parser.add_argument(
+            "--comb-json", default=None,
+            help=(
+                "MIXED-mode comb-config overrides (JSON), merged over the "
+                "portfolio's algo_configs row and the champion defaults — "
+                'e.g. \'{"enabled": false}\' to disable the comb stack, or '
+                '\'{"weights": {"mode": "mean_bar", "bar": 0.0025}}\'. '
+                "See strategy/factors_and_algos/_comb/config.py."
+            ),
         )
 
     def apply_args(self) -> None:
@@ -158,6 +171,26 @@ class SingletonTradingStrategy(StrategyPipeline):
             {args.sec_type: list(args.codes)}
             if args.codes and not args.all and args.sec_type else None
         )
+
+        # MIXED-mode comb overrides (--comb-json): validated NOW via the
+        # comb schema so an invalid override fails fast at startup, not
+        # mid-run. None keeps the champion defaults / DB row.
+        self.comb_overrides = None
+        if args.comb_json:
+            import json as _json
+            from strategy.factors_and_algos._comb import CombParams
+            try:
+                raw = _json.loads(args.comb_json)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"--comb-json is not valid JSON: {exc}"
+                ) from exc
+            if not isinstance(raw, dict):
+                raise ValueError("--comb-json must be a JSON object")
+            # Validate through the strict schema (CLI is not a stale row —
+            # invalid values SHOULD fail loudly here).
+            CombParams.model_validate(raw)
+            self.comb_overrides = raw
 
         # Mixed mode only: one pooled connection per non-zero sub-algo.
         self.pool_size = (
@@ -196,16 +229,20 @@ class SingletonTradingStrategy(StrategyPipeline):
             if ft > 0:
                 params["fault_tolerance"] = ft
 
-            # DB-backed param loading (existing path).
+            # DB-backed param loading (existing path). The algo_configs key
+            # is the FT-LESS algo name — a config is a parametrization, the
+            # _ft{N} suffix is run identity only. (Phase 1 of the mixed
+            # branch follows the same rule; the trainer also writes under
+            # the ft-less name, so trained rows load at ANY fault tolerance.)
             if codes_by_st:
                 for st in sec_types:
                     for code in codes_by_st.get(st, []):
                         inserted = await ensure_default_config(
-                            conn, algo_name, st, code, strategy_name,
+                            conn, algo_name, st, code, algo_name,
                         )
                         if inserted:
                             logger.info(f"    [algo_configs] inserted default "
-                                  f"{strategy_name} config for {st}/{code}")
+                                  f"{algo_name} config for {st}/{code}")
                 primary_st = next(iter(codes_by_st))
                 primary_code = codes_by_st[primary_st][0]
                 # min_holding_period is NOT forced here: when the optimizer
@@ -216,14 +253,21 @@ class SingletonTradingStrategy(StrategyPipeline):
                     if k in params and k != "min_holding_period"
                 }
                 params = await load_params(
-                    conn, algo_name, primary_st, primary_code, strategy_name,
+                    conn, algo_name, primary_st, primary_code, algo_name,
                     strategy_overrides=tl,
                 )
                 params.setdefault(
                     "min_holding_period",
                     STRATEGY_PARAMS["min_holding_period"],
                 )
-                logger.info(f"    [algo_configs] loaded {strategy_name} params from DB "
+                # Provenance: link the run to the algo_configs row it
+                # actually loaded (trained row date / default / version).
+                source = await load_config_source(
+                    conn, primary_st, primary_code, algo_name,
+                )
+                if source is not None:
+                    params["config_source"] = source.model_dump(mode="json")
+                logger.info(f"    [algo_configs] loaded {algo_name} params from DB "
                       f"for {primary_st}/{primary_code}")
 
             from strategy._common.runner import StrategyRunner
@@ -265,6 +309,7 @@ class SingletonTradingStrategy(StrategyPipeline):
             portfolio = PortfolioRunner(
                 conn, self.pool, collector, selection,
                 trading_layer=self.trading_layer, fault_tolerance=ft,
+                comb_overrides=self.comb_overrides,
                 force=args.force, seq_no=args.seq_no, t0=t0,
             )
 

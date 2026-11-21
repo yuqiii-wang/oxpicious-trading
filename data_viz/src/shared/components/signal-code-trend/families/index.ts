@@ -1,8 +1,8 @@
 /**
  * families — the signal families' display REGISTRY (one file per
  * family: rsi / bollinger / macross / optionsWall / optionsVix /
- * momentum / rfBreak / rebound / macd / crowdedness / hedgePairs /
- * hpRsi). The
+ * momentum / rfBreak / rebound / macd / crowdedness / volatility /
+ * hedgePairs / hpRsi). The
  * rules/history panels and the shared tables consume THIS registry and
  * never name a family themselves — adding a family is one file + one
  * registry entry (the ENGINES-registry pattern the Python signals
@@ -24,6 +24,7 @@ import { rfBreakFamily } from "./rfBreak";
 import { reboundFamily } from "./rebound";
 import { macdFamily } from "./macd";
 import { crowdednessFamily } from "./crowdedness";
+import { volatilityFamily } from "./volatility";
 import { hedgePairsFamily } from "./hedgePairs";
 import { hpRsiFamily } from "./hpRsi";
 
@@ -51,6 +52,7 @@ export const SIGNAL_FAMILIES: Record<string, SignalFamily> = {
   rebound: reboundFamily,
   macd: macdFamily,
   crowdedness: crowdednessFamily,
+  volatility: volatilityFamily,
   hedge_pairs: hedgePairsFamily,
   hp_rsi: hpRsiFamily,
 };

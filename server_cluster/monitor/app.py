@@ -14,7 +14,8 @@ from typing import Optional
 from fastapi import FastAPI
 
 from server_cluster._common.config import AreaConfig
-from . import fleet, non_daily, orchestration
+from . import arrangement, fleet, non_daily, orchestration
+from .arrangement import OrchestrationArranger
 from .fleet import FleetOps
 from .non_daily import NonDailyOps
 from .orchestration import OrchestrationRunner
@@ -36,9 +37,12 @@ def create_monitor_app(config: Optional[AreaConfig] = None) -> FastAPI:
     app.state.fleet = FleetOps(
         config, app.state.processes, app.state.supervisor)
     app.state.orchestration = OrchestrationRunner(app.state.registry)
-    app.state.non_daily = NonDailyOps(app.state.registry)
+    app.state.arrangement = OrchestrationArranger()
+    app.state.non_daily = NonDailyOps(
+        app.state.registry, app.state.orchestration)
 
     app.include_router(fleet.router)
     app.include_router(orchestration.router)
+    app.include_router(arrangement.router)
     app.include_router(non_daily.router)
     return app

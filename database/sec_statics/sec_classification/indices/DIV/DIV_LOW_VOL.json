@@ -83,20 +83,6 @@
     ],
     "is_industry_not_strategy": false
   },
-  "DUMMY_DIV_LOW_VOL": {
-    "name": "红利低波综合指数",
-    "exchange": null,
-    "sector_id": "DIV",
-    "industry_id": "DIV_LOW_VOL",
-    "tags": [
-      {
-        "sector_id": "DIV",
-        "industry_id": "DIV_LOW_VOL"
-      }
-    ],
-    "is_industry_not_strategy": false,
-    "is_dummy": true
-  },
   "H30269": {
     "name": "红利低波",
     "exchange": "HK",

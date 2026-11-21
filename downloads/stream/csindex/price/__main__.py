@@ -60,6 +60,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
 
+import psycopg
+
 # Ensure project root is on sys.path when run via -m
 _PROJECT_ROOT = Path(__file__).resolve().parents[4]
 if str(_PROJECT_ROOT) not in sys.path:
@@ -193,6 +195,28 @@ class CsindexStreamDaemon(DownloadJob):
         """One daemon entry — the former main() tail (verbatim dispatch)."""
         self.stream(once=self.args.once, single_code=self.args.code)
 
+    def _ensure_conn(self, conn):
+        """Return a live psycopg connection, reconnecting if closed (the
+        SSE/BSE streamers' idiom)."""
+        if conn is None or getattr(conn, "closed", False):
+            logger.info("Reconnecting to database …")
+            return get_db_connection()
+        return conn
+
+    def _recover_conn(self, conn):
+        """Return a usable connection after a failed DB use, rolling back or
+        reconnecting as needed (the SSE streamer's shape)."""
+        try:
+            conn.rollback()
+            return conn
+        except Exception:  # noqa: BLE001
+            logger.warning("DB session unusable after a failed use; reconnecting …")
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+            return get_db_connection()
+
     # -----------------------------------------------------------------------
     # Main stream loop (the former module-level stream(), verbatim)
     # -----------------------------------------------------------------------
@@ -237,140 +261,158 @@ class CsindexStreamDaemon(DownloadJob):
 
         try:
             while True:
-                loop_start = _time.time()
-                today = datetime.now().date()
-                now_time = datetime.now().time()
-                trading_today = is_trading_day(today)
+                # DB-liveness boundary per iteration: the conn sits idle
+                # across the overnight gap (post-close sleep until 16:00)
+                # and the server drops it — an OperationalError reconnects
+                # and retries the iteration instead of killing the streamer
+                # (the SSE/BSE idiom). Upserts are idempotent, so a retried
+                # iteration cannot double-write.
+                try:
+                    conn = self._ensure_conn(conn)
+                    loop_start = _time.time()
+                    today = datetime.now().date()
+                    now_time = datetime.now().time()
+                    trading_today = is_trading_day(today)
 
-                # --- Single-code mode (--code) ---
-                if single_code:
-                    logger.info("=== single-code mode: %s ===", single_code)
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "SELECT COALESCE(name, %s) FROM stats.sec_classification "
-                            "WHERE code=%s AND type='index' LIMIT 1",
-                            (single_code, single_code),
-                        )
-                        row = cur.fetchone()
-                        name = row[0] if row else single_code
-                    self.fetcher.fetch_and_upsert_one(session, single_code, name, proxy, host_tracker, conn)
-                    break
-
-                # --- Non-trading day: sleep until next trading moment ---
-                if not trading_today:
-                    nxt = _next_trading_moment()
-                    wait_sec = (nxt - datetime.now()).total_seconds()
-                    logger.info(
-                        "Non-trading day (%s); sleeping until %s (%.0fs).",
-                        today, nxt.strftime("%Y-%m-%d %H:%M"), wait_sec,
-                    )
-                    if once:
-                        break
-                    _sleep_chunks(wait_sec)
-                    continue
-
-                # --- New trading day: wait until CSINDEX_START_TIME (16:00), then gather
-                #     which codes SSE/SZSE is streaming (codes with bars today). ---
-                if current_biz_day != today:
-                    now_dt = datetime.now()
-                    start_dt = datetime.combine(today, CSINDEX_START_TIME)
-                    if now_dt < start_dt:
-                        wait_sec = (start_dt - now_dt).total_seconds()
-                        logger.info(
-                            "New trading day %s; waiting %.0fs until %s "
-                            "(post-close start; intraday data already captured).",
-                            today, wait_sec, CSINDEX_START_TIME,
-                        )
-                        _sleep_chunks(wait_sec)
-
-                    current_biz_day = today
-                    sse_streamed_codes = self.db.load_sse_streamed_codes(conn, today)
-                    index_industry_map = self.db.load_index_industry_map(conn)
-                    logger.info(
-                        "Anchored to biz day %s: %d codes already streamed by SSE/SZSE "
-                        "(excluded from CSIndex download); loaded index→industry map "
-                        "(%d codes across %d industries).",
-                        today, len(sse_streamed_codes),
-                        len(index_industry_map),
-                        len(set(index_industry_map.values())),
-                    )
-
-                # Find missing/stale codes, EXCLUDING SSE-streamed codes.
-                codes = self.db.load_missing_or_stale_codes(
-                    conn, today, exclude_codes=sse_streamed_codes,
-                )
-                # Importance rank 0 -> 9 FIRST (stats.sec_importance_ranks via
-                # _common.importance; an empty map falls back to code order),
-                # THEN the industry-coverage pass: each industry's head
-                # representative becomes its most important index and the tail
-                # keeps rank order — a throttled or killed loop has covered the
-                # important indices first.
-                ranked_codes = order_pairs_by_importance(
-                    codes, fetch_importance_ranks_or_empty(conn),
-                )
-                ordered_codes = order_codes_by_industry_coverage(
-                    ranked_codes, index_industry_map,
-                )
-                n_industries = (
-                    len({index_industry_map.get(c, "OTHER") for c, _ in ordered_codes})
-                    if ordered_codes else 0
-                )
-                n_head = min(len(ordered_codes), n_industries)
-                logger.info(
-                    "=== loop @ %s biz=%s: %d codes to fetch across %d industries "
-                    "(trading_hours=%s, excluded=%d sse-streamed); "
-                    "industry-first: head=%d + tail=%d ===",
-                    datetime.now().strftime("%H:%M:%S"), today, len(ordered_codes),
-                    n_industries,
-                    CSINDEX_START_TIME <= now_time,  # rough trading-hours flag
-                    len(sse_streamed_codes),
-                    n_head, len(ordered_codes) - n_head,
-                )
-
-                if not ordered_codes:
-                    logger.info("No missing/stale codes; all indices up to date.")
-                else:
-                    n_total_bars = 0
-                    n_ok = 0
-                    n_fail = 0
-                    for i, (code, name) in enumerate(ordered_codes):
-                        if proxy.is_blocked(CSINDEX_BASE):
-                            logger.warning(
-                                "csindex.com.cn blocked; stopping this loop (%d/%d done)",
-                                i, len(ordered_codes),
+                    # --- Single-code mode (--code) ---
+                    if single_code:
+                        logger.info("=== single-code mode: %s ===", single_code)
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                "SELECT COALESCE(name, %s) FROM stats.sec_classification "
+                                "WHERE code=%s AND type='index' LIMIT 1",
+                                (single_code, single_code),
                             )
-                            break
+                            row = cur.fetchone()
+                            name = row[0] if row else single_code
+                        self.fetcher.fetch_and_upsert_one(session, single_code, name, proxy, host_tracker, conn)
+                        break
 
-                        n_bars, _ = self.fetcher.fetch_and_upsert_one(
-                            session, code, name, proxy, host_tracker, conn,
+                    # --- Non-trading day: sleep until next trading moment ---
+                    if not trading_today:
+                        nxt = _next_trading_moment()
+                        wait_sec = (nxt - datetime.now()).total_seconds()
+                        logger.info(
+                            "Non-trading day (%s); sleeping until %s (%.0fs).",
+                            today, nxt.strftime("%Y-%m-%d %H:%M"), wait_sec,
                         )
-                        n_total_bars += n_bars
-                        if n_bars > 0:
-                            n_ok += 1
-                        else:
-                            n_fail += 1
+                        if once:
+                            break
+                        _sleep_chunks(wait_sec)
+                        continue
 
-                        if i < len(ordered_codes) - 1:
-                            random_sleep(SLEEP_SEC)
+                    # --- New trading day: wait until CSINDEX_START_TIME (16:00), then gather
+                    #     which codes SSE/SZSE is streaming (codes with bars today). ---
+                    if current_biz_day != today:
+                        now_dt = datetime.now()
+                        start_dt = datetime.combine(today, CSINDEX_START_TIME)
+                        if now_dt < start_dt:
+                            wait_sec = (start_dt - now_dt).total_seconds()
+                            logger.info(
+                                "New trading day %s; waiting %.0fs until %s "
+                                "(post-close start; intraday data already captured).",
+                                today, wait_sec, CSINDEX_START_TIME,
+                            )
+                            _sleep_chunks(wait_sec)
 
-                    loop_elapsed = _time.time() - loop_start
+                        current_biz_day = today
+                        sse_streamed_codes = self.db.load_sse_streamed_codes(conn, today)
+                        index_industry_map = self.db.load_index_industry_map(conn)
+                        logger.info(
+                            "Anchored to biz day %s: %d codes already streamed by SSE/SZSE "
+                            "(excluded from CSIndex download); loaded index→industry map "
+                            "(%d codes across %d industries).",
+                            today, len(sse_streamed_codes),
+                            len(index_industry_map),
+                            len(set(index_industry_map.values())),
+                        )
+
+                    # Find missing/stale codes, EXCLUDING SSE-streamed codes.
+                    codes = self.db.load_missing_or_stale_codes(
+                        conn, today, exclude_codes=sse_streamed_codes,
+                    )
+                    # Importance rank 0 -> 9 FIRST (stats.sec_importance_ranks via
+                    # _common.importance; an empty map falls back to code order),
+                    # THEN the industry-coverage pass: each industry's head
+                    # representative becomes its most important index and the tail
+                    # keeps rank order — a throttled or killed loop has covered the
+                    # important indices first.
+                    ranked_codes = order_pairs_by_importance(
+                        codes, fetch_importance_ranks_or_empty(conn),
+                    )
+                    ordered_codes = order_codes_by_industry_coverage(
+                        ranked_codes, index_industry_map,
+                    )
+                    n_industries = (
+                        len({index_industry_map.get(c, "OTHER") for c, _ in ordered_codes})
+                        if ordered_codes else 0
+                    )
+                    n_head = min(len(ordered_codes), n_industries)
                     logger.info(
-                        "=== loop done: %d/%d codes fetched, %d failed, %d total bars in %.1fs ===",
-                        n_ok, len(ordered_codes), n_fail, n_total_bars, loop_elapsed,
+                        "=== loop @ %s biz=%s: %d codes to fetch across %d industries "
+                        "(trading_hours=%s, excluded=%d sse-streamed); "
+                        "industry-first: head=%d + tail=%d ===",
+                        datetime.now().strftime("%H:%M:%S"), today, len(ordered_codes),
+                        n_industries,
+                        CSINDEX_START_TIME <= now_time,  # rough trading-hours flag
+                        len(sse_streamed_codes),
+                        n_head, len(ordered_codes) - n_head,
                     )
 
-                if once:
-                    logger.info("--once set; exiting after one loop.")
-                    break
+                    if not ordered_codes:
+                        logger.info("No missing/stale codes; all indices up to date.")
+                    else:
+                        n_total_bars = 0
+                        n_ok = 0
+                        n_fail = 0
+                        for i, (code, name) in enumerate(ordered_codes):
+                            if proxy.is_blocked(CSINDEX_BASE):
+                                logger.warning(
+                                    "csindex.com.cn blocked; stopping this loop (%d/%d done)",
+                                    i, len(ordered_codes),
+                                )
+                                break
 
-                # Sleep until next 30-min boundary
-                sleep_sec = _seconds_until_next_loop(loop_start)
-                if sleep_sec > 0:
-                    logger.info("Sleeping %.0fs until next loop.", sleep_sec)
-                    _sleep_chunks(sleep_sec)
-                else:
-                    logger.info("Loop took longer than %ds; starting next loop immediately.",
-                                LOOP_INTERVAL_SEC)
+                            n_bars, _ = self.fetcher.fetch_and_upsert_one(
+                                session, code, name, proxy, host_tracker, conn,
+                            )
+                            n_total_bars += n_bars
+                            if n_bars > 0:
+                                n_ok += 1
+                            else:
+                                n_fail += 1
+
+                            if i < len(ordered_codes) - 1:
+                                random_sleep(SLEEP_SEC)
+
+                        loop_elapsed = _time.time() - loop_start
+                        logger.info(
+                            "=== loop done: %d/%d codes fetched, %d failed, %d total bars in %.1fs ===",
+                            n_ok, len(ordered_codes), n_fail, n_total_bars, loop_elapsed,
+                        )
+
+                    if once:
+                        logger.info("--once set; exiting after one loop.")
+                        break
+
+                    # Sleep until next 30-min boundary
+                    sleep_sec = _seconds_until_next_loop(loop_start)
+                    if sleep_sec > 0:
+                        logger.info("Sleeping %.0fs until next loop.", sleep_sec)
+                        _sleep_chunks(sleep_sec)
+                    else:
+                        logger.info("Loop took longer than %ds; starting next loop immediately.",
+                                    LOOP_INTERVAL_SEC)
+                except psycopg.OperationalError as e:
+                    # One-shot modes keep their fail-fast semantics; the daemon
+                    # reconnects and retries the iteration from the top.
+                    if single_code or once:
+                        raise
+                    logger.error(
+                        "DB connection lost (%s: %s); reconnecting and retrying "
+                        "this iteration.", type(e).__name__, e)
+                    conn = self._recover_conn(conn)
+                    continue
 
         except KeyboardInterrupt:
             logger.info("Interrupted by user; exiting.")

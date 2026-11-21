@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # WSL [boot] auto-start for the always-on service fleet.
 #
-# Registered as the distro's [boot] command in /etc/wsl.conf (wrapped in
-# su + nohup there so the boot is not blocked and the files stay
-# yuqi-owned). Every WSL boot — after a Windows reboot, `wsl --shutdown`,
+# Registered as the distro's [boot] command in /etc/wsl.conf — via
+# scripts/wsl_boot_hook.sh (its /usr/local/bin copy holds the su + nohup
+# + redirect; a quoted one-liner in wsl.conf stopped surviving the boot
+# path's parsing — see the hook's header). Every WSL boot — after a
+# Windows reboot, `wsl --shutdown`,
 # or the idle-VM shutdown that kills the whole fleet leaving stale
 # heartbeat rows with no stop records — re-runs this script, which starts
 # the stream watchdog; the watchdog's first pass then respawns its ONE

@@ -97,19 +97,5 @@
       }
     ],
     "is_industry_not_strategy": true
-  },
-  "DUMMY_DISCRETIONARY": {
-    "name": "可选消费综合指数",
-    "exchange": null,
-    "sector_id": "CONS",
-    "industry_id": "DISCRETIONARY",
-    "tags": [
-      {
-        "sector_id": "CONS",
-        "industry_id": "DISCRETIONARY"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
   }
 }

@@ -103,6 +103,21 @@ export interface TradingSignal {
    *  derive it from the action code (action = wait — the history
    *  table's is_rejection column was dropped 2026-10-14). */
   is_rejection: boolean;
+  /** TRUE = the NO-ACTION OVERLAY mark (2026-11-18,
+   *  analysis_signals.no_action_signals): a day-level negative-confidence
+   *  annotation on a FIRED POSITIVE day — the row keeps the fired twin's
+   *  own values with NEGATIVE confidence = "do NOT take this action at
+   *  this price" (never the inverse action). Overlays its positive twin
+   *  (never suppresses it — both rows stay visible; the render keeps the
+   *  ✕-crossed NO BUY / NO SELL conventions of negative confidence).
+   *  FALSE = every other row (the live day-triggers feed always false). */
+  is_no_action: boolean;
+  /** The mark's REASON (the no_action_reason label vocabulary, decoded
+   *  via static.label_dim): e.g. boll_squeeze_breakdown = a -kσ breach
+   *  out of a squeezed band (compression → breakdown continues, measured
+   *  −0.27% vs kept +2.24% on the fired population), fatigue = the
+   *  recent-days same-type saturation. null on non-marked rows. */
+  no_action_reason: string | null;
   /** The code's SIGNAL-DAY count over the last 20 TRADING DAYS ending on
    *  `date`: one day = one entry (its highest-confidence row), across all
    *  signal types — the main table's "20d count" column. */
@@ -349,6 +364,12 @@ export interface SignalRuleParams {
     min_pct?: number | null;
     sample_floor?: number | null;
     ungated?: boolean;
+    /** Present on REJECT rules rows only (engines/reject.py, 2026-11-16):
+     *  the reject bar in PERCENT — the cell's best candidate measured a
+     *  NEGATIVE dir_ave, so the cell emits its real action at negative
+     *  confidence (do NOT take this action at this price, never the
+     *  inverse action). */
+    reject_bar_pct?: number;
   };
   /** The measured evidence on the cell's trigger days (the latest
    *  performance snapshot's measure block — merged at the API
@@ -456,6 +477,148 @@ export function fetchSignalRules(
   const params = new URLSearchParams({ sec_type: secType, code });
   return fetchJson<SignalRulesResponse>(
     `/api/live-data/trading-signals/rules?${params.toString()}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+//  Signal AMPLIFICATION — the amplifier pair (2026-11-18; the 2026-11-20
+//  two-level amplifier axis: parent type ohlcv/margin + per-type sub
+//  types): signal_amplification_rules (the per-(code, family) binding
+//  config) + signal_amplification_history (the ORIGINAL RECORD KEEPER —
+//  one row per amplifier day). The Signal Amplification page's surfaces.
+// ---------------------------------------------------------------------------
+
+/** One bound amplifier inside the rules row's config. */
+export interface SignalAmplifierBinding {
+  /** The PARENT TYPE code (signal_amplifier_type: 0 ohlcv / 1 margin). */
+  amplifier_type: number;
+  /** The parent type label (ohlcv / margin). */
+  amplifier_label: string;
+  /** The specific pattern's code — signal_amplifier when ohlcv,
+   *  signal_amplifier_margin when margin. */
+  sub_type: number;
+  /** The specific pattern's label (e.g. flush_washout, margin_washout). */
+  sub_label: string;
+  /** The side amplified: buy / sell. */
+  action_label: string;
+  base_bp: number;
+  depth_factor: number;
+  depth_cap: number;
+  bar_def?: Record<string, unknown>;
+}
+
+/** The measured evidence block per amplifier on a rules row's config —
+ *  nested per the two-level axis: evidence[str(amplifier_type)][str(sub_type)]. */
+export interface SignalAmplificationEvidence {
+  n: number;
+  base_dir_ave_pct: number | null;
+  amp_dir_ave_pct: number | null;
+  delta_pct: number | null;
+  hit_pct: number | null;
+  is_valid: boolean;
+}
+
+/** One binding-config row (analysis_signals.signal_amplification_rules)
+ *  — which amplifiers amplify one family on one code. */
+export interface SignalAmplificationRule {
+  code: string;
+  sec_type: string;
+  /** The AMPLIFIED family (decoded signal_type label). */
+  signal_type: string;
+  rule_params: {
+    amplifiers: SignalAmplifierBinding[];
+    cap_bp: number;
+    /** Nested {str(parent type code): {str(sub code): evidence}}. */
+    evidence: Record<string, Record<string, SignalAmplificationEvidence>>;
+    [key: string]: unknown;
+  };
+  is_valid: boolean;
+  rule_entry: string;
+  created_at: string;
+}
+
+export interface SignalAmplificationRulesResponse {
+  sec_type: string;
+  code: string;
+  rules: SignalAmplificationRule[];
+}
+
+/** The code's amplification binding configs (the page's rules panel). */
+export function fetchSignalAmplificationRules(
+  secType: string,
+  code: string,
+): Promise<SignalAmplificationRulesResponse> {
+  const params = new URLSearchParams({ sec_type: secType, code });
+  return fetchJson<SignalAmplificationRulesResponse>(
+    `/api/live-data/trading-signals/amplification-rules?${params.toString()}`,
+  );
+}
+
+/** One per-bound-family result on an amplifier day's record. */
+export interface SignalAmplificationBindingResult {
+  signal_type: number;
+  signal_label: string;
+  action_label: string;
+  base_bp: number;
+  /** The depth-scaled, capped strength applied that day (negative =
+   *  a discount amplifier e.g. dry_rebound). */
+  amplify_bp: number;
+  /** A bound-family history_signals event exists on this code/date. */
+  fired: boolean;
+  fired_n: number;
+}
+
+/** One amplifier-day record (analysis_signals.
+ *  signal_amplification_history) — the ORIGINAL RECORD KEEPER's row. */
+export interface SignalAmplificationRecord {
+  code: string;
+  sec_type: string;
+  /** The amplifier PARENT TYPE (decoded signal_amplifier_type label:
+   *  ohlcv / margin). */
+  amplifier_type: string;
+  /** The amplifier's specific pattern (decoded per-parent sub label,
+   *  e.g. flush_washout / margin_washout). */
+  sub_type: string;
+  /** 'YYYY-MM-DD' — the amplifier day. */
+  date: string;
+  gap_pct: number | null;
+  wick_pct: number | null;
+  amt_ratio: number | null;
+  close_pos: number | null;
+  /** The margin amplifiers' qualifying fact: the balance vs its own
+   *  trailing quantile bar (NULL for the ohlcv amplifiers). */
+  margin_vs_bar: number | null;
+  depth: number | null;
+  bindings: SignalAmplificationBindingResult[];
+  amplifier_params: {
+    bar_def?: Record<string, unknown>;
+    facts?: Record<string, number | null>;
+    [key: string]: unknown;
+  };
+}
+
+export interface SignalAmplificationHistoryResponse {
+  sec_type: string;
+  code: string;
+  amplifier_type: string | null;
+  since: string | null;
+  records: SignalAmplificationRecord[];
+}
+
+/** The code's amplifier days, newest first (the page's records table;
+ *  optionally narrowed by the two-level amplifier axis — a PARENT type
+ *  label (ohlcv / margin) or a SUB label — and/or a since date). */
+export function fetchSignalAmplificationHistory(
+  secType: string,
+  code: string,
+  amplifierType?: string | null,
+  since?: string | null,
+): Promise<SignalAmplificationHistoryResponse> {
+  const params = new URLSearchParams({ sec_type: secType, code });
+  if (amplifierType) params.set("amplifier_type", amplifierType);
+  if (since) params.set("since", since);
+  return fetchJson<SignalAmplificationHistoryResponse>(
+    `/api/live-data/trading-signals/amplification-history?${params.toString()}`,
   );
 }
 

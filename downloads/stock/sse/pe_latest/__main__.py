@@ -1,11 +1,11 @@
 """Fetch the LATEST missing trading date's PE per SSE stock into the archive.
 
-Nightly companion to ``downloads.stock.sse.archive`` (which stays a manual /
-once backfill): for each SSE stock the archive already tracks (every
-``temps/sse_archive/{code}_pe.csv`` ∪ the DB's current ETF-held list),
-request 静态市盈率(倍) + 总换手率(%) for the LATEST missing trading date
-≤ the target from the SSE 成交概况 endpoint and append one row to that
-stock's ``{code}_pe.csv``.
+Nightly companion to ``downloads.stock.sse.trend_pe`` (the weekly anchor
+crawl): for each IMPORTANT SSE stock (curated importance rank 0-1 of the
+importance_rules stock JSONs — the shared ``load_important_stocks``
+universe), request 静态市盈率(倍) + 总换手率(%) for the LATEST missing
+trading date ≤ the target from the SSE 成交概况 endpoint and append one
+row to that stock's ``{code}_pe.csv``.
 
 builds.stock's PE loader (``_read_sse_pe_files``) already auto-loads the
 missing tail of those files, so a fresh daily anchor keeps the stock-PE
@@ -18,13 +18,15 @@ Latest-missing-date semantics: at most ONE request per stock per sweep —
 the newest trading day ≤ target absent from the file (a fully current stock
 costs only the in-memory read). A fetch failure (PE not yet published /
 suspended stock / host block) leaves the stock missing; the next nightly
-sweep retries the same date, so publication lag self-heals. The archive
-module stays the on-demand backfill for gap anchors (quarterly snapshots +
-big-jump dates).
+sweep retries the same date, so publication lag self-heals. The gap-anchor
+crawl (quarterly snapshots + big-jump dates) is the weekly
+``downloads.stock.sse.trend_pe`` sweep (2026-11-20: the archive module's
+former PE half, migrated to the trend side — this module now imports the
+shared 成交概况 fetch helpers from there).
 
 Entry point: ``python -m downloads.stock.sse.pe_latest`` — a DownloadJob
-reusing the archive module's 成交概况 fetch helpers (same import pattern as
-``downloads.stock.sse.dividend``).
+reusing the trend_pe module's 成交概况 fetch helpers and its
+``load_important_stocks`` universe loader.
 """
 from __future__ import annotations
 
@@ -45,18 +47,17 @@ from downloads._common import (
     last_business_day,
     resolve_out_dir,
 )
-from downloads._common.net import setup_logger
-from downloads.stock.sse.archive.__main__ import (
-    ARCHIVE_DIRNAME,
-    CSV_ENCODING,
-    PE_COLUMNS,
+from downloads._common.exchanges.sse import CSV_ENCODING
+from downloads.stock.sse.archive.__main__ import ARCHIVE_DIRNAME
+from downloads.stock.sse.trend_pe.__main__ import (
+    PE_FULL_COLUMNS,
     SSE_TRADE_STATS_URL,
     _fetch_trade_stats_alt,
     _fetch_trade_stats_primary,
-    _parse_trade_stats_row,
+    _pe_csv_row,
     _read_existing_trade_stats,
     _write_stats_csv,
-    load_target_stocks,
+    load_important_stocks,
 )
 from _common.db_commons import get_db_connection
 from _common.log_setup import setup_logging  # noqa: E402
@@ -64,23 +65,6 @@ from _common.log_setup import setup_logging  # noqa: E402
 logger = setup_logging("pe_latest")
 
 SERVICE = "downloads.stock.sse.pe_latest"
-
-# Canonical on-disk schema of the archive's {code}_pe.csv files: the archive
-# module's PE_COLUMNS plus the static classification columns the stock
-# build's PE loader filters on (``sec_type == "stock"``; ``证券代码`` carries
-# the ".SS" suffix). The bare 5-column PE_COLUMNS form predates those
-# columns — rows written without them are silently dropped by the loader.
-PE_FULL_COLUMNS: List[str] = PE_COLUMNS + ["exchange", "board", "sec_type"]
-
-
-def _pe_csv_row(raw: Dict[str, Any], bare: str, name: str) -> Dict[str, str]:
-    """成交概况 result dict → one full-schema PE CSV row (canonical 8 cols)."""
-    row = _parse_trade_stats_row(raw, bare, name)
-    row["证券代码"] = f"{bare}.SS"
-    row["exchange"] = "SS"
-    row["board"] = "STAR" if bare.startswith("68") else "MAIN"
-    row["sec_type"] = "stock"
-    return row
 
 
 class SseStockPeLatestDownload(DownloadJob):
@@ -224,29 +208,22 @@ class SseStockPeLatestDownload(DownloadJob):
                 antibot_config_for(SERVICE, "trade_stats")
             )
 
-        # Universe: every stock the archive already tracks ({code}_pe.csv
-        # files — the coverage builds.stock actually loads) ∪ the DB's
-        # current ETF-held SSE list (load_target_stocks, supplying proper
-        # names). The ETF-held list alone has shrunk to ~226 codes while
-        # ~1.4k archive files exist, so the file set is the base.
-        universe: Dict[str, str] = {
-            p.name[: -len("_pe.csv")]: ""
-            for p in archive_dir.glob("*_pe.csv")
-        }
+        # Universe: the IMPORTANT SSE stocks only (curated rank 0-1 of the
+        # importance_rules stock JSONs) — the same universe trend_pe's
+        # weekly anchor sweep loads. Non-important {code}_pe.csv files keep
+        # their history on disk but stop getting fresh anchors.
         conn = get_db_connection()
         try:
-            for bare, name in load_target_stocks(conn):
-                universe[bare] = name or universe.get(bare, "")
+            stocks = load_important_stocks(conn)
         finally:
             conn.close()
-        stocks = sorted(universe.items())
         if not stocks:
             logger.warning("No target SSE stocks resolved — nothing to do.")
             return
 
         logger.info(
             "SSE PE latest-missing-date sweep: target=%s, stocks=%d "
-            "(archive files + ETF-held), archive_dir=%s",
+            "(important rank 0-1), archive_dir=%s",
             target.isoformat(), len(stocks), archive_dir,
         )
         logger.info(self.fetch_latest_missing_pe(

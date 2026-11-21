@@ -32,23 +32,5 @@
       }
     ],
     "is_industry_not_strategy": true
-  },
-  "DUMMY_GAMES": {
-    "name": "游戏综合指数",
-    "exchange": null,
-    "sector_id": "CONS",
-    "industry_id": "GAMES",
-    "tags": [
-      {
-        "sector_id": "CONS",
-        "industry_id": "GAMES"
-      },
-      {
-        "sector_id": "BROAD",
-        "industry_id": "BROAD_SSE"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
   }
 }

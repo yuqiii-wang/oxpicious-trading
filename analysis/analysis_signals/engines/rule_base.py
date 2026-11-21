@@ -11,6 +11,12 @@ the implementation machinery lives in sibling components:
                         (the per-cell measurement); the episode
                         machinery (EpisodeDetector) lives in the
                         consolidated analysis.trends component
+  reject.py             the NEGATIVE-confidence REJECT tier (2026-11-16,
+                        user-directed — a module fully SEPARATE from
+                        the positive path): a cell whose best candidate
+                        measures a NEGATIVE dir_ave emits its REAL
+                        action at negative confidence = REJECT the
+                        action at this price, never the inverse action
   _ohlcv_boost/         the ohlcv boost — the day-0 trust-score
                         collaborator (OhlcvBoost, measurement.py),
                         composed by delegation; a family opts in via
@@ -92,7 +98,7 @@ import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import date, time
-from typing import Sequence
+from typing import Callable, Sequence
 
 import numpy as np
 import pandas as pd
@@ -113,6 +119,7 @@ from analysis.analysis_signals.engines.evaluation import (
     cell_stats,
     pooled_evidence,
 )
+from analysis.analysis_signals.engines.reject import RejectEval
 from analysis.analysis_signals.fetch.regimes import fetch_market_regimes
 from analysis.trends import EpisodeDetector, attach_trend
 
@@ -238,6 +245,16 @@ class RuleEntry(ABC):
     # default FALSE and the ORCHESTRATING composite rows carry FALSE
     # (the group IS the composite).
     PORTFOLIO_TIER: bool = False
+    # The SIGNAL-CLUSTER PROBATION's cell-birth map (2026-11-18,
+    # engines/reject.py — run_family stashes it before run() via
+    # fetch_cell_births): keyed (signal_sub_type, action) ->
+    # (code, trend, regime_state) -> the cell's first-ever
+    # history_signal_performance snapshot date (the never-purged
+    # system-birth record). The asyncpg $n sql_views render pairs with
+    # the async pool, so the SYNC run_cells reads no DB itself — it
+    # looks up this map (None = not fetched; only the gated STANDALONE
+    # calls consult it).
+    reject_cell_births: dict[tuple, dict[tuple, date]] | None = None
     # Whether the family's frame codes belong in analysis.trend_days
     # (run_family's _write_trend_days). Composite-scope families whose
     # codes are not securities opt OUT.
@@ -474,6 +491,8 @@ class RuleEntry(ABC):
         pooled_dir_ave_min: float | None = None,
         signal_type_code: int | None = None,
         portfolio_tier: bool | None = None,
+        conf_scale_fn: Callable[[float], float] | None = None,
+        confidence_params: dict | None = None,
     ) -> tuple[list[dict], list[dict]]:
         """Measure every candidate per cell, pick each cell's WINNING
         candidate (the gate-passing one with the best dir_ave; or,
@@ -532,6 +551,18 @@ class RuleEntry(ABC):
         (is_in_portfolio TRUE — the sourced layer's own axis); the
         default is the entry's own identity.
 
+        ``conf_scale_fn`` (optional; 2026-11-18, the rf roof-scale
+        study, temp_scripts/rf_roof_scale_study.py): a per-TRIGGER
+        side-confidence multiplier mapped from the trigger's own
+        value_col value, folded into the history rows' confidence
+        AFTER the starvation/pooled scales (the measured SIDE-BIAS
+        scale — the floor-bias confirmation's roof reciprocal; the
+        family's measured zones live in the caller's closure, this
+        hook stays generic). POSITIVE trading rows only — REJECT rows
+        keep their mirrored negative scale. ``confidence_params``
+        (optional) rides params["confidence"] so the stored rule
+        documents the scale constants the rows were computed with.
+
         THE POOLED EVIDENCE TIER (2026-10-16; starvation-trading since
         2026-10-19): the per-cell floors cannot reach statistical
         significance (blend sigma ~2.6% -> n=3 SE ~1.5%, the 0.25% bar
@@ -562,8 +593,30 @@ class RuleEntry(ABC):
         extreme corner now records as a REDUCED-CONFIDENCE trading
         row — the extreme-event monotone guarantee kept, without the
         not-trading-yet wait population. Measured-out cells (dir_ave
-        below the bar, any n) still emit NOTHING — that is the gate
-        rejecting on evidence. ``ungated`` populations (the VRP-fail
+        below the bar, any n) emit nothing AS TRADING ROWS — but since
+        2026-11-16 a cell whose best candidate measured a NEGATIVE
+        dir_ave emits the REJECT tier instead (engines/reject.py, a
+        module separate from the positive path, user-directed): the
+        REAL action at NEGATIVE confidence — REJECT the action at this
+        price, never the inverse action (a negative SELL means "do not
+        sell here", not "buy"); SINCE 2026-11-18 (user-directed "only
+        reject on high confidence, there should be very few no action
+        than action") the verdict needs a DEEPLY negative mean —
+        strictly below config REJECT_DIR_AVE_MAX (−2.0%, 8× the buy
+        gate bar in the adverse direction): hairline negatives join the
+        silent band [the reject bar, the gate bar) and no-action
+        signals stay very few against the action population. Since
+        2026-11-18 the tier carries the SIGNAL-CLUSTER
+        PROBATION (engines/reject.py ``RejectEval.select``): a cell
+        whose SYSTEM BIRTH — its first-ever measurement snapshot on
+        the never-purged history_signal_performance record, read
+        through the cell_birth_dates SQL view — falls within the past
+        REJECT_FIRST_APPEARANCE_DAYS (20) of the code's traded rows is
+        still fresh and does not reject yet (NO BUY / NO SELL alike;
+        the in-frame first-trigger age needs no guard — the full-20d-
+        forward measurement requirement already forces every reject's
+        earliest trigger past the window).
+        ``ungated`` populations (the VRP-fail
         twin) stay observational wait rows: every cell with episodes
         emits, confidence flat."""
         action_code = ACTION_CODE[action]
@@ -581,6 +634,42 @@ class RuleEntry(ABC):
         blend_col, ok_col, fwd_tmpl = self._blend_col_names(response_col)
         detector = EpisodeDetector(k)
         gate = CellGate(gate_min=gate_min)
+        # the REJECT tier (engines/reject.py — 2026-11-16, a module
+        # fully separate from the positive-confidence path): consults
+        # only gated STANDALONE calls — never the ungated observational
+        # twins (trigger-time VRP observations, not measured evidence)
+        # and never the portfolio tier's sourced registrations (the
+        # portfolio mapping registers winners)
+        reject_eval = RejectEval() if (not ungated and not tier) else None
+        # the SIGNAL-CLUSTER PROBATION inputs (2026-11-18,
+        # engines/reject.py): the per-code window boundary (the date of
+        # the code's REJECT_FIRST_APPEARANCE_DAYS-most-recent OWN
+        # traded row — the frame is (code, date)-sorted, the episode
+        # detector's precondition; one grouped tail + min + one small
+        # host extraction, the sanctioned boundary) and the cells'
+        # SYSTEM BIRTHS (the first-ever history_signal_performance
+        # snapshot date per cell — the never-purged record of when the
+        # cell first MEASURED anything, fetched async by run_family's
+        # fetch_cell_births and stashed on this entry). A cell born
+        # inside the window (or never measured before this run) is
+        # still fresh and may not reject yet — RejectEval.select below.
+        window_start: dict[str, date] = {}
+        births: dict[tuple, date] = {}
+        if reject_eval is not None:
+            fresh = df.groupby("code", sort=False) \
+                .tail(cfg.REJECT_FIRST_APPEARANCE_DAYS)
+            wins = fresh.groupby("code", sort=False)["date"] \
+                .min().reset_index()
+            window_start = {
+                str(c): d for c, d in zip(
+                    host_array(wins["code"]).tolist(),
+                    host_array(wins["date"])
+                    .astype("datetime64[D]").tolist(),
+                )
+            }
+            births = (self.reject_cell_births or {}).get(
+                (st_code, sub_code, action_code), {})
+        failed: dict[tuple, tuple[Candidate, dict]] = {}
         # the boost's day-0 axes ride the family frame? (mov_rsi and
         # bollinger fetch them; the options frames do not — the boost
         # then silently stays off for the run)
@@ -658,13 +747,6 @@ class RuleEntry(ABC):
                 cell = tuple(row[kk] for kk in keys)
                 n = int(row["n"])
                 dir_ave = float(row["dir_ave"])
-                passed = (n >= 1) if ungated else gate.passes(
-                    action, n, dir_ave,
-                )
-                if not passed:
-                    # measured-out: below the side's dir_ave bar — the
-                    # gate rejecting on evidence, any n
-                    continue
                 std = float(row["dir_std"])
                 t_stat = (dir_ave / (std / math.sqrt(n))
                           if n >= 2 and math.isfinite(std)
@@ -681,6 +763,23 @@ class RuleEntry(ABC):
                     if t_stat is not None else None,
                     "hit_rate": round(float(row["hit"]), 4),
                 }}
+                passed = (n >= 1) if ungated else gate.passes(
+                    action, n, dir_ave,
+                )
+                if not passed:
+                    # measured-out at the POSITIVE gate: below the
+                    # side's dir_ave bar — but a NEGATIVE measured mean
+                    # is REJECT evidence (engines/reject.py, 2026-11-16):
+                    # keep the BEST failed candidate per cell; the
+                    # reject module decides emission once the winners
+                    # are known. The weak band [the reject bar, the
+                    # gate bar) stays silent.
+                    if reject_eval is not None:
+                        prev_f = failed.get(cell)
+                        if prev_f is None or meas["measure"]["dir_ave_pct"] \
+                                > prev_f[1]["measure"]["dir_ave_pct"]:
+                            failed[cell] = (cand, meas)
+                    continue
                 prev = chosen.get(cell)
                 if prev is None or dir_ave * 100.0 \
                         > prev[1]["measure"]["dir_ave_pct"]:
@@ -703,10 +802,28 @@ class RuleEntry(ABC):
             # floor
             chosen = {**chosen, **freq_chosen}
 
+        # the REJECT emission set (engines/reject.py, 2026-11-16; the
+        # whole selection consolidated into RejectEval.select 2026-11-18):
+        # cells with NO winning candidate whose best failed candidate
+        # measured a NEGATIVE sign-aligned dir_ave — the measured
+        # evidence is AGAINST the action at this trigger — AND whose
+        # system birth is OLDER than the probation window (a cell born
+        # within the past REJECT_FIRST_APPEARANCE_DAYS traded rows, or
+        # never measured before this run, stays silent — NO BUY / NO
+        # SELL alike). Reject rows carry the REAL action at negative
+        # confidence (REJECT the action at this price, never the
+        # inverse action); they never feed the pooled facts or the
+        # boost anchors below.
+        rejects: dict[tuple, tuple[Candidate, dict]] = {}
+        if reject_eval is not None:
+            rejects = reject_eval.select(failed, chosen, births,
+                                         window_start)
+
         # the emitted winners — every chosen cell is a trading row
         # (starved cells emit their REAL action at the reduced
-        # confidence; only the ungated twins stay observational wait)
-        if not chosen:
+        # confidence; only the ungated twins stay observational wait);
+        # a reject-only side emits its rejects
+        if not chosen and not rejects:
             return [], []
 
         # THE POOLED EVIDENCE TIER (2026-10-16; verdict-first since the
@@ -773,13 +890,17 @@ class RuleEntry(ABC):
         if pooled_demoted:
             logger.warning(
                 f"[{self.FAMILY}] {sub_type}/{action}: POOLED evidence "
-                f"REJECTED — {len(chosen)} winning cell(s) emit nothing "
-                f"(pooled n={pooled['n']} "
+                f"REJECTED — {len(chosen)} winning cell(s) emit no "
+                f"trading rows (pooled n={pooled['n']} "
                 f"dir_ave={pooled['dir_ave_pct']:+.2f}% "
                 f"t={pooled['t_stat']} years_positive="
                 f"{pooled['years']['positive']})",
             )
-            return [], []
+            # the winners die (the side's TRADING claim failed the
+            # statistics legs); the reject cells SURVIVE — their claim
+            # is per-cell negative evidence, a different population
+            # than the pooled insufficiency (engines/reject.py)
+            chosen = {}
         if pooled is not None and action == "buy" and pooled["starved"]:
             pooled_scale = float(pooled["conf_scale"])
             logger.info(
@@ -792,13 +913,18 @@ class RuleEntry(ABC):
             )
 
         rules_rows: list[dict] = []
-        for cell, (cand, meas) in chosen.items():
+        # the winners plus the reject cells (disjoint by construction —
+        # rejects only pick cells with NO winner; a pooled demotion may
+        # leave the rejects alone)
+        emitted: dict[tuple, tuple[Candidate, dict]] = {**chosen, **rejects}
+        for cell, (cand, meas) in emitted.items():
             code = str(cell[0])
             trend_code = int(cell[keys.index("trend")]) \
                 if "trend" in keys else 4
             regime_code = int(cell[keys.index("regime")]) \
                 if "regime" in keys else 4
             m = meas["measure"]
+            rejected = cell in rejects
             # the 2026-10-19 CONSTANT/PERFORMANCE split: the gate's BAR
             # constants (+ the observational designation) ride the
             # rule; the VERDICT is the rule's is_valid boolean (the
@@ -811,6 +937,11 @@ class RuleEntry(ABC):
                 "sample_floor": cfg.SAMPLE_FLOOR.get(action),
                 "ungated": ungated,
             }
+            if rejected:
+                # the REJECT tier's own bar constant (engines/reject.py
+                # — the rule records WHY it rejects: the best candidate
+                # measured below reject_bar_pct)
+                gate_bars["reject_bar_pct"] = reject_eval.gate_bar_pct()
             params: dict = {
                 "axis": f"{self.FAMILY}:{sub_type}",
                 "episode_merge_days": k,
@@ -823,6 +954,11 @@ class RuleEntry(ABC):
                     # rule carries the SCALE only
                     "depth_factor": depth_factor,
                     "depth_cap": 2.0,
+                    # the family's measured SIDE scale (2026-11-18, the
+                    # roof-scale study — None = no side scale): the
+                    # constants the rows' confidences were computed
+                    # with, documented on the rule
+                    **(confidence_params or {}),
                 },
             }
             params.update(cand.params)
@@ -837,13 +973,17 @@ class RuleEntry(ABC):
                 "regime_state": regime_code,
                 # starved cells TRADE at the reduced confidence — the
                 # only wait rows left are the ungated twins (the twin's
-                # own action argument is "wait")
+                # own action argument is "wait"); a REJECT cell keeps
+                # its real action — the negative CONFIDENCE carries the
+                # reject (do NOT take this action at this price)
                 "action": action_code,
                 # the per-cell GATE VERDICT (denormalized gate.passed):
                 # TRUE for bar-clearing trading cells — negative future
-                # returns never validate (measured-out cells do not
-                # emit; the ungated twin rows stay observational)
-                "is_valid": not ungated,
+                # returns never validate; a reject cell measured BELOW
+                # the reject bar (its dir_ave is negative — the rule
+                # exists to REJECT the action, is_valid FALSE); the
+                # ungated twin rows stay observational
+                "is_valid": not ungated and not rejected,
                 # the schema's tier flag (a signal_rules PK member):
                 # TRUE on the portfolio families' SOURCE-layer rows
                 # (the PORTFOLIO_TIER entry flag), FALSE on the
@@ -867,17 +1007,26 @@ class RuleEntry(ABC):
             })
 
         # replay: the winning cells' triggers become history rows at
-        # their cell's confidence (starved cells at the reduced scale)
+        # their cell's confidence (starved cells at the reduced scale);
+        # the REJECT cells' triggers replay at the NEGATIVE confidence
+        # (the same depth amplification + starvation discount, mirrored
+        # — engines/reject.py; rejects take no pooled scale, they never
+        # enter the pooled population)
         base_pct = {
             cell: meas["measure"]["dir_ave_pct"]
-            for cell, (_, meas) in chosen.items()
+            for cell, (_, meas) in emitted.items()
         }
         scales = {
-            cell: (1.0 if ungated
-                   else gate.sample_scale(
-                       action, meas["measure"]["n_episodes"],
-                   ) * pooled_scale)
-            for cell, (_, meas) in chosen.items()
+            cell: (
+                # rejects: the starvation discount only
+                gate.sample_scale(action, meas["measure"]["n_episodes"])
+                if cell in rejects
+                else (1.0 if ungated
+                      else gate.sample_scale(
+                          action, meas["measure"]["n_episodes"],
+                      ) * pooled_scale)
+            )
+            for cell, (_, meas) in emitted.items()
         }
         history_rows: list[dict] = []
         staged_anchors: list[dict] = []   # boost facts (dropped when
@@ -885,9 +1034,11 @@ class RuleEntry(ABC):
         for cand, trig_mask, trig in per_cand:
             if trig.empty:
                 continue
-            # the triggers whose cell chose THIS candidate
+            # the triggers whose cell chose THIS candidate (the winners
+            # AND the reject cells — both replay; only the winners feed
+            # the boost anchors below)
             hit_mask = pd.Series(False, index=trig.index, dtype="bool")
-            for cell, (win_cand, _) in chosen.items():
+            for cell, (win_cand, _) in emitted.items():
                 if win_cand is not cand:
                     continue
                 m = trig["code"] == cell[0]
@@ -958,6 +1109,17 @@ class RuleEntry(ABC):
                     cell = cell + (int(regime_np[i]),)
                 if cell not in base_pct:
                     continue
+                # a REJECT cell's trigger replays at the NEGATIVE
+                # confidence (engines/reject.py): the row keeps the
+                # real action — REJECT the action at this price, never
+                # the inverse action
+                rejected = cell in rejects
+                # the per-trigger SIDE scale (2026-11-18): mapped from
+                # the trigger's own value_col value, POSITIVE trading
+                # rows only (rejects keep their mirrored scale)
+                side_scale = (conf_scale_fn(float(vals_np[i]))
+                              if (conf_scale_fn is not None and not rejected)
+                              else 1.0)
                 history_rows.append({
                     "code": code,
                     "sec_type": self.sec_type_code,
@@ -978,12 +1140,18 @@ class RuleEntry(ABC):
                     "signal": round(float(vals_np[i]), 6),
                     "signal_reference": round(float(ref_np[sel_np][i]), 6),
                     # the record column stays on the INTEGER
-                    # basis-point scale (×100 the pct confidence)
+                    # basis-point scale (×100 the pct confidence;
+                    # NEGATIVE for the reject cells — the mirrored
+                    # scale, engines/reject.py)
                     "confidence": round(
-                        gate.confidence_pct(
+                        (reject_eval.confidence_pct(
                             base_pct[cell], float(depth_np[sel_np][i]),
                             depth_factor, scales[cell],
-                        ) * 100.0,
+                        ) if rejected
+                        else gate.confidence_pct(
+                            base_pct[cell], float(depth_np[sel_np][i]),
+                            depth_factor, scales[cell] * side_scale,
+                        )) * 100.0,
                     ),
                     "is_day_close_trigger": True,
                     "regime_state": int(regime_np[i]),
@@ -991,11 +1159,13 @@ class RuleEntry(ABC):
                     else (None if bool(np.isnan(typ_np[sel_np][i]))
                           else bool(typ_np[sel_np][i])),
                 })
-                if collect:
+                if collect and not rejected:
                     # every emitted trading row feeds the boost
                     # derivation (the starved observational era is
                     # over); a pooled-demoted side's anchors are
-                    # dropped with its rows
+                    # dropped with its rows — and REJECT triggers
+                    # never do (the boost stays the trading tier's
+                    # derivation population)
                     staged_anchors.append({
                             "code": code,
                             "sub_type": sub_type,

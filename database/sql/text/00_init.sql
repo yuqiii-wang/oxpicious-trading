@@ -9,6 +9,7 @@
 
 -- tables (FK order)
 \ir news.sql
+\ir news_providers.sql
 \ir news_groups.sql
 \ir search_lexicon_df.sql
 \ir news_comments.sql
@@ -16,6 +17,8 @@
 \ir news_embeddings.sql
 \ir news_group_items.sql
 \ir news_keywords.sql
+\ir news_provider_audit.sql
+\ir news_content_audit.sql
 
 -- indexes
 \ir 13_news_keyword_audit.sql

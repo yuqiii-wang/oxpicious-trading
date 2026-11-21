@@ -13,6 +13,8 @@ import { wrapAsync, strParam, dateParam } from "../../lib/http.js";
 import { runPythonModule, getPythonProcessStatus } from "../../services/infra/py-runner.service.js";
 import {
   fetchSignalRules,
+  fetchSignalAmplificationRules,
+  fetchSignalAmplificationHistory,
   fetchSignalPortfolios,
   fetchPortfolioSignals,
   fetchPortfolioSignalHistory,
@@ -215,6 +217,58 @@ router.get("/trading-signals/rules", wrapAsync(async (req: Request, res: Respons
     sec_type: sec_type_valid(secType),
     code,
     rules,
+  });
+}));
+
+/** GET /api/live-data/trading-signals/amplification-rules?sec_type=index
+ *  &code=000001 → { sec_type, code, rules: [...] } — the code's SIGNAL
+ *  AMPLIFICATION binding configs (analysis_signals.
+ *  signal_amplification_rules, 2026-11-18): one row per amplified
+ *  family whose rule_params JSONB binds the amplifiers — the two-level
+ *  axis (which parent types + sub types, action side, base_bp, depth
+ *  scale, bars + the measured per-amplifier evidence). The Signal
+ *  Amplification page's rules panel; the amplifier-day records below
+ *  are its event tier. */
+router.get("/trading-signals/amplification-rules", wrapAsync(async (req: Request, res: Response) => {
+  const secType = typeof req.query.sec_type === "string"
+    ? req.query.sec_type : "index";
+  const code = strParam(req, "code", { required: true });
+  const rules = await fetchSignalAmplificationRules(secType, code);
+  res.json({
+    sec_type: sec_type_valid(secType),
+    code,
+    rules,
+  });
+}));
+
+/** GET /api/live-data/trading-signals/amplification-history?sec_type=
+ *  index&code=000001[&amplifier_type=margin|margin_washout]
+ *  [&since=YYYY-MM-DD]
+ *  → { sec_type, code, amplifier_type, since, records: [...] } — the
+ *  SIGNAL AMPLIFICATION history (analysis_signals.
+ *  signal_amplification_history, the ORIGINAL RECORD KEEPER): one row
+ *  per amplifier day (the two-level amplifier_type + sub_type axis)
+ *  with the day's anatomy facts (incl. the margin amplifiers'
+ *  margin_vs_bar) and the per-bound-family amplification applied
+ *  (bindings JSONB). amplifier_type filters by the two-level axis — a
+ *  PARENT type label (ohlcv / margin) or a SUB label (e.g.
+ *  flush_washout, margin_washout). The Signal Amplification page's
+ *  records table. */
+router.get("/trading-signals/amplification-history", wrapAsync(async (req: Request, res: Response) => {
+  const secType = typeof req.query.sec_type === "string"
+    ? req.query.sec_type : "index";
+  const code = strParam(req, "code", { required: true });
+  const amplifierType = strParam(req, "amplifier_type") ?? null;
+  const since = dateParam(req, "since");
+  const records = await fetchSignalAmplificationHistory(
+    secType, code, amplifierType, since,
+  );
+  res.json({
+    sec_type: sec_type_valid(secType),
+    code,
+    amplifier_type: amplifierType,
+    since,
+    records,
   });
 }));
 

@@ -29,6 +29,8 @@ import datetime
 import json
 from typing import Optional
 
+from pydantic import BaseModel
+
 # NOTE: get_algo is imported lazily inside load_params to avoid a circular
 # import — strategy.factors_and_algos.__init__ re-exports this module, and
 # get_algo is defined there.
@@ -44,6 +46,33 @@ _LOAD_SQL = """
     ORDER BY start_date DESC
     LIMIT 1
 """
+
+_LOAD_SOURCE_SQL = """
+    SELECT start_date, end_date, is_default, params
+    FROM strategy.algo_configs
+    WHERE sec_type = $1
+      AND sec_code = $2
+      AND strategy_name = $3
+      AND $4::date BETWEEN start_date AND end_date
+    ORDER BY start_date DESC
+    LIMIT 1
+"""
+
+
+class ConfigSource(BaseModel):
+    """Provenance of the algo_configs row a run actually loaded.
+
+    Stamped into ``strategy_identity.params["config_source"]`` so a
+    history run links back to the model config (trained row date /
+    default row / params_version) that produced its params — a pointer,
+    not a copy: the full params snapshot already rides the same JSONB.
+    """
+
+    strategy_name: str
+    start_date: Optional[datetime.date] = None
+    end_date: Optional[datetime.date] = None
+    is_default: bool = False
+    params_version: int = 1
 
 
 def _coerce_params(params) -> Optional[dict]:
@@ -93,6 +122,44 @@ async def load_algo_config(
     if row is None:
         return None
     return _coerce_params(row["params"])
+
+
+async def load_config_source(
+    conn,
+    sec_type: str,
+    sec_code: str,
+    strategy_name: str,
+    target_date: Optional[datetime.date] = None,
+) -> Optional[ConfigSource]:
+    """Provenance of the algo_configs row ``load_algo_config`` would pick.
+
+    Same selection rule (newest start_date whose range contains the
+    target date) but returns row metadata (start/end, is_default,
+    params_version from the JSONB) instead of the params — callers stamp
+    it into ``strategy_identity.params["config_source"]`` so history runs
+    link back to the model config they ran on. Returns ``None`` when no
+    row matches.
+    """
+    if target_date is None:
+        target_date = datetime.date.today()
+    row = await conn.fetchrow(
+        _LOAD_SOURCE_SQL, sec_type, sec_code, strategy_name, target_date,
+    )
+    if row is None:
+        return None
+    params = _coerce_params(row["params"]) or {}
+    version = params.get("params_version", 1)
+    try:
+        version = int(version)
+    except (TypeError, ValueError):
+        version = 1
+    return ConfigSource(
+        strategy_name=strategy_name,
+        start_date=row["start_date"],
+        end_date=row["end_date"],
+        is_default=bool(row["is_default"]),
+        params_version=version,
+    )
 
 
 async def load_params(
@@ -187,4 +254,10 @@ async def ensure_default_config(
     return True
 
 
-__all__ = ["load_algo_config", "load_params", "ensure_default_config"]
+__all__ = [
+    "ConfigSource",
+    "load_algo_config",
+    "load_config_source",
+    "load_params",
+    "ensure_default_config",
+]

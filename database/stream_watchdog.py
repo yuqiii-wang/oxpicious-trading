@@ -106,6 +106,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from _common.caution_log import record_service_error
 from _common.db_commons import get_db_connection
 from _common.log_setup import setup_logging
 from _common.service_heartbeat import (
@@ -384,6 +385,14 @@ def _restart(
             "backing off %d min (fix the cause in logs/ and restart manually).",
             module, n_recent, RESTART_BURST_WINDOW_S // 60, RESTART_BACKOFF_S // 60,
         )
+        record_service_error(
+            f"{module} crash loop: {n_recent} watchdog restarts in "
+            f"{RESTART_BURST_WINDOW_S // 60} min — backed off",
+            dedupe_key=f"watchdog-crash-loop:{module}",
+            detail={"service": module, "recent_restarts": n_recent,
+                    "window_s": RESTART_BURST_WINDOW_S},
+            service=module,
+        )
         return True
 
     pid = _spawn(module)
@@ -405,7 +414,63 @@ def _restart(
         )
         return True
     logger.warning("[ALERT] %s: restarted as pid %d (%s)", module, pid, reason)
+    # A restart means the poller DIED hard (SIGKILL / stale / burst) — the
+    # dead process's own exit hooks never ran, so the caution trail would
+    # miss it otherwise (monitor.caution_log, the Cautions tab; deduped
+    # per service — a crash-looping poller bumps one open row).
+    record_service_error(
+        f"{module} died — watchdog restarted it as pid {pid} ({reason})",
+        dedupe_key=f"watchdog-restart:{module}",
+        detail={"service": module, "reason": reason, "new_pid": pid},
+        service=module,
+        severity="warning",
+    )
     return True
+
+
+# A one-shot pipeline life open this long is a hang (or a recycled pid
+# holding the row): the longest observed legit runs are the csindex quote
+# crawl (~9h) and the SSE pe_latest sweep (~3.2h). Alert-only — the
+# watchdog never closes a row whose pid is still alive.
+STALE_OPEN_RUN_AFTER_S = 24 * 3600.0
+
+
+def _alert_stale_open_runs(
+    lives: list[tuple], dead: list[tuple], service: str,
+) -> None:
+    """Caution the alive-but-stale open lives of one service (started
+    > STALE_OPEN_RUN_AFTER_S ago): a wedged-but-running process (hung
+    fetch loop) or a recycled pid keeps the audit row open forever and
+    the dead-pid pass never sees it. The row itself stays open — a
+    genuinely long run keeps its history correct; the caution (deduped
+    'stale-open-run') bumps occurrence_count each cycle until it does."""
+    now_utc = datetime.now(timezone.utc)
+    stale = [
+        r for r in lives
+        if r not in dead
+        and (now_utc - r[3]).total_seconds() > STALE_OPEN_RUN_AFTER_S
+    ]
+    if not stale:
+        return
+    oldest = min(r[3] for r in stale)
+    hours = int((now_utc - oldest).total_seconds() // 3600)
+    record_service_error(
+        f"{service} run still open {hours}h after start (pid alive but no "
+        f"exit record — hung run or recycled pid; watchdog did not close it)",
+        dedupe_key="stale-open-run",
+        detail={
+            "service": service,
+            "open_runs": len(stale),
+            "oldest_started_at": oldest.isoformat(),
+        },
+        service=service,
+        severity="warning",
+    )
+    logger.warning(
+        "[ALERT] %s: %d audit run(s) still open after %dh — hung run or "
+        "recycled pid.",
+        service, len(stale), hours,
+    )
 
 
 def reconcile_audit_orphans() -> int:
@@ -441,6 +506,9 @@ def reconcile_audit_orphans() -> int:
             dead = [
                 r for r in lives if not pid_alive(r[2])
             ]
+            # Alive lives can be stale too (hung fetch loop, recycled pid)
+            # — alert before the dead-only early-out below.
+            _alert_stale_open_runs(lives, dead, service)
             if not dead:
                 continue
             for audit_id, _svc, _pid, started_at, beat_at in dead:
@@ -472,6 +540,17 @@ def reconcile_audit_orphans() -> int:
                 "process died without an exit record.",
                 service, len(dead),
             )
+            # The dead lives' own exit hooks never ran (SIGKILL / OOM) —
+            # surface the death as a caution too (monitor.caution_log,
+            # the Cautions tab; deduped per service).
+            record_service_error(
+                f"{service} died without an exit record — {len(dead)} audit "
+                f"run(s) closed by the watchdog (SIGKILL, OOM or power loss)",
+                dedupe_key="terminated-no-exit-record",
+                detail={"service": service, "closed_runs": len(dead)},
+                service=service,
+                severity="warning",
+            )
     finally:
         conn.close()
     return closed
@@ -482,6 +561,15 @@ def _terminate_stale(pid: int) -> None:
     the point (uvicorn closes its servers; the deep-agents daemon's
     in-flight runs settle their chains through the cancellation path) —
     bounded by STALE_TERM_GRACE_S, then SIGKILL whatever is left."""
+    # PLANNED stop: mark before the signal so the dying process's
+    # heartbeat records the stop WITHOUT the duplicate "stopped
+    # abnormally" caution — this restart is intentional and the watchdog
+    # logs it on its own caution trail.
+    try:
+        from _common.service_heartbeat import mark_planned_stop
+        mark_planned_stop(pid, reason="stale-code restart")
+    except Exception:  # noqa: BLE001 — best effort; the stop proceeds
+        pass
     try:
         os.kill(pid, signal.SIGTERM)
     except OSError:

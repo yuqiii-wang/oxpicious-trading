@@ -26,14 +26,20 @@ standard Jev decision API, and the host's own management endpoints:
   POST /v1/systemone                   (Jev: noul / choice / score →
                                         calibrated answers)
   GET  /v1/models  |  GET /v1/models/{id}
-  POST /v1/models/{id}/load | /offload (admin: load/offload API)
+  POST /v1/models/{id}/load | /offload | /unload
+                                        (admin: lifecycle API)
+  POST /v1/models/offload-all           (admin: manual save-memory —
+                                        every loaded model's weights
+                                        GPU -> CPU in one call)
   POST /v1/tokenization/segment        (word segmentation batches)
   GET  /health | /stats  |  POST /control (dummy rate-limit knobs)
 
 Model management lives in :mod:`.manager`: one registry, per-model
-load/offload serialized on a lock, ONE idle-offload watchdog (default
-3600 s — weights move to CPU, RAM keeps them; the next request
-rehydrates to GPU transparently) and a warm-up pass at startup. The
+lifecycle actions serialized on a lock, ONE idle-policy watchdog driving
+the TWO-tier policy (default 1800 s idle → weights move GPU to CPU, RAM
+keeps them; a further 3600 s idle → the RAM weights drop entirely and
+the next request cold-loads from disk; either tier rehydrates
+transparently) and a warm-up pass at startup. The
 weights live under this package's gitignored ``local_models/`` subdir.
 
 Layout (the official FastAPI structure, right-sized): ``app.py`` is the
@@ -47,7 +53,7 @@ in-process torch fallback keeps pipelines alive when the host is down);
 ``SearchIndexer`` callers need no change at all.
 
 Run: ``python -m server_cluster.llm`` (--host --port --config
---idle-offload-s --no-warmup). ALWAYS-ON: registered in
+--idle-offload-s --idle-unload-s --no-warmup). ALWAYS-ON: registered in
 ``_common/service_heartbeat.py`` ``MONITORED_SERVICES`` — the stream
 watchdog starts/restarts it like the other daemons; ``main()``
 registers the heartbeat (the app-factory form stays heartbeat-free).

@@ -187,6 +187,17 @@ INSERT INTO static.docs (doc_id, title, intro, series, notes, ordinal) VALUES
   0
 ),
 (
+  'ui.composites.news-audit.page',
+  NULL,
+  'The 新闻审计 (News Audit) tables — the 5-day windows built by analysis.news_audit. PROVIDER view: one row per window per origin (a provider''s own rows carry an empty Author; zhihu/gov authors get their own), with items published, share digested, average sentiment in [-5, +5], the fake-news share, average word count, industry spread, and the registry''s blocked flag with the origin''s seen-date span. CONTENT view: the same window metrics per industry, plus the keyword rollup — how many DIFFERENT market/industry keywords the window''s content hit, total affirmative mentions (negated readings never count), and how many articles hit any keyword at all. Read the two views against each other: a provider spiking items on flat sentiment and thin keyword breadth is chatter, not information; a rising fake share concentrated in one author is the blocklist signal (is_blocked lives in text.news_providers).',
+  NULL,
+  '[
+    {"key": "windows", "text": "Windows are 5-calendar-day non-overlapping tiles (stride 5d); the newest window is PARTIAL (recomputed every run) — expect its numbers to move until the 5 days are past."},
+    {"key": "fakeDenominator", "text": "fake pct and avg sentiment are over DIGESTED rows only — verdicts exist only where the LLM digestion ran; num_items counts every article."}
+  ]'::jsonb,
+  0
+),
+(
   'ui.perf-attr.panel',
   NULL,
   'Performance attribution for {{code}} vs its benchmark family. Per-benchmark contribution = fractional benchmark return × composition overlap (shared weight) — how much of the subject''s move each benchmark''s return explains through membership. Read the pair together: contribution earned on thin overlap = concentrated idiosyncratic edge; fat overlap with thin contribution = dead-weight membership. The expanded charts pair ETF turnover (relative liquidity / crowding) and the close trends (relative strength), optionally rebased to a common base date.',

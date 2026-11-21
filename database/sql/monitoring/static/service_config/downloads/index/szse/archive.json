@@ -3,9 +3,11 @@
   "max_parallel": 1,
   "included_parallel_services": [],
   "excluded_parallel_services": [],
+  "is_resident": false,
   "freq": "once",
+  "priority": 120,
   "schedule": "one-time setup/backfill; no recurring schedule (re-run on demand)",
   "notes": null,
   "source_ref": "scripts/orchestration/downloads_once.json",
-  "updated_at": "2026-10-10T06:29:48.410435+00:00"
+  "updated_at": "2026-11-20T15:25:15.716730+00:00"
 }

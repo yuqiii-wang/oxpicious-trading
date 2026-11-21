@@ -6,7 +6,11 @@
 --  ONE row per rule CELL: (code, sec_type, signal_type, signal_sub_type,
 --  trend, regime_state, action, is_in_portfolio — the PK member since
 --  2026-10-23: a portfolio-sourced variant of an existing rule is a
---  SEPARATE row, never an overwrite of the standalone one). The SAME cell
+--  SEPARATE row, never an overwrite of the standalone one; is_valid
+--  joined the PK 2026-11-18 — the negative-confidence tier is
+--  INDEPENDENT of the positive one, so a REJECT cell's verdict row
+--  (is_valid FALSE, the REAL action, engines/reject.py) registers under
+--  its own identity, never sharing a positive row's slot). The SAME cell
 --  key selects which rule
 --  fires on a given day when history is replayed (the day's own trend /
 --  regime choose the row), which is why rule_params are prepared PER PK
@@ -14,7 +18,8 @@
 --  asymmetric populations and get DIFFERENT prepared parameters.
 --
 --  Columns:
---    - is_valid the per-cell GATE VERDICT (2026-10-16): TRUE when
+--    - is_valid the per-cell GATE VERDICT (2026-10-16), a PK member
+--                 since 2026-11-18: TRUE when
 --                 the cell's measured FUTURE RETURNS cleared its side's
 --                 dir_ave bar (buy >= 0.25% / sell >= 0%) — the same
 --                 boolean as rule_params.gate.passed, denormalized for
@@ -26,8 +31,14 @@
 --                 (min(n/floor, 1), recomputed by readers from the
 --                 latest snapshot's n_episodes + the rule's
 --                 gate.sample_floor) and keeps is_valid TRUE. FALSE =
---                 observational (the ungated VRP twin only) — never
---                 trades, never fires live.
+--                 observational (the ungated VRP twin only, action
+--                 wait) — never trades, never fires live; since
+--                 2026-11-16 FALSE with a REAL action = the REJECT
+--                 tier's verdict (engines/reject.py: the cell's best
+--                 candidate measured below the deep-negative bar) —
+--                 that row registers the negative confidence
+--                 INDEPENDENTLY (negative-bp history + live rows), the
+--                 reason the flag joined the PK.
 --    - rule_entry the engine ENTRY that runs the rule — the RuleEntry
 --                 subclass name in
 --                 analysis/analysis_signals/engines/signal_families/
@@ -81,8 +92,8 @@
 --  the sequence.
 -- ----------------------------------------------------------------------------
 -- kg entity (ns0 db_semantics_tables reads the payload below):
--- description: The constant signal-rule cells — one row per code, config, trend, regime and action whose thresholds the history replay and live tier test against; all ten detection families' cells including the macd cross (macd_cross_up/dn) and ma_cross price-vs-MA cells.
--- tags: signal rules, 信号规则, thresholds, 阈值, rule cells, 规则单元, reference, 参考, macd, ma_cross, cross, 金叉, 死叉, 技术信号, crossover, bollinger, mov_rsi
+-- description: The constant signal-rule cells — one row per code, config, trend, regime, action and gate verdict whose thresholds the history replay and live tier test against; a REJECT verdict registers as its own row beside the positive one; all ten detection families' cells including the macd cross (macd_cross_up/dn) and ma_cross price-vs-MA cells.
+-- tags: signal rules, 信号规则, thresholds, 阈值, rule cells, 规则单元, reference, 参考, macd, ma_cross, cross, 金叉, 死叉, 技术信号, crossover, bollinger, mov_rsi, reject, 否决, gate verdict, 门控判定
 
 DROP TABLE IF EXISTS analysis_signals.signal_rules CASCADE;
 DROP SEQUENCE IF EXISTS analysis_signals.signal_rule_id_seq;
@@ -98,7 +109,7 @@ CREATE TABLE analysis_signals.signal_rules (
     regime_state    SMALLINT     NOT NULL DEFAULT 0,  -- label code (static.label_dim 'regime'): 0 calm / 1 hot / 2 panic / 3 quiet / 4 all (pooled — regime-free families stamp 4)
     action          SMALLINT     NOT NULL,  -- label code (static.label_dim 'action'): 0 buy | 1 sell | 2 wait — the rule's conclusion (2 = observational only since 2026-10-19: the ungated VRP-declined twin; the sample-STARVED wait era ended — under-floor cells now TRADE their real action at the starvation confidence scale gate.conf_scale = min(n/floor, 1) on the performance snapshot's gate digest)
 
-    is_valid        BOOLEAN      NOT NULL DEFAULT false,  -- the per-cell GATE VERDICT (2026-10-16): TRUE iff the cell's measured future returns cleared the side's dir_ave bar (buy >= 0.25% / sell >= 0%); the sample floor is NOT part of the verdict since 2026-10-19 (under-floor cells trade at the starvation sample scale min(n/floor, 1)); FALSE = observational (the ungated VRP twin) — negative-future-return evidence is discouraged, never valid
+    is_valid        BOOLEAN      NOT NULL DEFAULT false,  -- the per-cell GATE VERDICT (2026-10-16), PK member (2026-11-18): TRUE iff the cell's measured future returns cleared the side's dir_ave bar (buy >= 0.25% / sell >= 0%); the sample floor is NOT part of the verdict since 2026-10-19 (under-floor cells trade at the starvation sample scale min(n/floor, 1)); FALSE = observational (the ungated VRP twin, action wait) OR the REJECT tier's verdict (real action, engines/reject.py) — the negative-confidence row registers independently of the positive one
     is_in_portfolio BOOLEAN      NOT NULL DEFAULT false,  -- PK member (2026-10-23, user-directed): the PORTFOLIO-tier axis — an existing signal rule SOURCED by a portfolio is a SEPARATE row from the standalone one (the hedge source layer stamps REAL mov_rsi / rf_break rows at the market + leg codes under the SAME family vocabularies; the flag partitions the two tiers so each family run wipes and re-measures only its own). TRUE = the row was stamped by a portfolio family's SOURCE layer (every sourced cell, its id riding a portfolio_signal_rules.signal_rule_ids array or not) or is a pair-native member; FALSE = the standalone families' rows and the orchestrating composites (the group IS the composite). The cell's own test stays the unified dir_ave gate; the portfolio tier's combined audit lives in history_portfolio_signal_performance
     rule_entry      TEXT         NOT NULL,  -- the engine entry that runs the rule — the RuleEntry subclass name under analysis/analysis_signals/engines/signal_families/
     rule_params     JSONB        NOT NULL,  -- the CONSTANT rule definition the entry prepared for THIS cell (bar def, K, reentry flags, gate bars, confidence scale) — the MEASURED evidence (measure / pooled / gate verdict / confidence base / boost conf) lives in history_signal_performance as dated daily snapshots (2026-10-19)
@@ -107,7 +118,7 @@ CREATE TABLE analysis_signals.signal_rules (
 
     created_at      TIMESTAMP    NOT NULL DEFAULT NOW(),
 
-    CONSTRAINT pk_signal_rules PRIMARY KEY (code, sec_type, signal_type, signal_sub_type, trend, regime_state, action, is_in_portfolio),
+    CONSTRAINT pk_signal_rules PRIMARY KEY (code, sec_type, signal_type, signal_sub_type, trend, regime_state, action, is_in_portfolio, is_valid),
     CONSTRAINT chk_signal_rules_action CHECK (action BETWEEN 0 AND 2),  -- 2 = wait
     CONSTRAINT chk_signal_rules_trend CHECK (trend BETWEEN 0 AND 5),  -- 5 = unknown (the RSI re-entry classifier's unclaimed bucket, 2026-10-15)
     CONSTRAINT chk_signal_rules_regime CHECK (regime_state BETWEEN 0 AND 4),  -- 4 = all (POOLED)
@@ -121,7 +132,7 @@ CREATE INDEX IF NOT EXISTS idx_signal_rules_family
     ON analysis_signals.signal_rules (sec_type, signal_type);
 
 COMMENT ON TABLE analysis_signals.signal_rules IS 'Signal rules — the CONSTANT rule tier (replaces the retired signal_thresholds / signal_curves, 2026-10-14; measured items split out to history_signal_performance 2026-10-19). One row per (code, config, trend, regime, action) cell; history_signals is populated by REPLAYING these rules (the day''s own trend/regime select the cell). rule_entry names the RuleEntry engine subclass that runs the row; rule_params carry the CONSTANT rule definition (bar def, K, reentry flags, gate bars, confidence scale) — they differ per PK by design (trend asymmetry); the MEASURED evidence of each run lives in analysis_signals.history_signal_performance as dated daily snapshots. The family knowledge document lives ONE row per family in static.signal_rules_docs, seeded from database/sql/static/signal_rules/ — the rules API joins it per family at the read boundary.';
-COMMENT ON COLUMN analysis_signals.signal_rules.is_valid IS 'The per-cell GATE VERDICT (2026-10-16): TRUE iff the cell''s measured future returns (the sign-aligned dir_ave blend) cleared its side''s dir_ave bar — buy >= 0.25%, sell >= 0%. The sample floor is NOT part of the verdict since 2026-10-19: a cell under its floor trades at the starvation confidence scale (min(n / floor, 1), recomputed by readers from the latest snapshot''s n_episodes + this rule''s gate.sample_floor). FALSE = observational (the ungated VRP twin): negative-future-return evidence is DISCOURAGED — it never carries is_valid (measured-out cells do not emit at all), never trades and never fires live.';
+COMMENT ON COLUMN analysis_signals.signal_rules.is_valid IS 'The per-cell GATE VERDICT (2026-10-16), a PK member since 2026-11-18: TRUE iff the cell''s measured future returns (the sign-aligned dir_ave blend) cleared its side''s dir_ave bar — buy >= 0.25%, sell >= 0%. The sample floor is NOT part of the verdict since 2026-10-19: a cell under its floor trades at the starvation confidence scale (min(n / floor, 1), recomputed by readers from the latest snapshot''s n_episodes + this rule''s gate.sample_floor). FALSE comes in two independent kinds: observational (the ungated VRP twin, action wait — never trades, never fires live; negative-future-return evidence is DISCOURAGED and measured-out cells do not emit at all), and since 2026-11-16 the REJECT tier''s verdict (engines/reject.py, REAL action: the cell''s best candidate measured below the deep-negative bar) — that row carries the negative confidence independently (negative-bp history + live rows), which is why the flag joined the PK: the negative verdict never shares a positive row''s identity.';
 COMMENT ON COLUMN analysis_signals.signal_rules.is_in_portfolio IS 'The PORTFOLIO-tier axis, a PK member since 2026-10-23 (user-directed): an existing signal rule SOURCED by a portfolio is a SEPARATE row from the standalone one — the hedge family''s source layer stamps REAL mov_rsi (signal_type 0) / rf_break (signal_type 6) rows at the market + leg-industry codes under the SAME family vocabularies, and the flag partitions the tiers so every family run wipes and re-measures only its own (a mov_rsi run never wipes the sourced rows; the hedge run never wipes the standalone ones). TRUE = the row was stamped by a portfolio family''s SOURCE layer (every sourced cell — its signal_rule_id rides a portfolio_signal_rules.signal_rule_ids array when the orchestration claimed it) or is a pair-native member; FALSE = the standalone families'' rows and the ORCHESTRATING composites (the group IS the composite). Membership as such lives in the ids arrays; the cell''s own test stays the unified dir_ave gate (is_valid); the combined audit over a portfolio''s member cells lives in analysis_signals.history_portfolio_signal_performance.pooled, and the gated member BENEFIT BOOST rides that table''s gate digest (applied by the live tier beside the starvation sample scale). Stamped by the pipeline in the same run that rewrites the portfolio groups (both churn together).';
 COMMENT ON COLUMN analysis_signals.signal_rules.rule_entry IS 'The engine entry that runs the rule — the RuleEntry subclass name under analysis/analysis_signals/engines/signal_families/ (e.g. "MaCrossGdepthEntry", "RsiTailEntry"). The class implements the detection logic; this column is how a row finds its runner.';
 COMMENT ON COLUMN analysis_signals.signal_rules.rule_params IS 'The CONSTANT rule definition (JSONB) the entry prepared for THIS cell: the breach bar def (per-code percentile / fixed sigma / gap pct per family semantics), the episode merge K, the reentry flags, the gate BAR constants (metric / min_pct / sample_floor / the observational ungated designation) and the confidence SCALE (depth_factor / depth_cap). Engine-generated, never hand-typed. The MEASURED half of the former payload — the evidence measure block (n_episodes / dir_ave / std / t / hit), the pooled evidence tier, the gate VERDICT, the confidence base (= the measured dir_ave) and the ohlcv boost conf — lives in analysis_signals.history_signal_performance as one dated snapshot per daily run (the 2026-10-19 split); the rules API re-merges the latest snapshot at the read boundary.';

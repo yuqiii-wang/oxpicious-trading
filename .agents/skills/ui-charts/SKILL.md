@@ -8,6 +8,29 @@ description: Conventions for building and editing chart components in the data_v
 Every chart renders through one four-layer stack. Never hand-roll what a
 layer below already owns.
 
+## Where shared UI components live
+
+Check these BEFORE writing any new UI piece — reuse or extend, never
+duplicate:
+
+- `data_viz/src/shared/charts/` — the chart kit: `EChart.tsx` engine
+  wrapper, `base-chart/` (BaseChart, baseChartOption, useChartThemeMode,
+  useChartData — see the stack below), and cross-chart helpers
+  (`signalMarker`, `tooltipSync`, `regimeBands`, `streakBands`,
+  `trendBands`, `CodeTrendTooltip`, `crowdednessCurveOption`).
+- `data_viz/src/shared/components/` — shared non-chart UI: `ChartCard`,
+  news cards, signal-action chips, date-event strips, AI-ask, .... New
+  shared pieces go here (or a subdir) when more than one page needs them
+  (`oxpicious-dev-conventions`: migrate, don't copy).
+- `data_viz/src/components/` — older shared components (charts, filters,
+  tables, buttons). Still the canonical home for some; check BOTH dirs
+  before writing anything new.
+- `data_viz/src/theme/` — the unified COLOR SCHEME source of truth:
+  `colors.css` (every token, single place to retune), `chart-palette.ts`
+  (runtime resolvers: `axisColors`, `legendColors`,
+  `commonLegend`/`commonTooltip`/`commonGrid`/`commonDataZoom`, series
+  palettes, tooltip-card tokens), `group-colors.ts`, `mui-theme.ts`.
+
 ## The stack
 
 1. `EChart` — `data_viz/src/shared/charts/EChart.tsx`. The engine wrapper:
@@ -33,7 +56,11 @@ layer below already owns.
      grid: commonGrid(), ...overrides }`. A fragment key set to `null` is
      omitted (`legend: null` for single-series charts, `grid: null` for
      pies); `grid` also accepts an array for multi-grid stacked panels;
-     every other EChartsOption key spreads last.
+     every other EChartsOption key spreads last. Partial `legend`/`tooltip`
+     overrides MERGE over the themed fragments (`textStyle` one level deep),
+     so `legend: { data: [...] }` inherits the unified legend colors instead
+     of falling back to ECharts' `#333` defaults — invisible on the dark
+     background (the Volatility page's legends were the reported case).
    - `commonTooltip(mode, extra)` — themed axis-trigger cross-snap tooltip
      (tooltip-card colors from `theme/chart-palette`). Override
      `trigger`/`axisPointer`/`formatter` through `extra` instead of
@@ -112,12 +139,21 @@ rule as the Python pipelines (`oxpicious-dev-conventions`).
   (toggles that remove series would never remove them).
 - Start from `baseChartOption(mode, {...})`; keep chart-specific
   grid/legend/tooltip overrides explicit; no legend → `legend: null`.
+- Legend overrides carry LAYOUT keys only (`data`, `top`/`left`/`right`,
+  `type`, `orient`, `itemWidth`/`itemHeight`/`itemGap`, `icon`, and
+  `fontSize` via `textStyle: { fontSize }`) — never re-declare
+  `textStyle.color`, `inactiveColor`, `pageIconColor` or `pageTextStyle`:
+  the unified legend scheme (`legendColors(mode)` → the
+  `--chart-legend-*` tokens in colors.css; dark-mode legend text is
+  deliberately brighter than the axis text) rides in through the
+  `baseChartOption` merge.
 - Keep option-memo inputs identity-stable: module-level
   `const NO_EPISODES: X[] = []` defaults for optional array props. A fresh
   `[]` per render dirties the memo and forces a full notMerge rebuild —
   measured ~1 s on the 1700-candle OHLC chart.
-- Colors come from `@/theme/chart-palette` (CSS-var tokens, MUTED_PALETTE,
-  GROUP_MAJOR_COLORS, expiry gradients) — never hard-code hex.
+- Colors come from `@/theme/chart-palette` (CSS-var tokens,
+  `axisColors`/`legendColors`, MUTED_PALETTE, GROUP_MAJOR_COLORS, expiry
+  gradients) — never hard-code hex.
 
 ### Don't restructure these
 

@@ -41,19 +41,5 @@
       }
     ],
     "is_industry_not_strategy": true
-  },
-  "DUMMY_ENG_MACHINERY": {
-    "name": "工程机械综合指数",
-    "exchange": null,
-    "sector_id": "IND",
-    "industry_id": "ENG_MACHINERY",
-    "tags": [
-      {
-        "sector_id": "IND",
-        "industry_id": "ENG_MACHINERY"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
   }
 }

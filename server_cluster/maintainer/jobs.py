@@ -20,6 +20,7 @@ from pathlib import Path, PureWindowsPath
 
 from pydantic import BaseModel, Field
 
+from _common.caution_log import record_service_error
 from _common.db_commons import get_db_connection, get_db_connection_async
 from _common.labels import (BACKUP_MODE_LABEL, BACKUP_STATUS_CODE,
                             BACKUP_STATUS_LABEL)
@@ -37,6 +38,10 @@ LOG_ROOT = _REPO_ROOT / "logs"
 TEMPS_ROOT = _REPO_ROOT / "temps"
 
 DEFAULT_RETENTION_DAYS = 30
+# Caution-log retention: resolved rows (monitor.caution_log) older than
+# this are purged by the shared log-cleanup pass; open rows are never
+# purged (they ARE the working set).
+DEFAULT_CAUTION_RETENTION_DAYS = 180
 DEFAULT_BACKUP_DEST = Path(r"D:\oxpicious-stats-db-backup")
 
 
@@ -147,6 +152,16 @@ class MaintenanceJob(ABC):
                 duration_s=(datetime.now(timezone.utc) - started)
                 .total_seconds(),
                 ok=False, detail=f"{type(exc).__name__}: {exc}")
+            # The failure is a caution too (monitor.caution_log) — the
+            # in-memory JobResult is wiped on restart; the caution row
+            # keeps it queryable in the Cautions tab.
+            record_service_error(
+                f"maintenance job {self.name} failed: "
+                f"{type(exc).__name__}: {exc}",
+                dedupe_key=f"job:{self.name}",
+                detail={"job": self.name, "error": f"{type(exc).__name__}: {exc}"},
+                service="server_cluster.maintainer",
+            )
         self.last_result = result
         return result
 
@@ -161,16 +176,22 @@ class LogCleanupJob(MaintenanceJob):
     Date-named directories (``YYYY-MM-DD``) are removed whole when the
     directory date is before the cutoff; any other file at the log root
     goes by mtime. The active day's directory and anything younger
-    always survive."""
+    always survive. The same pass also purges the caution trail's
+    RESOLVED rows past the caution retention window (open rows — the
+    working set — are never purged)."""
 
     name = "log_cleanup"
-    description = "Delete logs/ files and date dirs older than one month."
+    description = ("Delete logs/ files and date dirs older than one "
+                   "month; purge monitor.caution_log rows resolved "
+                   "older than the caution retention window.")
 
     def __init__(self, retention_days: int = DEFAULT_RETENTION_DAYS,
-                 log_root: Path | None = None) -> None:
+                 log_root: Path | None = None,
+                 caution_retention_days: int = DEFAULT_CAUTION_RETENTION_DAYS) -> None:
         super().__init__()
         self.retention_days = retention_days
         self._log_root = log_root or LOG_ROOT
+        self._caution_retention_days = caution_retention_days
 
     def _run(self) -> tuple[list[str], str]:
         cutoff_date = date.today() - timedelta(days=self.retention_days)
@@ -182,9 +203,33 @@ class LogCleanupJob(MaintenanceJob):
             if self._is_stale(entry, cutoff_date):
                 self._remove(entry)
                 deleted.append(str(entry))
+        purged = self._purge_resolved_cautions()
         freed = f"{len(deleted)} entr({'y' if len(deleted) == 1 else 'ies'})"
         return deleted, (f"purged {freed} older than {cutoff_ts} "
-                         f"(retention {self.retention_days}d)")
+                         f"(retention {self.retention_days}d); "
+                         f"caution_log resolved rows purged: {purged}")
+
+    def _purge_resolved_cautions(self) -> int:
+        """monitor.caution_log rows resolved older than the caution
+        retention (asyncpg + the action file, the PassAudit shape — a
+        DELETE best-effort like every other pass detail: a DB outage
+        fails the pass via the guarded run(), never data). Returns the
+        purged-row count parsed out of asyncpg's 'DELETE n' status."""
+        return asyncio.run(self._purge_resolved_cautions_async())
+
+    async def _purge_resolved_cautions_async(self) -> int:
+        write = render_sql_write(
+            "server_cluster/maintainer/caution_log/purge_resolved",
+            self._caution_retention_days)
+        conn = await get_db_connection_async()
+        try:
+            status = await conn.execute(write.sql, *write.params)
+            try:
+                return int(status.rsplit(" ", 1)[1])
+            except (IndexError, ValueError):
+                return 0
+        finally:
+            await conn.close()
 
     def _is_stale(self, entry: Path, cutoff: date) -> bool:
         try:
@@ -300,6 +345,12 @@ class StatsDbBackupJob(MaintenanceJob):
                 f"file(s), skipped {record.num_skipped} up-to-date "
                 f"({record.num_bytes} bytes, "
                 f"{record.duration_ms / 1000:.1f}s) -> {record.dest_root}")
+        # The mirror's own failure detail (robocopy exit code / spawn
+        # error) — without it a failed batch's caution said only
+        # "copied 0 file(s)" and the actual cause was buried in the
+        # audit table (2026-11-19 stats_db_backup).
+        if record.detail:
+            line = f"{line}; {record.detail}"
         return "; ".join([*notes, line])
 
     @staticmethod

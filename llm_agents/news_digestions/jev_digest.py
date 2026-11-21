@@ -184,7 +184,8 @@ async def digest_new_articles_jev(
         async with sem:
             try:
                 return await detector.annotate_row(
-                    await engine.digest_article(article), article)
+                    await engine.digest_article(article), article,
+                    conn=conn)
             except Exception as exc:  # one bad read never kills the build
                 failed_article = article["news_id"]
                 logger.warning("    [jev-digest] news_id=%s failed: %s: %s",

@@ -168,6 +168,10 @@ export interface SharedSkewSignalEvent {
   action: string;
   /** TRUE = the VRP-rejected no-action record (the grey diamond). */
   is_rejection?: boolean;
+  /** The event's confidence in PERCENT — NEGATIVE = the REJECT tier
+   *  (the cross-triangle of the event's own action: do NOT buy/sell
+   *  at this price, never the inverse action). */
+  confidence?: number;
 }
 
 /** One chain-wide zone wall per (date, side) — the DOMINANT

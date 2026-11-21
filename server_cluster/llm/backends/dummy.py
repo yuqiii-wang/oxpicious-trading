@@ -67,8 +67,10 @@ class DummyChatBackend(ModelBackend):
     engine — the migrated provider simulation (see module docstring)."""
 
     def __init__(self, spec: ModelBackendSpec,
-                 default_idle_offload_s: float) -> None:
-        super().__init__(spec, default_idle_offload_s)
+                 default_idle_offload_s: float,
+                 default_idle_unload_s: float) -> None:
+        super().__init__(spec, default_idle_offload_s,
+                         default_idle_unload_s)
         from test.dummy_llm import DummyLlmProvider
 
         self.provider = DummyLlmProvider()
@@ -93,6 +95,9 @@ class DummyChatBackend(ModelBackend):
         return None
 
     def _offload(self) -> None:
+        return None
+
+    def _unload(self) -> None:
         return None
 
     def offload(self) -> None:

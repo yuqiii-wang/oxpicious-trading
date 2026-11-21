@@ -1,0 +1,13 @@
+{
+  "service": "downloads.stock.sse.trend_pe",
+  "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
+  "is_resident": false,
+  "freq": "weekly",
+  "priority": 160,
+  "schedule": "weekly tier in the 18:00 nightly chain (downloads_weekly, right after downloads_daily) — the task's own weekly gate (>= 6 calendar days since its last normal exit in monitor.service_audit) makes the nightly fires no-ops; --force/--code bypass",
+  "notes": "Weekly SSE stock PE anchor crawl for the IMPORTANT stocks only (curated importance rank 0-1 — importance_rules/stock_<rank>_rank.json, 77 SSE codes; resolved via the _common.importance rank map, cache-first) — the downloads.stock.sse.archive module's former PE half, migrated to the trend side 2026-11-20: per stock the still-missing quarterly snapshot dates (Feb/Apr/May/Aug/Sep/Nov first trading day) + trailing-21d-window big-jump dates (>±7%, prev+jump day, 7d cooldown) + the latest missing trading date, appended to temps/sse_archive/{code}_pe.csv (alt API first, primary fallback). Non-important stocks keep their fetched PE history but stop getting fresh anchors. The archive backfill is OHLCV/dayk only now; pe_latest (downloads_daily step 30) keeps the daily latest-tail sweep over the same important universe.",
+  "source_ref": "scripts/orchestration/downloads_weekly.json",
+  "updated_at": "2026-11-20T15:25:15.716730+00:00"
+}

@@ -159,6 +159,63 @@ REGIME_CODE: dict[str, int] = {"calm": 0, "hot": 1, "panic": 2, "quiet": 3,
                          "all": 4}  # 4 = the POOLED population (curves; and every ma_cross row since 2026-10-12 — the family is regime-free)
 SIDE_CODE: dict[str, int] = {"top": 0, "bottom": 1, "flat": 2}
 ACTION_CODE: dict[str, int] = {"buy": 0, "sell": 1, "wait": 2}  # 2 wait (renamed from no_action 2026-10-16) = a rule not trading yet — signal_rules' observational outcomes (the VRP-declined twin / the sample-starved cells)
+# the hindsight ORACLE tier's action vocabulary (2026-11-19,
+# analysis.oracle_signals.action — DECOUPLED from the rule tier): the
+# perfect-foresight decision per 5-trading-day unit. 2 no_action IS a
+# decision (the forward path fluctuates or the longer-horizon extremum
+# gate failed), never the rule tier's "not trading yet" wait
+ORACLE_ACTION_CODE: dict[str, int] = {"buy": 0, "sell": 1, "no_action": 2}
+# the NO-ACTION overlay tier's reason vocabulary (2026-11-18,
+# analysis_signals.no_action_signals.reason_code — the day-level
+# invalidation marks of engines/no_action, the sibling of the reject
+# tier's negative cell means): why a FIRED POSITIVE day is marked
+# "do NOT take this action here"
+NO_ACTION_REASON_CODE: dict[str, int] = {
+    "fatigue": 0,                # >= N distinct fired days of the (code, type, action) in the trailing window — chop
+    "rsi_bandwalk_sell": 1,      # NO SELL: top-tail trigger mid-rise with an agreeing Kaufman guard (tops continue)
+    "boll_squeeze_breakdown": 2, # NO BUY: -k breach out of a squeezed band (compression -> breakdown continues)
+    "boll_bandwalk_sell": 3,     # NO SELL: +k breach riding an expanding band with a rising SMA20
+    "ma_whipsaw": 4,             # NO BUY: reclaim inside a recent below->above flip chop
+    "rebound_pe_deadzone": 5,    # NO BUY: capitulation trigger at middle PE (the barbell dead zone)
+    "macd_chop": 6,              # NO BUY/SELL: noise-scale cross inside rapid alternation
+}
+# the OHLCV SUB-TYPE amplifier vocabulary (2026-11-18; the sub-type
+# axis of the 2026-11-20 two-level split): the day-level OHLCV anatomy
+# shapes that AMPLIFY (positive amplify_bp) or DISCOUNT (negative) the
+# bound signal families' claims on that day. Decoded by
+# analysis_signals.signal_amplification_history.sub_type (and the bound
+# amplifiers[] inside signal_amplification_rules.rule_params) when the
+# parent amplifier_type = SIGNAL_AMPLIFIER_TYPE_CODE["ohlcv"]. Code
+# order: BUY-side reversion amplifiers, then continuation / SELL-side
+# exits, then the discount.
+SIGNAL_AMPLIFIER_CODE: dict[str, int] = {
+    "flush_washout": 0,      # 探底洗出: lower-wick top-decile flush + down close + heavy amount — BUY reversion
+    "gap_reclaim": 1,        # 低开收复: down open reclaimed by the close — BUY reversion
+    "breakout_confirm": 2,   # 放量突破确认: close above the prior high + heavy amount + strong close — BUY continuation
+    "spike_blowoff": 3,      # 冲高回落放量: upper-wick top-decile spike faded weak on heavy amount — SELL exit
+    "exhaustion_gap": 4,     # 高开低走竭尽: up open + red body — SELL exit
+    "dry_rebound": 5,        # 缩量弱反弹: up close on shrinking amount — BUY DISCOUNT (negative bp)
+}
+# the amplifier PARENT TYPE axis (2026-11-20): which DATA DOMAIN an
+# amplifier's day-level anatomy comes from —
+# analysis_signals.signal_amplification_history.amplifier_type (and the
+# bound amplifiers[] inside signal_amplification_rules.rule_params). The
+# specific pattern under each type is the sub_type column: the
+# SIGNAL_AMPLIFIER_CODE vocabulary when ohlcv, the
+# SIGNAL_AMPLIFIER_MARGIN_CODE vocabulary when margin (the
+# external_resource_audit resource_type/sub_type precedent).
+SIGNAL_AMPLIFIER_TYPE_CODE: dict[str, int] = {
+    "ohlcv": 0,   # the K-line day anatomy amplifiers (gap / wick / volume shapes)
+    "margin": 1,  # the 融资融券 margin-balance level amplifiers (rz_balance vs its own trailing quantile bars)
+}
+# the MARGIN sub-type vocabulary (the parent 'margin' branch): the
+# 融资余额 (rz_balance) LEVEL vs its own trailing-window quantile bars —
+# low balance = leverage washed out (low risk, price already lower);
+# high balance = leverage crowding (fragility)
+SIGNAL_AMPLIFIER_MARGIN_CODE: dict[str, int] = {
+    "margin_washout": 0,  # 融资余额低位: rz_balance <= its trailing-252d q10 bar — BUY reversion amplification
+    "margin_crowding": 1, # 融资余额高位: rz_balance >= its trailing-252d q90 bar — SELL exit amplification
+}
 # the code's own trend classification in force for a signal_rules cell
 # (the PK member that makes rule_params per-PK — the same sub signal
 # type measures asymmetric populations in different trends). Since
@@ -211,6 +268,17 @@ SIGNAL_TYPE_CODE: dict[str, int] = {
     # SELL above the top tail (exit timing); the crowdedness stats
     # are the assistant metric, the trade is the index.
     "crowdedness": 11,
+    # volatility (2026-11-18): the realized-volatility panel
+    # (analysis.volatility, the daily per-security vol build) as rule
+    # cells — the LEVERAGE-EFFECT tails (realized-vol peaks cluster at
+    # price troughs — "local top volatility signals local low price"):
+    # spike BUY = a vol axis (hv_20 / ewma_vol) above its own trailing
+    # top-q adaptive tail with price below its 5-rows-ago close (the
+    # fear leg); crush SELL = below its bottom tail with price within
+    # 2% of its trailing-60-row high (complacency at the top, exit
+    # timing). Data-driven universe (the codes with vol rows — index
+    # only while the panel's run scope is the study indices).
+    "volatility": 12,
 }
 # the family config grid (analysis_signals.signal_thresholds /
 # history_signals / signal_curves — converted 2026-10-11).
@@ -288,11 +356,17 @@ SIGNAL_SUB_TYPE_THRESHOLD: dict[str, int] = {
     "rsi10_3pct": 302,
     "rsi10_5pct": 304,
     "rsi10_10pct": 309,
+    # the Wilder failure-swing pattern subs (2026-11-19, the RSI canon
+    # study's graduate — rsi14 +1.78% / rsi10 +2.14% pooled on the
+    # tail3 episode population, hit 73-75%): just past the tail-ordinal
+    # decade, within the window's century block
+    "rsi10_fswing": 310,
     "rsi14_1pct": 400,
     "rsi14_2pct": 401,
     "rsi14_3pct": 402,
     "rsi14_5pct": 404,
     "rsi14_10pct": 409,
+    "rsi14_fswing": 410,
     "rsi20_1pct": 500,
     "rsi20_2pct": 501,
     "rsi20_3pct": 502,
@@ -733,6 +807,35 @@ SIGNAL_SUB_TYPE_THRESHOLD: dict[str, int] = {
     "crowd_tech_washout": 6130,
     "crowd_tech_euphoria": 6131,
     "crowd_tech_euphoria_div": 6132,
+    # the VOLATILITY family (2026-11-18): the (axis × nested tail
+    # pct) grid of the realized-vol leverage-effect family, both
+    # actions per sub type — the spike BUY (vol above its own
+    # adaptive top tail + the price fear leg) and the crush SELL (vol
+    # below its bottom tail at the trailing-high stretch — exit
+    # timing). hv20 = the 20-row close-to-close realized vol, ewma =
+    # the RiskMetrics fast vol (λ=0.94). The FIRST grid (6200-6205,
+    # all-history 2520d top-{1,2,3}% tails) retired the same day it
+    # shipped — degenerate on the panel's ~7y history (000001: only
+    # the 2024-10 mega-cluster breached, 4 events where ~2 dozen
+    # local spikes are visible); decode-only now (the first build's
+    # perf snapshots decode through it). The LOCAL grid (6210+)
+    # trades the trailing-252d quantiles {5,10,15,20}% (the panel's
+    # own pct_rank_252 convention; study
+    # temp_scripts/vol_spike_count_study.py).
+    "hv20_1pct": 6200,
+    "hv20_2pct": 6201,
+    "hv20_3pct": 6202,
+    "ewma_1pct": 6203,
+    "ewma_2pct": 6204,
+    "ewma_3pct": 6205,
+    "hv20_5pct": 6210,
+    "hv20_10pct": 6211,
+    "hv20_15pct": 6212,
+    "hv20_20pct": 6213,
+    "ewma_5pct": 6214,
+    "ewma_10pct": 6215,
+    "ewma_15pct": 6216,
+    "ewma_20pct": 6217,
 }
 SIGNAL_SUB_TYPE_CODE: dict[str, int] = {
     **SIGNAL_SUB_TYPE_SERIES, **SIGNAL_SUB_TYPE_THRESHOLD,
@@ -815,6 +918,9 @@ CONTRACT_TYPE_CODE: dict[str, int] = {"index": 0, "bond": 1}
 SEC_TYPE_CODE: dict[str, int] = {"etf": 0, "index": 1, "stock": 2, "industry": 3}
 ATTRIBUTION_TYPE_CODE: dict[str, int] = {"equal": 0, "trading_amt": 1}
 TRADE_SIDE_CODE: dict[str, int] = {"BUY": 0, "SELL": 1}
+# strategy.forecast_next_day.direction — the ±kσ next-day scenario's side
+# of the move (the forecast register's own vocabulary, converted at birth)
+FORECAST_DIRECTION_CODE: dict[str, int] = {"down": 0, "up": 1}
 # external request audit (monitor.external_resource_audit) — sub_type's
 # domain is selected by resource_type (http -> ext_http_source,
 # llm -> ext_llm_provider); 'other'=99 is the unrecognized fallback.
@@ -877,6 +983,27 @@ BACKUP_STATUS_CODE: dict[str, int] = {"ok": 0, "partial": 1, "failed": 2}
 # complete -> missing -> the check itself failed.
 NON_DAILY_STATE_CODE: dict[str, int] = {
     "unknown": 0, "complete": 1, "missing": 2, "check_failed": 3,
+}
+# Orchestration arrangement verdict (monitor.orchestration_task_state.state)
+# — the run / don't-run decision of ONE orchestration-tier service,
+# computed by the monitor area's OrchestrationArranger from the
+# service_config freq window vs the last successful exit (the same rule
+# as the UI run guard's freq auto-skip): 'due' = run it in the arranged
+# pass; 'not_due' = the freq window holds (or once + a success ever) —
+# the nightly chain skips the step instead of spawning a no-op. Code
+# order is semantic: unknown -> due -> not_due.
+ORCHESTRATION_PLAN_STATE_CODE: dict[str, int] = {
+    "unknown": 0, "due": 1, "not_due": 2,
+}
+# Cross-service caution trail (monitor.caution_log — source /
+# severity_level). Source: a running service hitting an error, an AI run
+# flagging something suspicious, a pending bug noted by hand
+# (python -m _common.caution_log). Severity code order is semantic,
+# best -> worst (service errors default to 'error', AI suspicions to
+# 'warning', AI [CRITICAL] findings are 'critical').
+CAUTION_SOURCE_CODE: dict[str, int] = {"service": 0, "ai": 1, "manual": 2}
+CAUTION_SEVERITY_CODE: dict[str, int] = {
+    "info": 0, "warning": 1, "error": 2, "critical": 3,
 }
 # the generic analysis intermediate-result cache
 # (analysis_signals.analysis_cache.kind) — which analysis owns the row's
@@ -999,6 +1126,19 @@ SEARCH_TABLE_CODE: dict[str, int] = {
     "news": 0, "news_comments": 1, "news_digestions": 2,
     "llm_qa": 3, "llm_qa_by_ask": 4, "llm_qa_by_research": 5,
 }
+# text.news_digestions.category — the discourse category of a digested
+# article (the fake-news detector's first lane, 2026-11-17): what KIND of
+# text the item is decides what "fake" can even mean. 0 discussion = asks
+# / invites discussion (most zhihu items — 明天怎么走？), 1 analysis =
+# evidence-based market analysis, 2 opinion = a personal stance without a
+# definite call, 3 statement = an EXPLICIT directional call (明天涨) — the
+# only category the disingenuous-question fake verdict builds on;
+# 99 other = read not confident (and the legacy-row default). Eighth
+# text/llm vocabulary (2026-11-17)
+NEWS_CATEGORY_CODE: dict[str, int] = {
+    "discussion": 0, "analysis": 1, "opinion": 2,
+    "statement": 3, "other": 99,
+}
 
 # static.keyword_maps (database/sql/static/keyword_maps/) — the seeded
 # keyword → category map for news-text auditing (2026-11-01). Industry rows
@@ -1064,6 +1204,11 @@ LABEL_MAPS: dict[str, dict[str, int]] = {
     "regime": REGIME_CODE,
     "side": SIDE_CODE,
     "action": ACTION_CODE,
+    "oracle_action": ORACLE_ACTION_CODE,
+    "no_action_reason": NO_ACTION_REASON_CODE,
+    "signal_amplifier": SIGNAL_AMPLIFIER_CODE,
+    "signal_amplifier_type": SIGNAL_AMPLIFIER_TYPE_CODE,
+    "signal_amplifier_margin": SIGNAL_AMPLIFIER_MARGIN_CODE,
     "trend": TREND_CODE,
     "signal_type": SIGNAL_TYPE_CODE,
     "signal_sub_type": SIGNAL_SUB_TYPE_CODE,
@@ -1084,6 +1229,7 @@ LABEL_MAPS: dict[str, dict[str, int]] = {
     "sec_type": SEC_TYPE_CODE,
     "attribution_type": ATTRIBUTION_TYPE_CODE,
     "trade_side": TRADE_SIDE_CODE,
+    "forecast_direction": FORECAST_DIRECTION_CODE,
     "ext_resource": EXT_RESOURCE_CODE,
     "ext_http_source": EXT_HTTP_SOURCE_CODE,
     "ext_llm_provider": EXT_LLM_PROVIDER_CODE,
@@ -1095,6 +1241,9 @@ LABEL_MAPS: dict[str, dict[str, int]] = {
     "backup_mode": BACKUP_MODE_CODE,
     "backup_status": BACKUP_STATUS_CODE,
     "non_daily_state": NON_DAILY_STATE_CODE,
+    "orchestration_plan_state": ORCHESTRATION_PLAN_STATE_CODE,
+    "caution_source": CAUTION_SOURCE_CODE,
+    "caution_severity": CAUTION_SEVERITY_CODE,
     "analysis_cache_kind": ANALYSIS_CACHE_KIND_CODE,
     "portfolio_type": PORTFOLIO_TYPE_CODE,
     "portfolio_sub_type": PORTFOLIO_SUB_TYPE_CODE,
@@ -1107,6 +1256,7 @@ LABEL_MAPS: dict[str, dict[str, int]] = {
     "agent_step_type": AGENT_STEP_TYPE_CODE,
     "agent_child_kind": AGENT_CHILD_KIND_CODE,
     "search_table": SEARCH_TABLE_CODE,
+    "news_category": NEWS_CATEGORY_CODE,
     "kw_category_type": KW_CATEGORY_TYPE_CODE,
     "kw_market": KW_MARKET_CODE,
     "kw_pos": KW_POS_CODE,
@@ -1123,6 +1273,7 @@ CODE_MAPS: dict[str, dict[int, str]] = {
 REGIME_LABEL: dict[int, str] = CODE_MAPS["regime"]
 SIDE_LABEL: dict[int, str] = CODE_MAPS["side"]
 ACTION_LABEL: dict[int, str] = CODE_MAPS["action"]
+NO_ACTION_REASON_LABEL: dict[int, str] = CODE_MAPS["no_action_reason"]
 TREND_LABEL: dict[int, str] = CODE_MAPS["trend"]
 SIGNAL_TYPE_LABEL: dict[int, str] = CODE_MAPS["signal_type"]
 SIGNAL_SUB_TYPE_LABEL: dict[int, str] = CODE_MAPS["signal_sub_type"]
@@ -1160,6 +1311,7 @@ PROMPT_TYPE_LABEL: dict[int, str] = CODE_MAPS["prompt_type"]
 AGENT_CONTEXT_KIND_LABEL: dict[int, str] = CODE_MAPS["agent_context_kind"]
 LANGGRAPH_TYPE_LABEL: dict[int, str] = CODE_MAPS["langgraph_type"]
 SEARCH_TABLE_LABEL: dict[int, str] = CODE_MAPS["search_table"]
+NEWS_CATEGORY_LABEL: dict[int, str] = CODE_MAPS["news_category"]
 
 # Display order for responses that list a domain's vocabulary —
 # pool_size deliberately NOT in code order here: API/UI lists keep the
@@ -1169,6 +1321,11 @@ LABEL_ORDER: dict[str, tuple[str, ...]] = {
     "regime": tuple(REGIME_CODE),
     "side": tuple(SIDE_CODE),
     "action": tuple(ACTION_CODE),
+    "oracle_action": tuple(ORACLE_ACTION_CODE),
+    "no_action_reason": tuple(NO_ACTION_REASON_CODE),
+    "signal_amplifier": tuple(SIGNAL_AMPLIFIER_CODE),
+    "signal_amplifier_type": tuple(SIGNAL_AMPLIFIER_TYPE_CODE),
+    "signal_amplifier_margin": tuple(SIGNAL_AMPLIFIER_MARGIN_CODE),
     "trend": tuple(TREND_CODE),
     "signal_type": tuple(SIGNAL_TYPE_CODE),
     "signal_sub_type": tuple(SIGNAL_SUB_TYPE_CODE),
@@ -1192,6 +1349,7 @@ LABEL_ORDER: dict[str, tuple[str, ...]] = {
     "sec_type": ("etf", "index", "stock"),
     "attribution_type": ("equal", "trading_amt"),
     "trade_side": ("BUY", "SELL"),
+    "forecast_direction": ("down", "up"),
     "ext_resource": tuple(EXT_RESOURCE_CODE),
     "ext_http_source": tuple(EXT_HTTP_SOURCE_CODE),
     "ext_llm_provider": tuple(EXT_LLM_PROVIDER_CODE),
@@ -1203,6 +1361,9 @@ LABEL_ORDER: dict[str, tuple[str, ...]] = {
     "backup_mode": tuple(BACKUP_MODE_CODE),
     "backup_status": tuple(BACKUP_STATUS_CODE),
     "non_daily_state": tuple(NON_DAILY_STATE_CODE),
+    "orchestration_plan_state": tuple(ORCHESTRATION_PLAN_STATE_CODE),
+    "caution_source": tuple(CAUTION_SOURCE_CODE),
+    "caution_severity": tuple(CAUTION_SEVERITY_CODE),
     "analysis_cache_kind": tuple(ANALYSIS_CACHE_KIND_CODE),
     "portfolio_type": tuple(PORTFOLIO_TYPE_CODE),
     "portfolio_sub_type": tuple(PORTFOLIO_SUB_TYPE_CODE),
@@ -1215,6 +1376,7 @@ LABEL_ORDER: dict[str, tuple[str, ...]] = {
     "agent_step_type": tuple(AGENT_STEP_TYPE_CODE),
     "agent_child_kind": tuple(AGENT_CHILD_KIND_CODE),
     "search_table": tuple(SEARCH_TABLE_CODE),
+    "news_category": tuple(NEWS_CATEGORY_CODE),
     "kw_category_type": tuple(KW_CATEGORY_TYPE_CODE),
     "kw_market": tuple(KW_MARKET_CODE),
     "kw_pos": tuple(KW_POS_CODE),

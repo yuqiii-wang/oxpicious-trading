@@ -6,9 +6,11 @@
 --  logic a research-logic Q&A row classifies), llm.ai_prompts
 --  (prompt_type — the prompt row's role in a deep-agent run),
 --  llm.deep_agent_contexts (agent_context_kind — which payload a
---  context row carries, incl. the graphs' final output nodes) and
+--  context row carries, incl. the graphs' final output nodes),
 --  llm.deep_agent_langgraph_templates (langgraph_type — which of a
---  run's three chained LangGraphs a template drives). First domain of
+--  run's three chained LangGraphs a template drives) and
+--  text.news_digestions (news_category — the discourse-category read
+--  of the fake-news detector's classification lane). First domain of
 --  the schema's LLM-layer enums converted
 --  to the label-code contract (2026-10-27); further llm.* conversions
 --  register here.
@@ -134,3 +136,28 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     ('search_table', 3, 'llm_qa',            3),
     ('search_table', 4, 'llm_qa_by_ask',     4),
     ('search_table', 5, 'llm_qa_by_research', 5);
+
+INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
+    -- news_category: text.news_digestions.category — the discourse
+    -- category of a digested article (the fake-news detector's FIRST
+    -- lane, 2026-11-17): what KIND of text the item is decides what
+    -- "fake" can even mean — a question or a hedged opinion cannot be
+    -- fake the way an explicit call can. Written by the Jev (System
+    -- One) category read over the article's source + title + content
+    -- (llm_agents.news_digestions.fake_news). 0 discussion = the item
+    -- asks a question / invites discussion (most zhihu items — 明天
+    -- 怎么走？); 1 analysis = evidence-based market analysis (data,
+    -- recap, reasoned logic); 2 opinion = a personal stance or mood
+    -- WITHOUT a definite call (不悲观); 3 statement = an EXPLICIT
+    -- directional call about the market's next move (明天涨 / 明天必跌)
+    -- — the only category the disingenuous-question fake verdict
+    -- builds on (asking 明天怎么走 while the same origin's earlier
+    -- items already STATED the direction); 99 other = the read was
+    -- not confident enough to classify (also the pre-column default
+    -- legacy digestion rows carry). Eighth vocabulary in this file
+    -- (2026-11-17)
+    ('news_category',  0, 'discussion', 0),
+    ('news_category',  1, 'analysis',   1),
+    ('news_category',  2, 'opinion',    2),
+    ('news_category',  3, 'statement',  3),
+    ('news_category', 99, 'other',     99);

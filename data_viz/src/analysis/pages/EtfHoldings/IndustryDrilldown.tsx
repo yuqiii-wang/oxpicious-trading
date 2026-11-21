@@ -200,7 +200,7 @@ export default function IndustryDrilldown({
       legend: {
         top: 0,
         left: "center",
-        textStyle: { color: c.textColor, fontSize: 9 },
+        textStyle: { fontSize: 9 }, // colors inherit from commonLegend
         itemWidth: 14,
         itemHeight: 8,
         itemGap: 12,
@@ -284,12 +284,10 @@ export default function IndustryDrilldown({
         type: "scroll",
         top: 0,
         left: "center",
-        textStyle: { color: c.textColor, fontSize: 9 },
+        textStyle: { fontSize: 9 }, // colors inherit from commonLegend
         itemWidth: 12,
         itemHeight: 6,
         itemGap: 8,
-        pageIconColor: c.textColor,
-        pageTextStyle: { color: c.textColor },
       },
       grid: commonGrid({ left: 44, right: 12, top: 30, bottom: 28 }),
       xAxis: {

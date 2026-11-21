@@ -62,19 +62,5 @@
       }
     ],
     "is_industry_not_strategy": true
-  },
-  "DUMMY_BIOTECH": {
-    "name": "生物科技综合指数",
-    "exchange": null,
-    "sector_id": "HC",
-    "industry_id": "BIOTECH",
-    "tags": [
-      {
-        "sector_id": "HC",
-        "industry_id": "BIOTECH"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
   }
 }

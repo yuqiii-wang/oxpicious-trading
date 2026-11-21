@@ -1,0 +1,9 @@
+{
+  "service": "analysis.oracle_signals",
+  "check": "db_universe_coverage",
+  "params": {
+    "view": "server_cluster/monitor/non_daily/oracle_signals_coverage"
+  },
+  "rerun_args": [],
+  "notes": "Oracle pivot coverage vs the bars frontier (20-day tolerance: the weekly cadence's ~1-week lag + the 5-row pivot confirmation window): a code whose newest pivot row lags the frontier is stale — the weekly tier's own gate makes the nightly fires no-ops, so the Saturday backfill re-run is what closes the gap."
+}

@@ -28,6 +28,9 @@ import industryAttributionRouter from "./industry-attribution.js";
 import valuationRouter from "./valuation.js";
 import crowdednessRouter from "./crowdedness.js";
 import marginTrendsRouter from "./margin-trends.js";
+import newsAuditRouter from "./news-audit.js";
+import volatilityRouter from "./volatility.js";
+import oracleRouter from "./oracle.js";
 
 const router = Router();
 
@@ -40,8 +43,12 @@ router.use(industryAttributionRouter);
 router.use(valuationRouter);
 router.use(crowdednessRouter);
 router.use(marginTrendsRouter);
+router.use(newsAuditRouter);
+router.use(volatilityRouter);
+router.use(oracleRouter);
 
 // Re-exported for parity with the old routes/analysis.ts module surface.
 export { INDUSTRY_CORR_RUN_TAG, INDUSTRY_CORR_OFFSET_RUN_TAG } from "./industry-corr.js";
+export { NEWS_AUDIT_RUN_TAG } from "./news-audit.js";
 
 export default router;

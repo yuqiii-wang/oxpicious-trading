@@ -90,7 +90,7 @@ interface RiskFactorRow {
 }
 
 // The three SELECTs live in the sql views
-// data_viz/api/services/strategy/risks/{risk_seq, risk_periods, risk_factors}.
+// strategy/risks/{risk_seq, risk_periods, risk_factors}.
 
 function mapRiskSeq(r: RiskSeqRow): StrategyRiskSeq {
   return {
@@ -177,14 +177,21 @@ export async function fetchStrategyRisks(
   rawCode: string,
   rawSecType: string | undefined | null,
   strategyName: string = DEFAULT_STRATEGY_NAME,
+  /** When given, load THIS run's risks (the run-history selector) instead
+   *  of the latest/active run's. */
+  seqId?: number | null,
 ): Promise<StrategyRiskResponse> {
   const secType = (rawSecType as MaSpreadSecType) ?? "index";
 
-  // 1. Fetch the latest risk_seq row for this (sec_type, code).
-  const seqRows = await querySqlView<RiskSeqRow>(
-    "data_viz/api/services/strategy/risks/risk_seq",
-    { sec_type: secType, code: rawCode, strategy_name: strategyName },
-  );
+  // 1. Fetch the risk_seq row: the seq_id-selected run (run-history
+  //    selector) when given, else the latest/active one.
+  const seqRows = seqId != null
+    ? await querySqlView<RiskSeqRow>(
+        "strategy/risks/risk_seq_by_id", { seq_id: seqId })
+    : await querySqlView<RiskSeqRow>(
+        "strategy/risks/risk_seq",
+        { sec_type: secType, code: rawCode, strategy_name: strategyName },
+      );
 
   if (seqRows.length === 0) {
     return { code: rawCode, sec_type: secType, risk_seq: null, periods: [], risk_factors: [] };
@@ -194,14 +201,14 @@ export async function fetchStrategyRisks(
 
   // 2. Fetch all period rows for the same seq_id.
   const periodRows = await querySqlView<RiskPeriodRow>(
-    "data_viz/api/services/strategy/risks/risk_periods",
+    "strategy/risks/risk_periods",
     { sec_type: secType, code: rawCode, seq_id: riskSeq.seq_id },
   );
   const periods = periodRows.map(mapRiskPeriod);
 
   // 3. Fetch risk score contribution factors for the same seq_id.
   const factorRows = await querySqlView<RiskFactorRow>(
-    "data_viz/api/services/strategy/risks/risk_factors",
+    "strategy/risks/risk_factors",
     { seq_id: riskSeq.seq_id, code: rawCode },
   );
   const riskFactors = factorRows.map(mapRiskFactor);

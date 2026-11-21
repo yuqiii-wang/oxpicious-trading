@@ -3,7 +3,9 @@
 Write order (one connection, no cross-table transactions beyond what the
 bulk helpers already wrap):
 
-  1. text.news          — upsert on the natural key (title, source, date).
+  1. text.news          — upsert on the natural key (title_hash =
+                          md5(title), source, date; pk_news is hashed —
+                          raw-title btree entries capped at ~2704 bytes).
                           Before the upsert, the stored state decides which
                           articles need keyword work: new ones, and stored
                           ones whose word_count / industry_id changed
@@ -36,6 +38,7 @@ bulk helpers already wrap):
 from __future__ import annotations
 
 import datetime
+import hashlib
 import logging
 from typing import Any, Dict, List, Tuple
 
@@ -251,9 +254,16 @@ class TextUpsert:
 # 1. text.news
 # ----------------------------------------------------------------------------
 def build_news_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Project parsed rows to the text.news column shape."""
+    """Project parsed rows to the text.news column shape.
+
+    title_hash = md5(title) rides on every row: it is the PK's title
+    member (pk_news = title_hash, source, date — the raw-title PK broke
+    at the btree ~2704-byte entry cap) and bulk_upsert_async dedupes key
+    columns from the row dicts, so the writer computes it (2026-11-20).
+    """
     return [{
         "title": r["title"],
+        "title_hash": hashlib.md5(r["title"].encode("utf-8")).hexdigest(),
         "content": r.get("content"),
         "date": r["date"],
         "source": r["source"],

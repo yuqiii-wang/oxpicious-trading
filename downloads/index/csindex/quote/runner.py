@@ -34,6 +34,17 @@ the nightly run). Turns the common case (nightly run already fetched the
 previous session) into a seconds-long local check instead of a ~500-code
 full sweep.
 
+PE-only mode (``pe_only=True`` — the nightly orchestration's PE step,
+2026-11-20): per code ONLY step 3 (the incremental PE fetch) + step 4's
+history merge folding it in. The PE series has no other source, so it
+runs as its own diff-src-wave step PARALLEL with unrelated-src steps,
+while this same-host sweep trails it as a separate serial step (the
+wave scheduler never holds two csindex steps in one wave). The sweep's
+fresh 1m rows ride ``{code}_1m.csv`` directly (the baseline build reads
+those) and converge into the history CSV on the next PE step's merge —
+the history CSV is the deep-history fallback, so a <=1-day convergence
+lag there costs nothing.
+
 Code motion only (2026-11-07): the former module-level
 ``download_index`` orchestrator and its ``_run_from2020`` / ``_run_1m`` /
 ``_run_pe`` step functions are now the methods of the same names on
@@ -134,6 +145,7 @@ class CsindexQuoteRunner:
         skip_intraday: bool = False,
         ensure_prev_trading_day: bool = False,
         refresh_history: bool = False,
+        pe_only: bool = False,
     ) -> dict:
         """Download iconic CSI index daily history (OHLCV + amount + PE).
 
@@ -144,6 +156,15 @@ class CsindexQuoteRunner:
         deep-history fallback). --refresh-history runs the full PE fetch
         + history merge (also the one-time convergence for a pe
         cache/history pair left behind by skipped runs).
+        ``pe_only``: the nightly PE step's mode — per code run ONLY the
+        incremental PE fetch + the history-CSV merge that folds it in
+        (no from2020 / 1m / intraday / mop-up work; that sweep is a
+        SEPARATE orchestration step — same src_host keeps the two
+        serial, while the PE step shares its wave with unrelated-src
+        steps). The PE series (indexCsiDsPe) has no other source, so it
+        is the one csindex output the nightly chain truly needs early;
+        the sweep tail may trail it by hours or miss a slow night's
+        tier cap without ever delaying a PE row.
         ``ensure_prev_trading_day``: targeted mode — skip ALL network work for
         codes whose local 1m/history CSV already contains the previous trading
         day (computed from the holiday calendar). Laggard codes run only the
@@ -272,6 +293,28 @@ class CsindexQuoteRunner:
                     stats.failed += 4
                     continue
 
+                if pe_only:
+                    # PE-only mode (the nightly PE orchestration step):
+                    # the incremental PE fetch + the history-CSV merge
+                    # that folds it in — nothing else. The from2020/1m/
+                    # intraday sweep is a separate step; same src_host
+                    # keeps them serial, so this branch must never touch
+                    # those flows.
+                    if "csindex_pe" in exclusion_scopes("index", code):
+                        # Exclusion store: the PE (peg) series never
+                        # returns for this code — skip the fetch.
+                        logger.info("  [pe] %s: excluded (PE series never "
+                                    "returns) — skipped", code)
+                        continue
+                    pe_records = self._run_pe(
+                        session, code, _start, _end, out_dir, proxy,
+                        stats, expected_yyyymmdd)
+                    history_file = self.history.build_history_csv(
+                        code, name, out_dir, pe_records)
+                    if history_file:
+                        stats.files.append(str(history_file))
+                    continue
+
                 self._run_from2020(session, code, _start, _end, out_dir, proxy, stats)
 
                 if proxy.is_blocked(CSINDEX_BASE):
@@ -348,7 +391,7 @@ class CsindexQuoteRunner:
             # in-process attempt; the content gate still skips codes that
             # already cover the session. Time-budgeted so a total CSIndex
             # outage cannot extend the nightly chain unboundedly.
-            if not ensure_prev_trading_day:
+            if not ensure_prev_trading_day and not pe_only:
                 mopup_deadline = datetime.now() + timedelta(minutes=MOPUP_BUDGET_MIN)
                 mopup_codes = [
                     c for c in index_codes

@@ -33,6 +33,20 @@ loaded (no attempt cap — ``attempts`` just counts). Every verdict lands
 in ``monitor.non_daily_task_state``; every re-run is a real registry
 child with its own monitor.service_audit row.
 
+priority give-way: the Saturday gate keeps the SCHEDULED drive off the
+chain, but an on-demand drive (``force`` escape hatch) can overlap a
+higher-priority run (the nightly chain, a manual run, a finish pass) —
+and both sides contend for the machine and the anti-bot-guarded query
+destinations. Each re-run therefore gives way to the runner's priority
+board (:meth:`orchestration.OrchestrationRunner.priority_claims` —
+every step ranked by its service_config ``priority``: downloads
+outrank non-downloads, then frequency): it waits out a strictly
+higher-priority run BEFORE its submit, and one arriving MID-RUN stops
+the child (registry stop) until it finishes, then resumes it as a
+fresh child of the same tag — the force args make the resumed run
+pick up where the stop left off. Equal priorities never give way;
+each stop shows up as the rerun record's ``yields`` count.
+
 Endpoints (sync ``def`` on purpose — a check pass / re-run drive is
 minutes-long blocking work run on the threadpool, like the maintainer's
 run endpoints; an async def would wedge the event loop):
@@ -57,6 +71,7 @@ from pydantic import BaseModel, Field
 
 from _common.db_commons import get_db_connection_async
 from _common.labels import NON_DAILY_STATE_CODE
+from _common.service_heartbeat import priority_for
 from _common.sql_views import render_sql_view
 from _common.sql_writes import render_sql_write
 from .data_definitions import (
@@ -79,6 +94,7 @@ CHECKS_DIR = (_REPO_ROOT / "database" / "sql" / "monitoring" / "static"
 # chain order.
 NON_DAILY_TIERS: list[str] = [
     "monitoring_occasionally",
+    "downloads_weekly",
     "downloads_monthly",
     "downloads_quarterly",
     "downloads_semiannually",
@@ -86,6 +102,7 @@ NON_DAILY_TIERS: list[str] = [
     "builds_monthly",
     "builds_semiannually",
     "builds_once",
+    "analysis_weekly",
     "strategy_once",
 ]
 
@@ -94,8 +111,10 @@ NON_DAILY_TIERS: list[str] = [
 # (the one-time backtest, not data loading) and monitoring_occasionally
 # (alert-only) are listed in the inventory but never re-run.
 RERUN_ELIGIBLE_TIERS: set[str] = {
+    "downloads_weekly",
     "downloads_monthly", "downloads_quarterly", "downloads_semiannually",
     "builds_monthly", "builds_semiannually", "builds_once",
+    "analysis_weekly",
 }
 
 # The backfill's fire anchor: Saturday 05:00 China time (the maintainer
@@ -110,6 +129,13 @@ _DETAIL_SAMPLE = 25
 # Registry poll cadence for a re-run's completion (the orchestration
 # runner's own step cadence).
 _RERUN_POLL_S = 2.0
+
+# Lane-wait log cadence (polls between "still waiting" lines — ~60s at
+# the poll cadence) and the cap on waiting out a give-way-stopped
+# child's exit (SIGTERM grace then SIGKILL bounds the child; the cap
+# only guards a stalled registry sweep).
+_LANE_LOG_EVERY = 30
+_STOP_EXIT_CAP_S = 300.0
 
 _STATE_VIEW = "server_cluster/monitor/non_daily/task_state"
 _UPSERT_WRITE = ("server_cluster/monitor/non_daily/non_daily_task_state/"
@@ -181,8 +207,9 @@ class NonDailyOps:
     on ``app.state.non_daily``; thread-safe — the router resolves the
     instance off app.state)."""
 
-    def __init__(self, registry) -> None:
+    def __init__(self, registry, orchestration: OrchestrationRunner) -> None:
         self._registry = registry
+        self._orchestration = orchestration
         self._backfill_lock = threading.Lock()
 
     # ------------------------------------------------------------------
@@ -502,13 +529,17 @@ class NonDailyOps:
                 service=service, tier=step.tier, module=step.script,
                 args=args, dry_run=req.dry_run)
             if not req.dry_run:
-                record.submitted, record.exit_code = self._drive_rerun(
-                    service, step.script, args)
+                record.submitted, record.exit_code, record.yields = (
+                    self._drive_rerun(service, step.script, args))
                 record.state_after = self._recheck_one(configs, service)
             reruns.append(record)
+        yields = sum(r.yields for r in reruns)
         detail = (f"{len(due)} due task(s), "
                   f"{'dry run' if req.dry_run else f'{len(reruns)} driven'}"
                   f": {', '.join(r.service for r in reruns) or 'none'}")
+        if yields:
+            detail += (f"; {yields} give-way stop(s) (higher-priority "
+                       f"runs)")
         logger.info("non-daily backfill: %s", detail)
         return NonDailyBackfillResponse(
             evaluated=len(configs),
@@ -518,33 +549,118 @@ class NonDailyOps:
             detail=detail)
 
     def _drive_rerun(self, service: str, module: str,
-                     args: list[str]) -> tuple[bool, int | None]:
+                     args: list[str]) -> tuple[bool, int | None, int]:
         """Submit one re-run through the run registry and poll it to its
         exit (registry dedupe + per-service max_parallel + the module's
-        single-instance lock all still apply). Records the attempt +
-        next weekly gate whatever the exit. Returns (submitted,
-        exit_code)."""
+        single-instance lock all still apply). The re-run GIVES WAY to
+        the orchestration priority board (the module's service_config
+        ``priority``): it waits out a strictly higher-priority
+        orchestration run before the submit, and one arriving mid-run
+        stops the child (registry stop), waits the blocker out, and
+        resumes it as a fresh child of the same tag — the force args
+        make the resumed run pick up where the stop left off. Records
+        the attempt + next weekly gate whatever the exit. Returns
+        (submitted, exit_code, yields)."""
+        label = f"non-daily rerun {service}"
         tag = (f"non-daily:{service}:"
                f"{datetime.now(CHINA_TZ).strftime('%Y%m%d')}")
+        priority = priority_for(module)
+        yields = 0
+        self._wait_priority_clear(priority, label)
         try:
             entry, already = self._registry.submit(module, args, tag)
         except Exception:  # noqa: BLE001 — one task's submit failure
             logger.exception(  # must not abort the drive
                 "non-daily backfill: submit failed for %s", service)
-            return False, None
+            return False, None, 0
         if already:
             logger.info("non-daily backfill: %s deduped to an in-flight "
                         "run (%s)", service, entry.tag)
         code: int | None = None
         while True:
             status = self._registry.status_many([entry.tag]).get(entry.tag)
-            if status is None or not status.get("running", True):
-                code = status.get("exit_code") if status else None
-                break
-            time.sleep(_RERUN_POLL_S)
+            if status is not None and status.get("running", True):
+                blocker = self._priority_blocker(priority)
+                if blocker is None:
+                    time.sleep(_RERUN_POLL_S)
+                    continue
+                yields += 1
+                logger.warning(
+                    "non-daily backfill: %s (P%d) — higher-priority run "
+                    "%s — stopping to give way (yield %d)", label,
+                    priority, blocker, yields)
+                self._registry.stop(entry.tag)
+                self._await_run_exit(entry.tag, label)
+                self._wait_priority_clear(priority, label)
+                try:
+                    entry, already = self._registry.submit(module, args,
+                                                           tag)
+                except Exception:  # noqa: BLE001 — a failed resume is
+                    logger.exception(  # the rerun's own failure
+                        "non-daily backfill: resume submit failed for "
+                        "%s", service)
+                    code = None
+                    break
+                logger.info("non-daily backfill: %s resumed (%s)",
+                            service, entry.tag)
+                continue
+            code = status.get("exit_code") if status else None
+            break
         asyncio.run(self._record_rerun_async(service))
-        logger.info("non-daily backfill: %s rerun exit %s", service, code)
-        return True, code
+        logger.info("non-daily backfill: %s rerun exit %s (%d give-way "
+                    "stop(s))", service, code, yields)
+        return True, code, yields
+
+    # ------------------------------------------------------------------
+    # priority give-way (the runner holds the priority board)
+    # ------------------------------------------------------------------
+
+    def _priority_blocker(self, priority: int) -> str | None:
+        """The highest STRICTLY higher-priority claim on the
+        orchestration board, if any (None = clear to run) — the re-run
+        side of the give-way; equal priorities never block."""
+        claims = self._orchestration.priority_claims()
+        top = max((p for p in claims if p > priority), default=None)
+        if top is None:
+            return None
+        return f"{claims[top][0]} [P{top}]"
+
+    def _wait_priority_clear(self, priority: int, label: str) -> None:
+        """Block while a strictly higher-priority orchestration run is
+        in flight (the give-way BEFORE a submit — the blocker finishes,
+        then the non-daily task starts/resumes)."""
+        blocker = self._priority_blocker(priority)
+        if blocker is None:
+            return
+        logger.info("non-daily backfill: %s (P%d) giving way to "
+                    "higher-priority run %s — waiting", label, priority,
+                    blocker)
+        polls = 0
+        while True:
+            blocker = self._priority_blocker(priority)
+            if blocker is None:
+                break
+            polls += 1
+            if polls % _LANE_LOG_EVERY == 0:
+                logger.info("non-daily backfill: %s blocker %s still "
+                            "running — waiting", label, blocker)
+            time.sleep(_RERUN_POLL_S)
+        logger.info("non-daily backfill: %s priority board clear — "
+                    "resuming", label)
+
+    def _await_run_exit(self, entry_tag: str, label: str) -> None:
+        """Poll one registry tag to its exit (a give-way-stopped child:
+        SIGTERM grace then SIGKILL bounds the child; the cap only
+        guards a stalled registry sweep)."""
+        deadline = time.monotonic() + _STOP_EXIT_CAP_S
+        while time.monotonic() < deadline:
+            status = self._registry.status_many([entry_tag]).get(entry_tag)
+            if status is None or not status.get("running", True):
+                return
+            time.sleep(_RERUN_POLL_S)
+        logger.error("non-daily backfill: %s stopped child %s still "
+                     "running at the %ss cap", label, entry_tag,
+                     _STOP_EXIT_CAP_S)
 
     async def _record_rerun_async(self, service: str) -> None:
         conn = await get_db_connection_async()
@@ -568,7 +684,9 @@ class NonDailyOps:
     @staticmethod
     def _tier_step(service: str):
         """The service's (tier, step) from the non-daily tier files —
-        the module + args the backfill re-runs. None when absent."""
+        the module + args the backfill re-runs (its give-way priority
+        comes from the module's service_config entry, not the step).
+        None when absent."""
 
         class _TierStep(BaseModel):
             tier: str

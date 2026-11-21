@@ -3,8 +3,9 @@
 mirroring engines/signal_families: _mov_rsi, _boll_std, _ma_cross,
 _options_wall, _options_vix, _momentum, _rf_break, _rebound,
 _macd (the classic MACD construction computed at the fetch
-boundary) and _crowdedness (the nightly market crowdedness
-composite, data-driven universe), plus
+boundary), _crowdedness (the nightly market crowdedness
+composite, data-driven universe) and _volatility (the realized-vol
+panel, data-driven universe), plus
 _hedge_pairs (the portfolio family's pair universe + the three-curve
 trio frames), over the cross-family vocabulary in _shared (table
 names, the active-code / first-date lookups, the market-breadth
@@ -78,6 +79,11 @@ from ._crowdedness import (
     fetch_latest_crowdedness_date,
     resolve_crowdedness_universe,
 )
+from ._volatility import (
+    fetch_latest_volatility_date,
+    fetch_volatility_inputs,
+    resolve_volatility_universe,
+)
 from ._hedge_pairs import (
     fetch_hedge_pair_inputs,
     resolve_hedge_pair_universe,
@@ -99,6 +105,7 @@ __all__ = [
     "fetch_latest_rebound_date",
     "fetch_latest_rf_date",
     "fetch_latest_rsi_date",
+    "fetch_latest_volatility_date",
     "fetch_ma_inputs",
     "fetch_market_breadth",
     "fetch_macd_inputs",
@@ -111,7 +118,9 @@ __all__ = [
     "fetch_rf_inputs",
     "fetch_rsi_codes",
     "fetch_rsi_inputs",
+    "fetch_volatility_inputs",
     "resolve_crowdedness_universe",
     "resolve_hedge_pair_universe",
     "resolve_sec_type_universe",
+    "resolve_volatility_universe",
 ]

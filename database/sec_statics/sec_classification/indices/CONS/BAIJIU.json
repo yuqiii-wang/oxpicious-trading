@@ -19,19 +19,5 @@
       }
     ],
     "is_industry_not_strategy": true
-  },
-  "DUMMY_BAIJIU": {
-    "name": "白酒综合指数",
-    "exchange": null,
-    "sector_id": "CONS",
-    "industry_id": "BAIJIU",
-    "tags": [
-      {
-        "sector_id": "CONS",
-        "industry_id": "BAIJIU"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
   }
 }

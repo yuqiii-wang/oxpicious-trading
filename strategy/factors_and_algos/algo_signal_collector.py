@@ -63,13 +63,25 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from _common.df_utils import safe_columns
+
 from strategy._trading.engine import (
     run_backtest as _run_backtest_engine,
     compute_daily_rows as _compute_daily_rows,
 )
 from strategy.factors_and_algos import get_algo
-from strategy.factors_and_algos._algo.tuning import tune_signals
+from strategy.factors_and_algos._algo.tuning import (
+    SIGNAL_CONFIDENCE_THRESHOLD,
+    tune_signals,
+)
 from strategy.factors_and_algos._algo.registry import short_name
+from strategy.factors_and_algos._comb import CombPipeline, CombParams, coerce_comb
+from strategy.factors_and_algos._comb.adhoc import (
+    AdhocActionPlanner,
+    inject_trim_actions,
+    wrap_reason_fn,
+)
+from strategy.factors_and_algos._comb.guard import EquityGuard
 from strategy.factors_and_algos.portfolio import blend_signal_confidence
 
 
@@ -137,6 +149,18 @@ class AlgoSignalCollector:
                 "(single algo, weight 1.0)"
             )
         return self._algos[self._binary_algo_name]
+
+    @property
+    def DUST_FILTER(self) -> bool:
+        """Binary-mode fidelity passthrough: the single wrapped algo's
+        dust-filter flag. Read by ``run_ft_stress`` (which receives the
+        collector as its ``algo`` argument) so the stressed re-run skips
+        the tuning for algos that consume no threshold (the oracle
+        full-fidelity replay). Mixed mode keeps the production blend
+        tuning (True)."""
+        if not self.is_binary:
+            return True
+        return bool(getattr(self.primary_algo, "DUST_FILTER", True))
 
     # ------------------------------------------------------------------
     # Fetch — each algo fetches what data it needs
@@ -236,9 +260,23 @@ class AlgoSignalCollector:
             df["signal_value"] = 0.0
             return df
 
+        # Re-entry hygiene (FT stress re-runs apply_signals on the FINAL
+        # blended frame): drop stale contribution columns so the fresh
+        # sig_<algo> merge and the algo_conf_<algo> rename below never
+        # collide with suffixed duplicates. The adhoc payload column is
+        # dropped for the same reason (it belongs to a previous plan).
+        stale = [c for c in safe_columns(df)
+                 if c.startswith(("algo_conf_", "algo_w_", "adhoc_"))]
+        if stale:
+            df = df.drop(columns=stale)
+
         # Build per-algo signal frames: (code, date, sig_<algo>).
         sig_frames: List[pd.DataFrame] = []
         algo_names: List[str] = []
+        # Recorded bp evidence per family — the comb stack's sizing input
+        # (the flat ±100 replay otherwise ignores the analysis tier's
+        # stamped confidence).
+        bp_stash: dict = {}
         for algo_name, df_algo in self._mixed_dfs.items():
             algo = self._algos[algo_name]
             # Merge the algo's DEFAULT_PARAMS with any matching keys from the
@@ -254,6 +292,13 @@ class AlgoSignalCollector:
             )
             sig_frames.append(sig)
             algo_names.append(algo_name)
+            if "hist_confidence" in df_algo.columns:
+                sub = df_algo[df_algo["hist_confidence"].notna()]\
+                    [["code", "date", "hist_confidence"]]
+                bp_stash[algo_name] = {
+                    (r.code, r.date): float(r.hist_confidence)
+                    for r in sub.itertuples()
+                }
 
         if not sig_frames:
             df["signal_confidence"] = 0.0
@@ -263,6 +308,85 @@ class AlgoSignalCollector:
         # Merge per-algo signals into the unified OHLC df on (code, date).
         for sig in sig_frames:
             df = df.merge(sig, on=["code", "date"], how="left")
+
+        # Comb stack (2026-11-17 measured champion, default ON): the
+        # pipeline applies the pre-blend family transforms + adaptive
+        # weights and writes algo_w_<algo> columns for the reason
+        # builder. The transformed sig_<algo> columns stay on the frame
+        # (renamed below). ``_comb_guard`` is the pass-2 equity-guard
+        # state threaded by run_backtest (in-memory only, never stored).
+        comb: CombParams = coerce_comb(params.get("comb"))
+        if comb is not None and comb.enabled:
+            # Reject-tier evidence stash ({family: {(code, date):
+            # (rej_action, rej_bp)}}) — built ONLY when the reject
+            # policy is enabled (zero overhead on the default path;
+            # the stash is empty during the tier's probation anyway).
+            rej_stash: dict = {}
+            if comb.reject.enabled:
+                for algo_name, df_algo in self._mixed_dfs.items():
+                    if "rej_action" not in safe_columns(df_algo):
+                        continue
+                    sub = df_algo[df_algo["rej_action"].notna()][
+                        ["code", "date", "rej_action", "rej_confidence"]]
+                    rej_stash[algo_name] = {
+                        (r.code, r.date): (float(r.rej_action),
+                                           float(r.rej_confidence))
+                        for r in sub.itertuples()
+                    }
+            # No-action overlay evidence stash ({family: {(code, date):
+            # (na_action, na_bp)}} — the marks on FIRED positive days)
+            # — same gating: built ONLY when the no-action policy is
+            # enabled (zero default-path overhead).
+            na_stash: dict = {}
+            if comb.no_action.enabled:
+                for algo_name, df_algo in self._mixed_dfs.items():
+                    if "na_action" not in safe_columns(df_algo):
+                        continue
+                    sub = df_algo[df_algo["na_action"].notna()][
+                        ["code", "date", "na_action", "na_confidence"]]
+                    na_stash[algo_name] = {
+                        (r.code, r.date): (float(r.na_action),
+                                           float(r.na_confidence))
+                        for r in sub.itertuples()
+                    }
+            # Signal-amplification evidence stash ({family: {(code,
+            # date): (buy_bp_sum, sell_bp_sum)}} — the amplifier tier's
+            # per-day Σ amplify_bp for the family+side, from the fetch's
+            # amp_bp_buy / amp_bp_sell mirror columns). Built ONLY when
+            # the amplifier policy is enabled; the default-path overhead
+            # is one column check per algo. rows_to_df hands NULL sums
+            # back as NaN (a day with only one bound side) — NaN is a
+            # ZERO sum here, never a factor input (a NaN leaking through
+            # _factor's clamp would read as the CAP factor).
+            amp_stash: dict = {}
+            if comb.amplifier.enabled:
+                for algo_name, df_algo in self._mixed_dfs.items():
+                    if "amp_bp_buy" not in safe_columns(df_algo):
+                        continue
+                    sub = df_algo[df_algo["amp_bp_buy"].notna()
+                                  | df_algo["amp_bp_sell"].notna()][
+                        ["code", "date", "amp_bp_buy", "amp_bp_sell"]]
+                    entries = {}
+                    for r in sub.itertuples():
+                        b = float(r.amp_bp_buy) \
+                            if r.amp_bp_buy == r.amp_bp_buy else 0.0
+                        s = float(r.amp_bp_sell) \
+                            if r.amp_bp_sell == r.amp_bp_sell else 0.0
+                        entries[(r.code, r.date)] = (b, s)
+                    amp_stash[algo_name] = entries
+            df = CombPipeline(comb).blend(
+                df, algo_names, bp_stash,
+                guard_state=params.get("_comb_guard"),
+                rej_stash=rej_stash or None,
+                na_stash=na_stash or None,
+                amp_stash=amp_stash or None,
+            )
+            # Same rename as the equal path below — build_signal_reason
+            # reads algo_conf_<algo> (+ the pipeline's algo_w_<algo>
+            # per-bar weights) from the row.
+            for name in algo_names:
+                df = df.rename(columns={f"sig_{name}": f"algo_conf_{name}"})
+            return df
 
         # Vectorized weight-blend. Missing (NaN) per-algo signals -> 0.
         blended = pd.Series(0.0, index=df.index)
@@ -310,9 +434,21 @@ class AlgoSignalCollector:
 
         # Read per-algo signal_confidence from the row (columns algo_conf_<algo>
         # kept by _blend_signals). Compute per-algo contribution = w × c.
+        # The weight is the PER-BAR adaptive weight (algo_w_<algo>, written
+        # by the comb pipeline) when present, falling back to the static
+        # normalized weights — so the __MIX__ contributions always sum to
+        # the actual blended signal_confidence.
         contributions = []
         for algo_name in sorted(self._active):
             weight = self._norm_weights.get(algo_name, 0.0)
+            raw_w = row.get(f"algo_w_{algo_name}") if hasattr(row, "get") else None
+            try:
+                w_val = float(raw_w) if raw_w is not None else weight
+            except (TypeError, ValueError):
+                w_val = weight
+            if w_val != w_val:  # NaN guard
+                w_val = weight
+            weight = w_val
             col = f"algo_conf_{algo_name}"
             raw = row.get(col) if hasattr(row, "get") else None
             if raw is None and isinstance(row, dict):
@@ -375,26 +511,162 @@ class AlgoSignalCollector:
         decisions are returned unchanged with ``ft_stressed_conf`` annotated.
         """
         if not df.empty:
-            df = self.apply_signals(df, params)
+            # Equity-guard 2-pass (mixed + comb + U4 on): pass 1 blends +
+            # runs the engine to learn the pooled PnL path, pass 2 re-blends
+            # from the ORIGINAL per-family signals with the guard applied
+            # pre-blend (a post-blend guard would be a no-op — the engine
+            # reads the blended column).
+            comb: Optional[CombParams] = (
+                None if self.is_binary else coerce_comb(params.get("comb"))
+            )
+            if (comb is not None and comb.enabled
+                    and comb.equity_guard.enabled
+                    and params.get("_comb_guard") is None):
+                df = self._apply_with_equity_guard(
+                    df, params, sec_type, codes, comb)
+            else:
+                df = self.apply_signals(df, params)
             # Base signal tuning (inherited by the mixed-mode collector):
             # zero out sub-threshold |signal_confidence| so dust trades
-            # (conf < 5) are ignored by the engine. Applied AFTER the blend
-            # so the threshold gates the FINAL consolidated signal.
-            df = tune_signals(df)
+            # are ignored by the engine. Applied AFTER the blend so the
+            # threshold gates the FINAL consolidated signal (param-driven,
+            # matching AlgoBase.run_backtest). BINARY algos that consume
+            # no dust threshold (``DUST_FILTER`` False — the oracle
+            # full-fidelity replay) skip the filter entirely; a params
+            # ``conf_threshold`` is then inert.
+            threshold = float(
+                params.get("conf_threshold", SIGNAL_CONFIDENCE_THRESHOLD)
+                or SIGNAL_CONFIDENCE_THRESHOLD
+            )
+            if getattr(self, "DUST_FILTER", True):
+                df = tune_signals(df, threshold=threshold)
+            # Ad-hoc actions (mixed only): the strategy's self-proposed
+            # trims, planned on a pass-A engine run of this final frame
+            # and injected as SELL-only signals on zero-signal bars.
+            if (comb is not None and comb.enabled
+                    and comb.adhoc_actions.enabled):
+                df = self._apply_adhoc_actions(
+                    df, params, sec_type, codes, comb, threshold)
+        reason_fn = self.build_signal_reason
+        if "adhoc_payload" in safe_columns(df):
+            reason_fn = wrap_reason_fn(reason_fn)
+        # Engine params — binary algos that pin the holding gate
+        # (``TUNES_MIN_HOLDING`` False — the oracle full-fidelity replay)
+        # run the engine with ``min_holding_period`` = 1 so the SELL gate
+        # never blocks a pivot exit; a stale trained row's tuned value is
+        # overridden here. The copy keeps the caller's params dict
+        # untouched. Mixed mode is unchanged.
+        engine_params = params
+        if self.is_binary and not getattr(
+                self.primary_algo, "TUNES_MIN_HOLDING", True):
+            engine_params = {**params, "min_holding_period": 1}
         decisions = _run_backtest_engine(
-            df, params, sec_type, codes,
-            signal_reason_fn=self.build_signal_reason,
+            df, engine_params, sec_type, codes,
+            signal_reason_fn=reason_fn,
         )
 
         ft = float(params.get("fault_tolerance", 0) or 0)
-        if ft > 0 and decisions:
+        # ft_annotate=False (the trainer's statics) skips the post-hoc
+        # stressed-conf ANNOTATION — per-trial overhead only in studies;
+        # the engine's BUY-fill stress stays on regardless.
+        if ft > 0 and decisions and params.get("ft_annotate", True):
             from strategy.factors_and_algos._algo.fault_tolerance import run_ft_stress
             decisions = run_ft_stress(
                 self, df, params, sec_type, codes,
                 baseline_decisions=decisions,
-                signal_reason_fn=self.build_signal_reason,
+                signal_reason_fn=reason_fn,
             )
         return decisions
+
+    def _apply_adhoc_actions(
+        self, df: pd.DataFrame, params: dict, sec_type: str, codes: list,
+        comb: CombParams, threshold: float,
+    ) -> pd.DataFrame:
+        """Ad-hoc action 2-pass (``_comb/adhoc.py``). Pass A runs the
+        engine on the final blended + dust-tuned frame (stub reasons —
+        decisions feed the plan only); the planner walks each code's
+        pass-A daily rows with a shadow book and emits trims for
+        zero-signal bars; the trims are injected as negative
+        ``signal_confidence`` (partial SELLs) plus an ``adhoc_payload``
+        column the wrapped reason fn renders. Family signals are never
+        overridden; the engine's own min_holding_period gate still
+        applies to the injected SELLs."""
+        pass_a = _run_backtest_engine(
+            df, params, sec_type, codes,
+            signal_reason_fn=lambda row, side, p, c: "adhoc-pass",
+        )
+        by_code: dict = {}
+        for d in pass_a:
+            by_code.setdefault(d["code"], []).append(d)
+        daily_rows_by_code: dict = {}
+        for code, block in df.groupby("code", sort=False):
+            dec = by_code.get(code, [])
+            if not dec:
+                continue
+            dec.sort(key=lambda d: d["exec_date"])
+            for i, d in enumerate(dec, start=1):
+                d["decision_no"] = i
+            first_buy = next((d for d in dec if d["side"] == "BUY"), None)
+            if first_buy is None:
+                continue
+            daily_rows_by_code[code] = _compute_daily_rows(
+                block, dec, float(first_buy["fill_price"]))
+        if not daily_rows_by_code:
+            return df
+        planner = AdhocActionPlanner(
+            comb.adhoc_actions,
+            conf_threshold=threshold,
+            # 5 = singleton_trading.STRATEGY_PARAMS default; pass A above
+            # already ran the engine, so the params key exists anyway.
+            min_holding_period=int(params.get("min_holding_period", 5) or 5),
+        )
+        plan = planner.build_plan(df, daily_rows_by_code, by_code)
+        if not plan:
+            return df
+        return inject_trim_actions(df, plan)
+
+    def _apply_with_equity_guard(
+        self, df: pd.DataFrame, params: dict, sec_type: str, codes: list,
+        comb: CombParams,
+    ) -> pd.DataFrame:
+        """2-pass equity guard (Part 6 U4). Pass 1: the full comb WITHOUT
+        the guard, tuned + engine-run (stub reasons — pass-1 decisions are
+        discarded), pooling ``total_pnl`` by trade_date across every code in
+        the run. Pass 2: re-blend from the original per-family signals with
+        the guard state applied pre-blend (threaded via the in-memory
+        ``_comb_guard`` params key — never persisted)."""
+        threshold = float(
+            params.get("conf_threshold", SIGNAL_CONFIDENCE_THRESHOLD)
+            or SIGNAL_CONFIDENCE_THRESHOLD
+        )
+        df1 = tune_signals(self.apply_signals(df, params), threshold=threshold)
+        pass1_decisions = _run_backtest_engine(
+            df1, params, sec_type, codes,
+            signal_reason_fn=lambda row, side, p, c: "guard-pass",
+        )
+
+        pnl_by_date: dict = {}
+        by_code: dict = {}
+        for d in pass1_decisions:
+            by_code.setdefault(d["code"], []).append(d)
+        for code, block in df1.groupby("code", sort=False):
+            dec = by_code.get(code, [])
+            if not dec:
+                continue
+            dec.sort(key=lambda d: d["exec_date"])
+            for i, d in enumerate(dec, start=1):
+                d["decision_no"] = i
+            first_buy = next((d for d in dec if d["side"] == "BUY"), None)
+            if first_buy is None:
+                continue
+            anchor = float(first_buy["fill_price"])
+            for row in _compute_daily_rows(block, dec, anchor):
+                day = row["trade_date"]
+                pnl_by_date[day] = pnl_by_date.get(day, 0.0) + float(
+                    row.get("total_pnl") or 0.0)
+
+        state = EquityGuard(comb.equity_guard).build_state(pnl_by_date)
+        return self.apply_signals(df, {**params, "_comb_guard": state})
 
     def compute_daily_rows(self, code_df, decisions, anchor_price):
         """Delegate to the signal-agnostic engine helper."""

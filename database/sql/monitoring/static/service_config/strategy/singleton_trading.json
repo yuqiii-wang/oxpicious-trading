@@ -3,9 +3,11 @@
   "max_parallel": 1,
   "included_parallel_services": [],
   "excluded_parallel_services": [],
-  "freq": "once",
-  "schedule": "one-time pass; re-run on demand after universe/strategy changes",
-  "notes": "Discover available securities, backtest them, then calculate run risk metrics.",
-  "source_ref": "scripts/orchestration/strategy_once.json",
-  "updated_at": "2026-10-10T06:29:48.410435+00:00"
+  "is_resident": false,
+  "freq": "daily",
+  "priority": 70,
+  "schedule": "nightly (trading days) via the strategy_daily tier — the all-families portfolio (comb on) over indices, incremental (natural-key skip; only codes with newly arrived dates recompute). strategy_once remains the full-universe on-demand pass",
+  "notes": "Discover available securities, backtest them, then calculate run risk metrics. Daily tier: scripts/orchestration/strategy_daily.json (index, all families). On-demand tier: scripts/orchestration/strategy_once.json (full universe).",
+  "source_ref": "scripts/orchestration/strategy_daily.json",
+  "updated_at": "2026-11-20T15:25:15.716730+00:00"
 }

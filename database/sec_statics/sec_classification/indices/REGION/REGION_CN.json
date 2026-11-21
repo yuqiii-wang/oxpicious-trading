@@ -154,19 +154,5 @@
       }
     ],
     "is_industry_not_strategy": false
-  },
-  "DUMMY_REGION_CN": {
-    "name": "区域综合指数",
-    "exchange": null,
-    "sector_id": "REGION",
-    "industry_id": "REGION_CN",
-    "tags": [
-      {
-        "sector_id": "REGION",
-        "industry_id": "REGION_CN"
-      }
-    ],
-    "is_industry_not_strategy": false,
-    "is_dummy": true
   }
 }

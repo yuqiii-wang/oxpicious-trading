@@ -152,6 +152,18 @@ export {
   fetchMarketCrowdednessHotYears,
 } from "./analysis-market-crowdedness";
 
+export {
+  fetchVolatilityCodes,
+  fetchVolatilitySeries,
+} from "./analysis-volatility";
+export type { VolatilitySecType } from "./analysis-volatility";
+
+export {
+  fetchOracleCodes,
+  fetchOracleSeries,
+} from "./analysis-oracle";
+export type { OracleSecType } from "./analysis-oracle";
+
 export { fetchSecBaseline } from "./sec-baseline";
 
 export {
@@ -190,6 +202,13 @@ export {
   runIndustryCorrOffsetsRefresh,
   INDUSTRY_CORR_OFFSET_RUN_TAG,
 } from "./analysis-corr-offsets";
+
+export {
+  fetchNewsProviderAudit,
+  fetchNewsContentAudit,
+  runNewsAuditRefresh,
+  NEWS_AUDIT_RUN_TAG,
+} from "./analysis-news-audit";
 
 export {
   fetchPairPctRatioUniverse,
@@ -255,6 +274,8 @@ export {
   fetchTradingSignals,
   fetchTradingSignalHistory,
   fetchSignalRules,
+  fetchSignalAmplificationRules,
+  fetchSignalAmplificationHistory,
   fetchSignalPortfolios,
   fetchPortfolioSignals,
   fetchPortfolioSignalHistory,
@@ -269,6 +290,13 @@ export {
   type SignalRuleParams,
   type SignalRuleDocument,
   type SignalRulesResponse,
+  type SignalAmplifierBinding,
+  type SignalAmplificationEvidence,
+  type SignalAmplificationRule,
+  type SignalAmplificationRulesResponse,
+  type SignalAmplificationBindingResult,
+  type SignalAmplificationRecord,
+  type SignalAmplificationHistoryResponse,
   type SignalPortfolio,
   type SignalPortfoliosResponse,
   type PortfolioBenefitSnapshot,
@@ -293,16 +321,23 @@ export type {
   StrategySelection,
   SignalFamilyInfo,
   RunStrategyResult,
+  StrategyProcessStatus,
+  StrategyProcessResult,
   CheckExistingResult,
   TrainConfigRow,
   TrainRunRow,
   TrainLossType,
   TrainTrialRow,
   TrainInfoResponse,
+  RunHistoryItem,
+  RunHistoryResponse,
+  ForecastNextDayResponse,
+  ForecastNextDayRow,
 } from "./strategy";
 
 export {
   DEFAULT_STRATEGY_SELECTION,
+  DEFAULT_FAULT_TOLERANCE,
   ftSuffix,
   selectionToStrategyName,
   serializeSelection,
@@ -310,11 +345,16 @@ export {
   fetchSignalFamilies,
   fetchSingletonBacktest,
   fetchSingletonRisks,
+  fetchSingletonRunHistory,
   checkExistingStrategy,
   runSingletonStrategy,
   trainStrategyModel,
   fetchTrainInfo,
   fetchStrategyProcessStatus,
+  fetchStrategyProcessResult,
   singletonRunTag,
   singletonTrainTag,
+  fetchForecast,
+  runForecast,
+  forecastRunTag,
 } from "./strategy";

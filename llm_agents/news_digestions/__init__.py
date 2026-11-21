@@ -16,9 +16,13 @@ Package layout (small files, builds.text-style):
   * ``store`` — the work queue (articles missing a digestion row; title-
     only placeholders skipped unless asked) and the (news_id)-keyed
     upsert into text.news_digestions.
-  * ``fake_news`` — the fake-news detector slot (``FakeNewsDetector``),
-    running alongside the sentiment read on EVERY digested article and
-    writing ``is_fake_news`` (logic pending: always False for now).
+  * ``fake_news`` — the fake-news detector (``FakeNewsDetector``),
+    running alongside the sentiment read on EVERY digested article:
+    a Jev (System One) category read (discussion / analysis / opinion /
+    statement -> ``category``, label_dim ``news_category``) plus the
+    disingenuous tomorrow-question verdict -> ``is_fake_news`` (a title
+    asking 明天怎么走 while the same origin's earlier items already
+    made explicit directional statements; opinions never trigger it).
   * ``cli``   — argparse CLI (run / list, date/industry/source windows,
     --force, --dry-run, --concurrency).
 
@@ -42,11 +46,13 @@ from llm_agents.news_digestions.agent import (
     digest_system_prompt, parse_digest_json, truncate_content,
 )
 from llm_agents.news_digestions.fake_news import (
-    FakeNewsConfig, FakeNewsDetector,
+    FakeNewsConfig, FakeNewsDetector, FakeNewsVerdict,
 )
 from llm_agents.news_digestions.store import (
     DIGESTIONS_TABLE, count_pending, fetch_digestions,
-    fetch_pending_articles, upsert_digestions,
+    fetch_pending_articles, fetch_prior_articles,
+    fetch_undetected_articles, update_digestion_verdict,
+    upsert_digestions,
 )
 from llm_agents.news_digestions.cli import main
 
@@ -54,8 +60,9 @@ __all__ = [
     "DigestionError",
     "digest_system_prompt", "build_digest_messages", "parse_digest_json",
     "truncate_content", "digest_article",
-    "FakeNewsConfig", "FakeNewsDetector",
-    "DIGESTIONS_TABLE", "fetch_pending_articles", "upsert_digestions",
-    "fetch_digestions", "count_pending",
+    "FakeNewsConfig", "FakeNewsDetector", "FakeNewsVerdict",
+    "DIGESTIONS_TABLE", "fetch_pending_articles", "fetch_prior_articles",
+    "fetch_undetected_articles", "update_digestion_verdict",
+    "upsert_digestions", "fetch_digestions", "count_pending",
     "main",
 ]

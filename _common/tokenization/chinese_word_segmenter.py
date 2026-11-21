@@ -356,6 +356,27 @@ class ChineseWordSegmenter:
                 "(weights kept in RAM)",
                 time.monotonic() - self._last_use)
 
+    def unload(self) -> None:
+        """Full unload: drop the weights from RAM entirely — the next
+        segment call cold-loads from disk.  Idempotent — a no-op unless
+        loaded.  The host manager's tier-2 entry point (RAM weights drop
+        a further hour after the GPU offload; the standalone in-process
+        path never calls this)."""
+        with self._lock:
+            if not self._loaded:
+                return
+            idle = time.monotonic() - self._last_use
+            import gc
+
+            self._model = None
+            self._tokenizer = None
+            self._loaded = False
+            self._on_gpu = False
+            gc.collect()
+            logger.info(
+                "word segmenter: RAM weights dropped after %.0fs idle "
+                "(next call cold-loads from disk)", idle)
+
     def status(self) -> dict:
         """Lifecycle snapshot for the host's ModelStatus detail."""
         idle = (max(0.0, time.monotonic() - self._last_use)

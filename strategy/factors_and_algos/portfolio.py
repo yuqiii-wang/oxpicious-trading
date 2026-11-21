@@ -47,6 +47,18 @@ logger = logging.getLogger(__name__)
 # Portfolio naming
 # ---------------------------------------------------------------------------
 
+#: Trained keys the Phase-2 portfolio run applies from its algo_configs
+#: row (written by the mixed-mode trainer: Set C comb + Set A threshold +
+#: Set B execution keys). Applied over the trading layer so tuned values
+#: beat the STRATEGY_PARAMS defaults — the mixed mirror of the binary
+#: path's load_params precedence.
+_TRAINED_PORTFOLIO_KEYS = (
+    "conf_threshold",
+    "buy_exec_delay",
+    "sell_exec_delay",
+    "min_holding_period",
+)
+
 
 def portfolio_name(
     selection: Dict[str, float],
@@ -151,6 +163,7 @@ class PortfolioRunner:
         *,
         trading_layer: dict,
         fault_tolerance: float = 0,
+        comb_overrides: Optional[dict] = None,
         force: bool,
         seq_no: Optional[int],
         t0: float,
@@ -161,6 +174,10 @@ class PortfolioRunner:
         self.selection = selection
         self.trading_layer = trading_layer
         self.fault_tolerance = fault_tolerance
+        #: CLI-sourced comb overrides (--comb-json); merged over the
+        #: portfolio's algo_configs row (config sourcing ONLY — the
+        #: precedence itself lives in _comb.config.resolve_comb).
+        self.comb_overrides = comb_overrides
         self.force = force
         self.seq_no = seq_no
         self.t0 = t0
@@ -295,6 +312,8 @@ class PortfolioRunner:
         to keep this module focused on the backtest itself.
         """
         from strategy._common.runner import StrategyRunner
+        from strategy.factors_and_algos import load_algo_config, load_config_source
+        from strategy.factors_and_algos._comb import PARAMS_VERSION, resolve_comb
 
         pf_name = portfolio_name(self.selection, fault_tolerance=self.fault_tolerance)
         logger.info(f"\n[Phase 2] Building portfolio '{pf_name}' "
@@ -311,6 +330,58 @@ class PortfolioRunner:
         # the algo modules directly, not from this dict). The engine reads
         # min_holding_period / buy_notional / skip_final_liquidation from here.
         params = dict(self.trading_layer)
+
+        # Comb config (2026-11-17 measured stack, default ON): precedence
+        # code-defaults < portfolio algo_configs row < --comb-json CLI, all
+        # resolved in _comb.config.resolve_comb. The algo_configs key is the
+        # FT-LESS portfolio name (primary code) — a config is a
+        # parametrization, the _ft{N} suffix is run identity only, and the
+        # trainer writes trained comb rows under the same ft-less name;
+        # old rows without a ``comb`` block get the champion defaults. The
+        # full config rides the params dict (never a partial comb — the
+        # loader merges shallowly).
+        pf_config_name = portfolio_name(self.selection)
+        db_params = None
+        config_source = None
+        if codes:
+            db_params = await load_algo_config(
+                self.conn, sec_type, codes[0], pf_config_name,
+            )
+            config_source = await load_config_source(
+                self.conn, sec_type, codes[0], pf_config_name,
+            )
+        comb = resolve_comb(db_params, self.comb_overrides)
+        params["comb"] = comb.model_dump()
+        params["params_version"] = PARAMS_VERSION
+        if db_params:
+            # The trainer's Set A/B keys ride the SAME row as the comb:
+            # apply them over the trading layer (mirroring the binary
+            # path's load_params precedence — the tuned DB values beat
+            # the STRATEGY_PARAMS defaults; CLI-owned keys like
+            # buy_notional / fault_tolerance stay untouched).
+            trained_keys = {
+                key: db_params[key] for key in _TRAINED_PORTFOLIO_KEYS
+                if key in db_params
+            }
+            params.update(trained_keys)
+            if trained_keys:
+                logger.info(f"    [algo_configs] applied trained keys from "
+                      f"'{pf_config_name}' row: {trained_keys}")
+        if config_source is not None:
+            # Provenance: link the run to the algo_configs row the comb
+            # was resolved from (trained row date / default / version).
+            params["config_source"] = config_source.model_dump(mode="json")
+        logger.info(f"    [comb] {pf_name}: enabled={comb.enabled} "
+              f"gate={comb.regime_gate.enabled}(w{comb.regime_gate.window}) "
+              f"weights={comb.weights.mode}@{comb.weights.window_rows} "
+              f"u2={comb.quantile_sizing.enabled} u3={comb.vol_state.enabled} "
+              f"u4={comb.equity_guard.enabled} "
+              f"amp={comb.amplifier.enabled} "
+              f"breadth={comb.breadth.enabled} "
+              f"adhoc={comb.adhoc_actions.enabled}"
+              f"(cap {comb.adhoc_actions.low_cap_lots}/"
+              f"{comb.adhoc_actions.healthy_cap_lots})"
+              + (" (CLI/DB override)" if db_params or self.comb_overrides else ""))
 
         await StrategyRunner(
             self.conn, force=self.force, seq_no=self.seq_no,
@@ -368,6 +439,7 @@ async def build_algo_portfolio(
     codes: List[str],
     trading_layer: dict,
     fault_tolerance: float = 0,
+    comb_overrides: Optional[dict] = None,
     force: bool,
     seq_no: Optional[int],
     dry_run: bool,
@@ -383,6 +455,7 @@ async def build_algo_portfolio(
     await PortfolioRunner(
         conn=conn, pool=None, collector=collector, selection=selection,
         trading_layer=trading_layer, fault_tolerance=fault_tolerance,
+        comb_overrides=comb_overrides,
         force=force, seq_no=seq_no, t0=t0,
     ).build_algo_portfolio(sec_type=sec_type, codes=codes, dry_run=dry_run)
 

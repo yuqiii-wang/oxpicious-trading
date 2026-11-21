@@ -5,9 +5,15 @@ logic lives in the manager).
 * ``GET /v1/models`` — the OpenAI list shape, each entry extended with
   the model's local lifecycle status under ``local``.
 * ``GET /v1/models/{id}`` — OpenAI retrieve + ``local`` extension.
-* ``POST /v1/models/{id}/load`` / ``POST /v1/models/{id}/offload`` —
-  the admin load/offload API (idempotent, blocking until done; loads
-  run via ``asyncio.to_thread`` so the event loop never blocks).
+* ``POST /v1/models/{id}/load`` / ``.../offload`` / ``.../unload`` —
+  the admin lifecycle API (idempotent, blocking until done; loads run
+  via ``asyncio.to_thread`` so the event loop never blocks). ``unload``
+  drops the RAM weights of an ``offloaded`` model entirely (the tier-2
+  action the idle watchdog itself drives).
+* ``POST /v1/models/offload-all`` — the manual save-memory action: move
+  every LOADED model's weights GPU → CPU right now (skipping
+  already-offloaded ones; a failing model is skipped, not fatal). The
+  operator's one-call VRAM free before the GPU-hungry pipelines.
 """
 from __future__ import annotations
 
@@ -17,7 +23,7 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Request
 
-from ..data_definitions.admin import LoadOffloadResult
+from ..data_definitions.admin import LoadOffloadResult, OffloadAllResult
 from ..manager import ModelManager
 from .errors import model_load_failed, not_found_model
 
@@ -56,12 +62,13 @@ async def retrieve_model(request: Request, model_id: str) -> Any:
     }
 
 
-async def _load_offload(request: Request, model_id: str,
-                        action: str) -> Any:
+async def _lifecycle_action(request: Request, model_id: str,
+                            action: str) -> Any:
     manager: ModelManager = request.app.state.manager
     if model_id not in manager:
         return not_found_model(model_id)
-    fn = manager.load if action == "load" else manager.offload
+    fn = {"load": manager.load, "offload": manager.offload,
+          "unload": manager.unload}[action]
     try:
         status = await asyncio.to_thread(fn, model_id)
     except Exception as exc:  # noqa: BLE001 — load failures surface here
@@ -72,9 +79,24 @@ async def _load_offload(request: Request, model_id: str,
 
 @router.post("/{model_id}/load")
 async def load_model(request: Request, model_id: str) -> Any:
-    return await _load_offload(request, model_id, "load")
+    return await _lifecycle_action(request, model_id, "load")
 
 
 @router.post("/{model_id}/offload")
 async def offload_model(request: Request, model_id: str) -> Any:
-    return await _load_offload(request, model_id, "offload")
+    return await _lifecycle_action(request, model_id, "offload")
+
+
+@router.post("/{model_id}/unload")
+async def unload_model(request: Request, model_id: str) -> Any:
+    return await _lifecycle_action(request, model_id, "unload")
+
+
+@router.post("/offload-all")
+async def offload_all_models(request: Request) -> OffloadAllResult:
+    """The manual save-memory action — the collection-level companion
+    to the per-model lifecycle routes (POST has no single-segment
+    ``/{model_id}`` route, so the static path cannot shadow one)."""
+    manager: ModelManager = request.app.state.manager
+    offloaded = await asyncio.to_thread(manager.offload_all)
+    return OffloadAllResult(offloaded=offloaded)

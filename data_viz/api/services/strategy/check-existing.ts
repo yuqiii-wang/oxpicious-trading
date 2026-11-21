@@ -17,7 +17,7 @@ interface CheckExistingRow {
 }
 
 // The SELECT lives in the sql view
-// data_viz/api/services/strategy/check-existing/check_existing.
+// strategy/check-existing/check_existing.
 
 /**
  * Check if a strategy_identity row already exists for the given
@@ -35,7 +35,7 @@ export async function checkExistingStrategy(
   const secType = (rawSecType as MaSpreadSecType) ?? "index";
   const code = rawCode.trim();
   const rows = await querySqlView<CheckExistingRow>(
-    "data_viz/api/services/strategy/check-existing/check_existing",
+    "strategy/check-existing/check_existing",
     { strategy_name: strategyName, sec_type: secType, code },
   );
   return rows.length > 0 ? rows[0] : null;

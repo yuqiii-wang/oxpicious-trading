@@ -19,23 +19,5 @@
       }
     ],
     "is_industry_not_strategy": true
-  },
-  "DUMMY_DEBT_POLICY": {
-    "name": "政金债综合指数",
-    "exchange": null,
-    "sector_id": "DEBT",
-    "industry_id": "DEBT_POLICY",
-    "tags": [
-      {
-        "sector_id": "DEBT",
-        "industry_id": "DEBT_POLICY"
-      },
-      {
-        "sector_id": "DEBT",
-        "industry_id": "DEBT_GENERAL"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
   }
 }

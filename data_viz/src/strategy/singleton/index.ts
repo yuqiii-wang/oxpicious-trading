@@ -1,5 +1,8 @@
 export { useStrategyData } from "./useStrategyData";
-export { useChartInteractions } from "./useChartInteractions";
+export { useProcessStatusPoll } from "./useProcessStatusPoll";
+export type { ProcessStatusPoll } from "./useProcessStatusPoll";
+export { default as SingletonStrategyCodeTrendChart } from "./SingletonStrategyCodeTrendChart";
+export type { SingletonStrategyCodeTrendChartProps } from "./SingletonStrategyCodeTrendChart";
 export { RunControls } from "./RunControls";
 export type { RunControlsProps } from "./RunControls";
 export { TrainSplitButton } from "./TrainSplitButton";

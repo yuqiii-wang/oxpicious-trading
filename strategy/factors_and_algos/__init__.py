@@ -65,6 +65,7 @@ __all__ = [
     "get_algo",
     "short_name",
     "load_algo_config",
+    "load_config_source",
     "load_params",
     "ensure_default_config",
     "AlgoSignalCollector",
@@ -77,7 +78,8 @@ __all__ = [
 
 _REGISTRY_NAMES = {"ALGO_REGISTRY", "ALGO_ABBR", "DEFAULT_ALGO",
                    "register_algo", "get_algo", "short_name"}
-_LOADER_NAMES = {"load_algo_config", "load_params", "ensure_default_config"}
+_LOADER_NAMES = {"load_algo_config", "load_config_source", "load_params",
+                 "ensure_default_config"}
 _COLLECTOR_NAMES = {"AlgoSignalCollector"}
 _PORTFOLIO_NAMES = {"portfolio_name", "blend_signal_confidence",
                     "check_position_aware", "run_sub_algos",

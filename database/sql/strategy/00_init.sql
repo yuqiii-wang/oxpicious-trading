@@ -17,6 +17,7 @@
 \ir trade_decision_seqs/strategy_risk_period.sql
 \ir trade_decision_seqs/trade_decision.sql
 \ir training_trials.sql
+\ir forecast_next_day.sql
 \ir trade_decision_seqs/strategy_daily.sql
 \ir trade_decision_seqs/strategy_risks.sql
 

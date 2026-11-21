@@ -21,12 +21,14 @@ import CompositesPage from "@/analysis/pages/CompositesPage";
 import OppositeIndustryCorrelationsPage from "@/analysis/pages/Composites/OppositeIndustryCorrelations/OppositeIndustryCorrelationsPage";
 import AiMarketQaPage from "@/analysis/pages/Composites/AiMarketQa/AiMarketQaPage";
 import MarketSentimentNewsPage from "@/analysis/pages/Composites/MarketSentimentNews/MarketSentimentNewsPage";
+import NewsAuditPage from "@/analysis/pages/Composites/NewsAudit/NewsAuditPage";
 import MaSpreadPage from "@/analysis/pages/MaSpreadPage";
 import MarketBetaPage from "@/analysis/pages/MarketBetaPage";
 import PePage from "@/analysis/pages/PePage";
 import DividendsPage from "@/analysis/pages/DividendsPage";
 import EtfHoldingsPage from "@/analysis/pages/EtfHoldingsPage";
 import MarketCrowdednessPage from "@/analysis/pages/MarketCrowdednessPage";
+import VolatilityPage from "@/analysis/pages/VolatilityPage";
 import MarginTrendsPage from "@/analysis/pages/MarginTrendsPage";
 import FuturesAnalysisPage from "@/analysis/pages/FuturesAnalysis";
 import OptionsAnalysisPage from "@/analysis/pages/OptionsAnalysis";
@@ -35,13 +37,17 @@ import AiAnalysisPage from "@/analysis/pages/AiPage";
 import RecentMovementsPage from "@/analysis/pages/RecentMovements";
 import HedgePairsPage from "@/analysis/pages/HedgePairs";
 import OptionsSignalsPage from "@/analysis/pages/OptionsSignals";
+import SignalAmplificationPage from "@/analysis/pages/SignalAmplification";
+import OraclePage from "@/analysis/pages/Oracle";
 import SingletonStrategyPage from "@/strategy/SingletonStrategyPage";
+import ForecastPage from "@/strategy/forecast/ForecastPage";
 import ServiceMonitorPage from "@/monitor/pages/ServiceMonitor";
 import ExternalResourcesPage from "@/monitor/pages/ExternalResources";
 import AiMonitorPage from "@/monitor/pages/AiMonitor";
 import SrcDataAuditPage from "@/monitor/pages/SrcDataAuditPage";
-import NonDailyTasksPage from "@/monitor/pages/NonDailyTasksPage";
+import OrchestrationBoardPage from "@/monitor/pages/Orchestration";
 import DbAuditPage from "@/monitor/pages/DbAudit";
+import CautionsPage from "@/monitor/pages/Cautions";
 import ServiceConfigPage from "@/config/pages/ServiceConfigPage";
 import ExtRequestConfigPage from "@/config/pages/ExtRequestConfigPage";
 import SecretsPage from "@/config/pages/SecretsPage";
@@ -91,6 +97,7 @@ export default function App() {
           <Route path="/analysis/commons/dividends" element={<DividendsPage />} />
           <Route path="/analysis/commons/etf-holdings" element={<EtfHoldingsPage />} />
           <Route path="/analysis/commons/market-crowdedness" element={<MarketCrowdednessPage />} />
+          <Route path="/analysis/commons/volatility" element={<VolatilityPage />} />
           <Route path="/analysis/derivatives" element={<DerivativesPage />} />
           <Route path="/analysis/derivatives/margin-trends" element={<MarginTrendsPage />} />
           <Route path="/analysis/derivatives/futures" element={<FuturesAnalysisPage />} />
@@ -113,23 +120,24 @@ export default function App() {
             path="/analysis/composites/market-sentiment-news"
             element={<MarketSentimentNewsPage />}
           />
+          <Route path="/analysis/composites/news-audit" element={<NewsAuditPage />} />
           <Route path="/analysis/signals" element={<SignalsPage />} />
           <Route path="/analysis/signals/recent-movements" element={<RecentMovementsPage />} />
           <Route path="/analysis/signals/hedge-pairs" element={<HedgePairsPage />} />
           <Route path="/analysis/signals/options" element={<OptionsSignalsPage />} />
+          <Route path="/analysis/signals/signal-amplification" element={<SignalAmplificationPage />} />
+          <Route path="/analysis/signals/oracle" element={<OraclePage />} />
           <Route path="/analysis/ai" element={<AiAnalysisPage />} />
           <Route path="/strategy" element={<Navigate to="/strategy/singleton" replace />} />
-          <Route
-            path="/strategy/commons"
-            element={<Box sx={{ p: 4, color: "text.secondary" }}>Strategy Commons — coming soon.</Box>}
-          />
+          <Route path="/strategy/forecast" element={<ForecastPage />} />
           <Route path="/strategy/singleton" element={<SingletonStrategyPage />} />
           <Route path="/monitor" element={<ServiceMonitorPage />} />
+          <Route path="/monitor/cautions" element={<CautionsPage />} />
           <Route path="/monitor/ext-resources" element={<ExternalResourcesPage />} />
           <Route path="/monitor/ai" element={<AiMonitorPage />} />
           <Route path="/monitor/db" element={<DbAuditPage />} />
           <Route path="/monitor/src-data" element={<SrcDataAuditPage />} />
-          <Route path="/monitor/non-daily" element={<NonDailyTasksPage />} />
+          <Route path="/monitor/orchestration" element={<OrchestrationBoardPage />} />
           <Route path="/config" element={<Navigate to="/config/service" replace />} />
           <Route path="/config/service" element={<ServiceConfigPage />} />
           <Route path="/config/external" element={<ExtRequestConfigPage />} />

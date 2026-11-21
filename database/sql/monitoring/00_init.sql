@@ -8,6 +8,7 @@
 \ir 00_monitor_schema.sql
 
 -- tables (FK order)
+\ir caution_log.sql
 \ir db_health.sql
 \ir db_table_alert.sql
 \ir db_table_audit.sql
@@ -15,6 +16,7 @@
 \ir external_resource_audit.sql
 \ir external_resource_stats.sql
 \ir non_daily_task_state.sql
+\ir orchestration_task_state.sql
 \ir service_audit.sql
 \ir service_heartbeat.sql
 \ir sql_audit.sql

@@ -84,19 +84,5 @@
       }
     ],
     "is_industry_not_strategy": true
-  },
-  "DUMMY_BROKERS": {
-    "name": "证券综合指数",
-    "exchange": null,
-    "sector_id": "FIN",
-    "industry_id": "BROKERS",
-    "tags": [
-      {
-        "sector_id": "FIN",
-        "industry_id": "BROKERS"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
   }
 }

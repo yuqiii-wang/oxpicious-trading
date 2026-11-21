@@ -119,8 +119,10 @@ class JevBackend(ModelBackend):
     """One Jev decision model (kind ``jev``) — see module docstring."""
 
     def __init__(self, spec: ModelBackendSpec,
-                 default_idle_offload_s: float) -> None:
-        super().__init__(spec, default_idle_offload_s)
+                 default_idle_offload_s: float,
+                 default_idle_unload_s: float) -> None:
+        super().__init__(spec, default_idle_offload_s,
+                         default_idle_unload_s)
         model_dir = spec.resolved_path()
         if model_dir is None or not Path(model_dir).is_dir():
             raise ValueError(
@@ -201,6 +203,15 @@ class JevBackend(ModelBackend):
         self._model.to("cpu")
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+    def _unload(self) -> None:
+        """Drop the weights from RAM entirely — the next load() re-reads
+        them from disk."""
+        import gc
+
+        self._model = None
+        self._tokenizer = None
+        gc.collect()
 
     def _warmup(self) -> None:
         """One minimal System One forward — the served contract's exact

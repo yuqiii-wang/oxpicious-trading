@@ -90,13 +90,16 @@ export const SERVICE_CATALOG: ReadonlyArray<{
   { service: WATCHDOG_SERVICE, scope: "database", subScope: "monitoring", supervisedBy: "server_cluster.monitor" },
 ];
 
-/** Freq → auto-skip window in ms. `null` = never auto-skip (ad-hoc /
- *  continuous); `Infinity`-marker SKIP_ANY_SUCCESS = one success ever
- *  satisfies the freq. Unknown freq values fall back to never-skip. */
+/** Freq → auto-skip window in ms (NON-RESIDENT tasks — a resident
+ *  carries freq null and never auto-skips). `null` = never auto-skip
+ *  (ad-hoc / continuous); `Infinity`-marker SKIP_ANY_SUCCESS = one
+ *  success ever satisfies the freq. Unknown / null freq values fall
+ *  back to never-skip. The retired "always" value moved to the
+ *  service_config tree's is_resident flag (2026-11-20). */
 export const SKIP_ANY_SUCCESS = Number.POSITIVE_INFINITY;
 export const FREQ_PERIOD_MS: Record<string, number | null> = {
-  always: null,
   daily: 24 * 3600_000,
+  weekly: 7 * 24 * 3600_000,
   monthly: 30 * 24 * 3600_000,
   quarterly: 92 * 24 * 3600_000,
   semiannually: 183 * 24 * 3600_000,

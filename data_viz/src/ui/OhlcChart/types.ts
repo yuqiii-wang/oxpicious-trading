@@ -5,7 +5,7 @@
  * builder (triggerOverlay.ts) all consume this module.
  */
 import type { MutableRefObject } from "react";
-import type { ECharts } from "echarts";
+import type { ECharts, EChartsOption } from "echarts";
 import type { CodeTrendStreakInfo } from "@/shared/charts/CodeTrendTooltip";
 import type { SignalMarkPointData, SignalMarkerSpec } from "@/shared/charts/signalMarker";
 import type { OhlcMode } from "@/lib/ohlc";
@@ -28,7 +28,10 @@ export interface OhlcTradeSignal {
   signal_type: string;
   signal_sub_type: string;
   /** The signal's expected-move confidence as a % of price (the live
-   *  basis-point confidence / 100) — tooltip text only. */
+   *  basis-point confidence / 100) — tooltip text only. NEGATIVE = the
+   *  REJECT tier: the day draws the cross-triangle of its own action
+   *  (do NOT buy/sell at this price, never the inverse action) INSTEAD
+   *  of the plain triangle. */
   confidence: number;
   /** TRUE = the condition FIRED and the owning strategy's gate
    *  explicitly DECLINED it (the is_rejection no-action record —
@@ -161,6 +164,25 @@ export interface OhlcChartProps {
    *  trend label). One chart series per trend, graded shades (the
    *  extremes deepest). Empty/omitted = no shading. */
   trendSpans?: Record<string, TrendSpan[]>;
+  /** Opt-in EXTRA y-axes (the singleton code trend's Total P&L axis)
+   *  appended after the built axes. A series in extraSeries references
+   *  the k-th axis here via the NEGATIVE SENTINEL yAxisIndex -k — the
+   *  built-axis count varies (margin/PE axes are data-conditional), so
+   *  callers cannot know it. Keep identity-stable upstream (a fresh
+   *  array per render dirties the option memo → full notMerge rebuild). */
+  extraYAxis?: EChartsOption["yAxis"];
+  /** Opt-in EXTRA series appended after the built series (the Total P&L
+   *  curve, the LAST DAY SELL marker, the selected risk-period markArea).
+   *  yAxisIndex -1/-2/… resolves to the 1st/2nd/… extraYAxis; any other
+   *  value rides as given (0 = the price axis). Data arrays must align
+   *  to the GAP-BROKEN category axis (breakArraysAtGaps, >4-day breaks —
+   *  the same break the base builder inserts). Keep identity-stable. */
+  extraSeries?: EChartsOption["series"];
+  /** Per-date EXTRA tooltip rows, called at hover time (the singleton
+   *  code trend's decision + daily P&L block). Return null for days
+   *  without extra info. Identity-stable upstream — it rides the option
+   *  memo deps. */
+  tooltipExtraRows?: (date: string) => React.ReactNode | null;
   /** Historical trade signals to mark: green up-triangle (buy) below the
    *  low / red down-triangle (sell) above the high, and a per-day signal
    *  block in the axis tooltip. Same (date, action) pairs share a marker. */

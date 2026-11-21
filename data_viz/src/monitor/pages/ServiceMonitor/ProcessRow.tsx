@@ -4,9 +4,11 @@
  * note), the supposed-run freq (hover for schedule / notes / config
  * source), and the per-service Run button (opens the confirm dialog via
  * onRun — disabled while the process is running, spinner while a
- * page-spawned run is in flight). The expandable row reveals the run
- * audit history; every history run is clickable (onOpenLog) and opens its
- * service log in the page-level LogViewerDialog.
+ * page-spawned run is in flight). The expandable row reveals the
+ * per-service run TREND (the monitor-scope shared ServiceRunTrend —
+ * click a day for its run list) over the run audit history; every
+ * history run is clickable (onOpenLog) and opens its service log in the
+ * page-level LogViewerDialog.
  */
 import {
   Box,
@@ -26,7 +28,8 @@ import { ExpandLess, ExpandMore, PlayArrow } from "@mui/icons-material";
 import { fmtDateTimeShanghai, fmtTimeShanghai } from "@/shared/datetime";
 import type { ProcessStatus, ServiceAuditEntry } from "@/lib/api-client/monitor";
 import { PROCESS_CHIP, type ProcessRunsState } from "./constants";
-import { fmtAge, fmtPeriod, liveAge } from "./fmt";
+import { fmtAge, fmtPeriod, liveAge } from "@/monitor/fmt";
+import ServiceRunTrend from "@/monitor/components/service-run-trend";
 
 export default function ProcessRow({
   proc,
@@ -53,10 +56,14 @@ export default function ProcessRow({
   const age = liveAge(proc.beatAt, nowMs) ?? proc.beatAgeS;
   // Overdue vs the supposed cadence: the last beat is older than the
   // freq's window (server-computed freqPeriodMs; null = no checkable
-  // period — always / occasionally / on_demand / once never amber). The
-  // Last beat cell ambers so a lapsed schedule shows at a glance.
+  // period — resident (freq null) / occasionally / on_demand / once
+  // never amber). The Last beat cell ambers so a lapsed schedule shows
+  // at a glance.
   const overdue =
     proc.freqPeriodMs != null && age != null && age * 1000 > proc.freqPeriodMs;
+  // The cadence cell's text — "—" for a resident (always lives, no
+  // cadence).
+  const freqLabel = proc.freq ?? "—";
   const statusTip =
     proc.status === "stopped" && proc.stopReason != null
       ? `${proc.stopReason} (normal exit: ${proc.isNormalExit ? "yes" : "no"}) at ${fmtTimeShanghai(proc.stoppedAt)}`
@@ -140,10 +147,10 @@ export default function ProcessRow({
         <TableCell>
           {freqTip !== "" ? (
             <Tooltip title={freqTip}>
-              <span>{proc.freq}</span>
+              <span>{freqLabel}</span>
             </Tooltip>
           ) : (
-            proc.freq
+            freqLabel
           )}
         </TableCell>
         <TableCell>{proc.pid ?? "—"}</TableCell>
@@ -168,6 +175,10 @@ export default function ProcessRow({
         <TableCell colSpan={10} sx={{ py: 0, border: 0 }}>
           <Collapse in={open} unmountOnExit>
             <Box sx={{ px: 5, py: 1.5 }}>
+              {/* The row's run TREND first (the monitor-scope shared
+                  curve — click a day for its run list), then the recent
+                  run rows below. */}
+              <ServiceRunTrend service={proc.service} onOpenLog={onOpenLog} />
               {runs.loading && <CircularProgress size={16} sx={{ my: 1 }} />}
               {runs.error != null && (
                 <Typography variant="caption" color="error">

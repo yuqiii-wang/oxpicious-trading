@@ -58,19 +58,5 @@
       }
     ],
     "is_industry_not_strategy": true
-  },
-  "DUMMY_GREEN": {
-    "name": "绿色环保综合指数",
-    "exchange": null,
-    "sector_id": "ESG",
-    "industry_id": "GREEN",
-    "tags": [
-      {
-        "sector_id": "ESG",
-        "industry_id": "GREEN"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
   }
 }

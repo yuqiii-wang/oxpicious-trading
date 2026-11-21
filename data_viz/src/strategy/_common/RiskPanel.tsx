@@ -50,7 +50,7 @@ import type {
   StrategyPeriodType,
   StrategyRiskFactor,
 } from "@shared/types";
-import type { SelectedPeriod } from "@/strategy/singletonStrategyChartOption";
+import type { SelectedPeriod } from "./types";
 
 /**
  * Semantic P&L color: green (gain) / red (loss) / orange (flat).

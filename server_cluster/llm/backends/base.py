@@ -3,25 +3,34 @@
 Every backend wraps ONE local model behind the same lifecycle the word
 segmenter has always run (lazy load, transparent GPU rehydrate,
 idle-offload to CPU with weights kept in RAM) — the machinery migrated
-out of ``_common.tokenization.chinese_word_segmenter`` and generalized:
+out of ``_common.tokenization.chinese_word_segmenter`` and generalized,
+now TWO idle tiers:
+
+* tier 1: after ``idle_offload_s`` idle seconds the weights move GPU →
+  CPU (RAM keeps them, CUDA cache emptied) — state ``offloaded``;
+* tier 2: after a further ``idle_unload_s`` idle seconds on CPU the
+  weights drop from RAM entirely — state ``unloaded``; the next
+  ``ensure_loaded()`` cold-loads from disk.
 
 * one ``threading.Lock`` per model serializes load / inference /
-  offload (a single GPU; inference methods acquire it themselves via
-  :meth:`run_locked`),
+  offload / unload (a single GPU; inference methods acquire it
+  themselves via :meth:`run_locked`),
 * the state machine ``not_loaded → loading → loaded|error`` plus
-  ``offloaded`` (weights in RAM, off the GPU) drives
+  ``offloaded`` (weights in RAM, off the GPU) and ``unloaded`` (no
+  weights in memory) drives
   :class:`~.data_definitions.admin.ModelStatus`,
-* :meth:`load` / :meth:`offload` / :meth:`warmup` are the admin-API
-  entry points (idempotent), :meth:`ensure_loaded` is the inference
-  path's internal (lock-held) loader,
+* :meth:`load` / :meth:`offload` / :meth:`unload` / :meth:`warmup` are
+  the admin-API entry points (idempotent), :meth:`ensure_loaded` is the
+  inference path's internal (lock-held) loader,
 * ``last_use`` stamping (:meth:`touch`) feeds the manager's idle
   watchdog.
 
 Subclasses implement :meth:`_load` (weights onto the device),
-:meth:`_offload` (weights to CPU + free the CUDA cache) and optionally
-:meth:`_warmup` (a tiny inference so the first real request is fast).
-Backends without weights (the dummy simulation) override
-``_load/_offload`` as no-ops and are always ``loaded``.
+:meth:`_offload` (weights to CPU + free the CUDA cache), :meth:`_unload`
+(weights dropped from RAM) and optionally :meth:`_warmup` (a tiny
+inference so the first real request is fast). Backends without weights
+(the dummy simulation) override ``_load/_offload/_unload`` as no-ops and
+are always ``loaded``.
 """
 from __future__ import annotations
 
@@ -40,17 +49,22 @@ class ModelBackend(ABC):
     """One managed local model (see module docstring)."""
 
     def __init__(self, spec: ModelBackendSpec,
-                 default_idle_offload_s: float) -> None:
+                 default_idle_offload_s: float,
+                 default_idle_unload_s: float) -> None:
         self.spec = spec
         self.model_id = spec.model_id
         self.idle_offload_s = (default_idle_offload_s
                                if spec.idle_offload_s is None
                                else float(spec.idle_offload_s))
+        self.idle_unload_s = (default_idle_unload_s
+                              if spec.idle_unload_s is None
+                              else float(spec.idle_unload_s))
         self.lock = threading.Lock()
 
         self._state = "not_loaded"
         self._error: str | None = None
         self._last_use = 0.0
+        self._offloaded_at: float | None = None
         self._loaded_once = False
         self._warmed = False
 
@@ -62,6 +76,10 @@ class ModelBackend(ABC):
     @abstractmethod
     def _offload(self) -> None:
         """Move the weights to CPU and free the CUDA cache. Lock held."""
+
+    @abstractmethod
+    def _unload(self) -> None:
+        """Drop the weights from RAM entirely. Lock held by caller."""
 
     def _warmup(self) -> None:
         """One tiny inference after load (default: nothing to warm)."""
@@ -77,6 +95,14 @@ class ModelBackend(ABC):
         if self._last_use <= 0.0:
             return None
         return max(0.0, time.monotonic() - self._last_use)
+
+    @property
+    def offloaded_for_s(self) -> float | None:
+        """Seconds since the GPU→CPU offload (the tier-2 age) — None
+        unless currently offloaded."""
+        if self._offloaded_at is None:
+            return None
+        return max(0.0, time.monotonic() - self._offloaded_at)
 
     def touch(self) -> None:
         """Stamp `last use = now` — every inference call booksends this
@@ -103,6 +129,7 @@ class ModelBackend(ABC):
         self._state = "loaded"
         self._error = None
         self._loaded_once = True
+        self._offloaded_at = None
         self.touch()
         logger.info("local model host: %s ready in %.1fs", self.model_id,
                     time.perf_counter() - t0)
@@ -120,18 +147,38 @@ class ModelBackend(ABC):
                 self._warmed = True
 
     def offload(self) -> None:
-        """Idle-offload: weights to CPU (RAM keeps them), CUDA cache
-        emptied; the next ensure_loaded() rehydrates. Idempotent."""
+        """Idle-offload tier 1: weights to CPU (RAM keeps them), CUDA
+        cache emptied; the next ensure_loaded() rehydrates. Idempotent."""
         with self.lock:
             if self._state != "loaded":
                 return
             t0 = time.perf_counter()
             self._offload()
             self._state = "offloaded"
+            self._offloaded_at = time.monotonic()
             logger.info(
                 "local model host: %s offloaded to CPU after %.0fs idle "
                 "(%.1fs, weights kept in RAM)", self.model_id,
                 self.idle_for_s or 0.0, time.perf_counter() - t0)
+
+    def unload(self) -> None:
+        """Idle-unload tier 2: weights dropped from RAM entirely; the
+        next ensure_loaded() cold-loads from disk. Only acts from the
+        ``offloaded`` state (unload a loaded model by offloading
+        first). Idempotent."""
+        with self.lock:
+            if self._state != "offloaded":
+                return
+            cpu_idle = self.offloaded_for_s or 0.0
+            t0 = time.perf_counter()
+            self._unload()
+            self._state = "unloaded"
+            self._offloaded_at = None
+            logger.info(
+                "local model host: %s unloaded from CPU after %.0fs "
+                "further idle (%.1fs, weights dropped — next use "
+                "cold-loads from disk)", self.model_id, cpu_idle,
+                time.perf_counter() - t0)
 
     # -------------------------------------------------------------- inference
     def run_locked(self, fn):

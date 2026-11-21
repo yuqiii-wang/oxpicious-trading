@@ -55,20 +55,6 @@
     ],
     "is_industry_not_strategy": true
   },
-  "DUMMY_AUTO": {
-    "name": "汽车综合指数",
-    "exchange": null,
-    "sector_id": "IND",
-    "industry_id": "AUTO",
-    "tags": [
-      {
-        "sector_id": "IND",
-        "industry_id": "AUTO"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
-  },
   "H30015": {
     "name": "800汽车",
     "exchange": "HK",

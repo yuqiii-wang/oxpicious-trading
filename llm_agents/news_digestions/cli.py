@@ -8,12 +8,19 @@ Usage::
         [--provider zhipu] [--model glm-5.3-flash] [--concurrency 4] \
         [--max-content-chars 8000] [--lang zh] [--dry-run]
     python -m llm_agents.news_digestions list [--limit 20] [--industry BANKS]
+    python -m llm_agents.news_digestions backfill-category [--limit 0] \
+        [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD] \
+        [--industry BANKS] [--source gov] [--concurrency 4] [--dry-run]
 
 ``python -m llm_agents digest|digestions …`` dispatches here too (see
 llm_agents.__main__). ``run`` digests every in-scope article that has no
 text.news_digestions row yet (--force re-digests all in-scope articles,
 overwriting), writing each row as its LLM call completes so a crash never
 loses completed work; ``--dry-run`` just lists the work queue.
+``backfill-category`` runs the fake-news detector over digested rows
+still at the un-classified default category=99 — the resumable queue for
+covering rows digested before the detector shipped — writing only
+category / is_fake_news (never the engine's summary / sentiment).
 """
 from __future__ import annotations
 
@@ -30,15 +37,15 @@ import argparse  # noqa: E402
 import asyncio  # noqa: E402
 import datetime  # noqa: E402
 import sys  # noqa: E402
-from typing import Optional  # noqa: E402
+from typing import Dict, Optional  # noqa: E402
 
 from _common.log_setup import setup_logging  # noqa: E402
 
 from llm_agents.news_digestions.agent import digest_article  # noqa: E402
 from llm_agents.news_digestions.fake_news import FakeNewsDetector  # noqa: E402
 from llm_agents.news_digestions.store import (  # noqa: E402
-    count_pending, fetch_digestions, fetch_pending_articles,
-    upsert_digestions,
+    DIGESTIONS_TABLE, count_pending, fetch_digestions,
+    fetch_pending_articles, upsert_digestions,
 )
 from llm_agents.online_search_summary import (  # noqa: E402
     PROVIDERS, get_provider,
@@ -125,7 +132,8 @@ async def _run(args) -> None:
 
         sem = asyncio.Semaphore(max(1, args.concurrency))
         # The fake-news pass rides EVERY digestion (either engine): merge
-        # its verdict into each row before the store upsert.
+        # its category + verdict into each row before the store upsert
+        # (conn unlocks the prior hunt for asking titles).
         detector = FakeNewsDetector()
 
         async def run_one(article):
@@ -136,7 +144,7 @@ async def _run(args) -> None:
                     row = await digest_article(
                         provider, article, model=model, lang=args.lang,
                         max_content_chars=args.max_content_chars)
-                return await detector.annotate_row(row, article)
+                return await detector.annotate_row(row, article, conn=conn)
 
         ok = failed = 0
         for fut in asyncio.as_completed([run_one(a) for a in articles]):
@@ -162,18 +170,157 @@ async def _run(args) -> None:
         await close_pools_async()
 
 
+async def _backfill_category(args) -> None:
+    """Run the detector over digested rows still at category = 99 (other).
+
+    Writes ONLY the two detector columns (category / is_fake_news) — the
+    summary / sentiment the chat or jev engine produced stay untouched.
+    Resumable: rows already classified (any code != 99) are skipped, so
+    an interrupted run continues where it stopped.
+    """
+    from _common.labels import NEWS_CATEGORY_LABEL
+
+    from llm_agents.news_digestions.fake_news import FakeNewsDetector
+    from llm_agents.news_digestions.store import (
+        fetch_undetected_articles, update_digestion_verdict,
+    )
+
+    conn = await get_db_or_exit()
+    try:
+        await _run_tables_check(conn)
+        # Guard the premise: the verdict columns are SMALLINT / BOOLEAN
+        # codes (the label-code contract), not TEXT labels.
+        col_type = await conn.fetchval(
+            "SELECT data_type FROM information_schema.columns "
+            "WHERE table_schema = 'text' AND table_name = 'news_digestions' "
+            "AND column_name = 'category'")
+        if col_type != "smallint":
+            logger.error("    [FATAL] text.news_digestions.category is %s, "
+                         "expected smallint — apply the DDL first", col_type)
+            sys.exit(1)
+
+        articles = await fetch_undetected_articles(
+            conn,
+            start=_parse_date_arg(args.start_date, "--start-date"),
+            end=_parse_date_arg(args.end_date, "--end-date"),
+            industry_id=args.industry, source=args.source,
+            limit=args.limit or None)
+        if not articles:
+            logger.info("    no digested rows awaiting classification — "
+                        "nothing to backfill")
+            return
+        span = f"{articles[-1]['date']} → {articles[0]['date']}"
+        logger.info("    %d digestion row(s) at category=99 (%s)", len(articles), span)
+
+        if args.dry_run:
+            for a in articles[:50]:
+                logger.info("    news_id=%-8s %s [%s/%s] %s",
+                            a["news_id"], a["date"], a["source"] or "-",
+                            a["industry_id"] or "-", a["title"][:70])
+            logger.info("%d row(s) would be classified", len(articles))
+            return
+
+        detector = FakeNewsDetector()
+        sem = asyncio.Semaphore(max(1, args.concurrency))
+        ok = failed = fake = 0
+        spread: Dict[int, int] = {}
+
+        # The run holds ONE asyncpg connection for its whole multi-hour
+        # window — a DB restart (machine reboot, container bounce) must not
+        # burn the rest of the queue the way the first full run did (the
+        # 2026-11-18 outage failed 9.9k rows after the drop). Connection
+        # death lands as a typed asyncpg error (or OSError on the socket):
+        # reconnect once and retry the row; anything else counts failed.
+        import asyncpg  # noqa: E402  (already a dependency of db_commons)
+        from _common.db_commons import get_db_connection_async  # noqa: E402
+
+        conn_exc = (asyncpg.exceptions.PostgresError,
+                    asyncpg.exceptions.InterfaceError, OSError)
+        holder = {"conn": conn}
+
+        async def reconnect() -> None:
+            async with detector.db_lock:
+                try:
+                    await holder["conn"].close()
+                except Exception:
+                    pass
+                holder["conn"] = await get_db_connection_async()
+                logger.info("    [backfill] DB connection restored")
+
+        async def run_one(article):
+            async with sem:
+                for attempt in (1, 2):
+                    try:
+                        verdict = await detector.detect_article(
+                            article, conn=holder["conn"])
+                        # The verdict UPDATE shares the connection — same
+                        # db_lock the detector's prior hunt holds (one
+                        # asyncpg conn).
+                        async with detector.db_lock:
+                            await update_digestion_verdict(
+                                holder["conn"], article["news_id"],
+                                verdict.category, verdict.is_fake_news)
+                        return verdict
+                    except conn_exc as e:
+                        if attempt == 1:
+                            logger.warning(
+                                "    [backfill] news_id=%s DB connection "
+                                "lost (%s: %s) — reconnecting",
+                                article["news_id"], type(e).__name__, e)
+                            await reconnect()
+                            continue
+                        raise
+
+        for fut in asyncio.as_completed([run_one(a) for a in articles]):
+            try:
+                verdict = await fut
+            except Exception as e:  # one bad row never kills the backfill
+                failed += 1
+                logger.error("    [backfill] failed: %s: %s",
+                             type(e).__name__, e)
+                continue
+            ok += 1
+            fake += int(verdict.is_fake_news)
+            spread[verdict.category] = spread.get(verdict.category, 0) + 1
+            if ok % 200 == 0:
+                done = ok + failed
+                logger.info("    [%d/%d] … %d flagged fake so far",
+                            done, len(articles), fake)
+
+        logger.info("    [DB] %d classified, %d failed, %d flagged fake",
+                    ok, failed, fake)
+        for code in sorted(spread):
+            logger.info("    [DB] category %-4d %-10s %d", code,
+                        NEWS_CATEGORY_LABEL.get(code, "?"), spread[code])
+        try:
+            left = await holder["conn"].fetchval(
+                f'SELECT COUNT(*) FROM {DIGESTIONS_TABLE} '
+                f'WHERE category = 99')
+            logger.info("    [DB] %d row(s) still at category=99", left)
+        except conn_exc as e:
+            logger.warning("    [DB] final count skipped (%s: %s) — "
+                           "re-run backfill-category to finish the rest",
+                           type(e).__name__, e)
+    finally:
+        from _common.db_commons import close_pools_async
+        await close_pools_async()
+
+
 async def _list(args) -> None:
+    from _common.labels import NEWS_CATEGORY_LABEL
+
     conn = await get_db_or_exit()
     try:
         await _run_tables_check(conn)
         rows = await fetch_digestions(conn, limit=args.limit,
                                       industry_id=args.industry)
         for r in rows:
+            category = NEWS_CATEGORY_LABEL.get(r.get("category"), "other")
             logger.info(
-                "#%s %s [%s/%s] sentiment=%s model=%s%s\n    %s\n    %s",
+                "#%s %s [%s/%s] sentiment=%s category=%s model=%s%s\n    %s\n    %s",
                 r["news_id"], r["date"], r["source"] or "-",
                 r["industry_id"] or "-", _fmt_sentiment(r["sentiment_level"]),
-                r["llm_model"] or "-",
+                category, r["llm_model"] or "-",
                 " [FAKE]" if r["is_fake_news"] else "",
                 r["title"][:80],
                 (r["summary"] or "")[:120])
@@ -244,8 +391,29 @@ async def main() -> None:
     p_list.add_argument("--limit", type=int, default=20)
     p_list.add_argument("--industry", type=str, default=None)
 
+    p_bf = sub.add_parser(
+        "backfill-category", aliases=("backfill",),
+        help="run the fake-news detector over digested rows still at "
+             "category=99 (other), writing only category / is_fake_news")
+    p_bf.add_argument("--limit", type=int, default=0,
+                      help="Max rows this run; 0 = no limit (default 0).")
+    p_bf.add_argument("--start-date", type=str, default=None,
+                      help="Only rows dated on/after YYYY-MM-DD.")
+    p_bf.add_argument("--end-date", type=str, default=None,
+                      help="Only rows dated on/before YYYY-MM-DD.")
+    p_bf.add_argument("--industry", type=str, default=None,
+                      help="Only this industry_id (BANKS, BROAD_SSE, …).")
+    p_bf.add_argument("--source", type=str, default=None,
+                      help="Only this text.news source (gov, zhihu, …).")
+    p_bf.add_argument("--concurrency", type=int, default=4,
+                      help="Parallel detector reads (default 4).")
+    p_bf.add_argument("--dry-run", action="store_true",
+                      help="List the work queue without reading jev.")
+
     args = ap.parse_args()
     if args.cmd in ("run", "digest", "digestions"):
         await _run(args)
     elif args.cmd == "list":
         await _list(args)
+    elif args.cmd in ("backfill-category", "backfill"):
+        await _backfill_category(args)

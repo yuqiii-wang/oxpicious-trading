@@ -11,11 +11,16 @@
  *
  * Single tag → strategy_name = the family name; multiple tags → the
  * equal-blend "portfolio:a+b" name (see selectionToStrategyName).
+ *
+ * DEFAULT = ALL families: until the user touches the input, every
+ * (re)loaded option set is adopted wholesale (user-directed 2026-11-16);
+ * options render tick-style (checkbox per row, dropdown stays open).
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Autocomplete,
   Box,
+  Checkbox,
   Chip,
   CircularProgress,
   TextField,
@@ -46,6 +51,9 @@ export default function SignalTagsInput({
   const [families, setFamilies] = useState<SignalFamilyInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // "Select all by default": false until the user edits the tags — every
+  // option-set load before that adopts the whole family list.
+  const userTouchedRef = useRef(false);
 
   // Tag options are data-driven from the analysis signals tier; they
   // follow the sec_type (a family appears once its events exist there).
@@ -55,7 +63,11 @@ export default function SignalTagsInput({
     setError(null);
     fetchSignalFamilies(secType)
       .then((rows) => {
-        if (!cancelled) setFamilies(rows);
+        if (cancelled) return;
+        setFamilies(rows);
+        if (!userTouchedRef.current && rows.length > 0) {
+          onChange([...rows.map((f) => f.name)].sort());
+        }
       })
       .catch((e) => {
         if (!cancelled) setError(String(e instanceof Error ? e.message : e));
@@ -66,7 +78,7 @@ export default function SignalTagsInput({
     return () => {
       cancelled = true;
     };
-  }, [secType]);
+  }, [secType, onChange]);
 
   const byName = useMemo(() => {
     const m = new Map<string, SignalFamilyInfo>();
@@ -94,15 +106,25 @@ export default function SignalTagsInput({
         multiple
         size="small"
         disabled={disabled}
+        disableCloseOnSelect
         options={families.map((f) => f.name)}
         value={value}
-        onChange={(_, next) => toggle(next as string[])}
+        onChange={(_, next) => {
+          userTouchedRef.current = true;
+          toggle(next as string[]);
+        }}
         getOptionLabel={(name) => name}
-        renderOption={(props, name) => {
+        renderOption={(props, name, { selected }) => {
           const { key, ...rest } = props as React.HTMLAttributes<HTMLLIElement> & { key: string };
           return (
             <Tooltip key={key} title={optionLabel(name)} placement="top">
               <li {...rest}>
+                <Checkbox
+                  size="small"
+                  checked={selected}
+                  sx={{ mr: 0.5, p: 0.25 }}
+                  inputProps={{ "aria-label": name }}
+                />
                 <Box sx={{ display: "flex", flexDirection: "column" }}>
                   <Typography variant="body2" sx={{ fontWeight: 600 }}>
                     {name}

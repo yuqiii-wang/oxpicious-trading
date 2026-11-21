@@ -63,20 +63,6 @@
     ],
     "is_industry_not_strategy": true
   },
-  "DUMMY_BANKS": {
-    "name": "银行综合指数",
-    "exchange": null,
-    "sector_id": "FIN",
-    "industry_id": "BANKS",
-    "tags": [
-      {
-        "sector_id": "FIN",
-        "industry_id": "BANKS"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
-  },
   "H30022": {
     "name": "800银行",
     "exchange": "HK",

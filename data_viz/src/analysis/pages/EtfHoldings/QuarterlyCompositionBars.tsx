@@ -347,12 +347,12 @@ export default function QuarterlyCompositionBars({ code, name }: Props) {
         data: Object.keys(colorByIndustry),
         top: 0,
         left: "center",
-        textStyle: { color: c.textColor, fontSize: 9 },
+        // Colors inherit from commonLegend (legendColors) via the
+        // baseChartOption merge — layout keys only here.
+        textStyle: { fontSize: 9 },
         itemWidth: 10,
         itemHeight: 6,
         itemGap: 10,
-        pageIconColor: c.textColor,
-        pageTextStyle: { color: c.textColor },
       },
       grid: commonGrid({ left: 40, right: 12, top: 46, bottom: 30 }),
       xAxis: {

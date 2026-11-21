@@ -63,19 +63,5 @@
       }
     ],
     "is_industry_not_strategy": true
-  },
-  "DUMMY_RE_REAL_ESTATE": {
-    "name": "地产综合指数",
-    "exchange": null,
-    "sector_id": "RE",
-    "industry_id": "RE_REAL_ESTATE",
-    "tags": [
-      {
-        "sector_id": "RE",
-        "industry_id": "RE_REAL_ESTATE"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
   }
 }

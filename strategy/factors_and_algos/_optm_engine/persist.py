@@ -27,8 +27,10 @@ import datetime
 import json
 from typing import Any, Dict, List
 
+from strategy.factors_and_algos._comb.config import PARAMS_VERSION
+
 # Keys that must NOT leak from the optimization run into algo_configs.
-_STRIP_KEYS = ("skip_final_liquidation", "fault_tolerance",
+_STRIP_KEYS = ("skip_final_liquidation", "fault_tolerance", "ft_annotate",
                "fee_rate", "slippage_band", "buy_notional")
 
 _UPSERT_SQL = """
@@ -64,8 +66,12 @@ async def upsert_best_params(
     reserved default row (wide range) and custom user-authored DATED
     rows (narrower ranges with later start_date) are never clobbered —
     by design, so hand-tuned date-ranged configs keep precedence.
+
+    New rows carry ``params_version = 3`` (trainer-produced; readers
+    default a missing tag to 1 — pre-comb rows stay v1 by design).
     """
     stored = clean_params_for_storage(params)
+    stored.setdefault("params_version", PARAMS_VERSION)
     start = train_date or datetime.date.today()
     await conn.execute(
         _UPSERT_SQL,

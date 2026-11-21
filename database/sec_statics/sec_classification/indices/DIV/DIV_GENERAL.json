@@ -123,19 +123,5 @@
       }
     ],
     "is_industry_not_strategy": false
-  },
-  "DUMMY_DIV_GENERAL": {
-    "name": "红利综合指数",
-    "exchange": null,
-    "sector_id": "DIV",
-    "industry_id": "DIV_GENERAL",
-    "tags": [
-      {
-        "sector_id": "DIV",
-        "industry_id": "DIV_GENERAL"
-      }
-    ],
-    "is_industry_not_strategy": false,
-    "is_dummy": true
   }
 }

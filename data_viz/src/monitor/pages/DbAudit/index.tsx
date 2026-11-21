@@ -13,14 +13,15 @@
  *     (write_rate + the amber/red write_flag) and the read side from the
  *     replica (where the API reads). A KPI chip row summarizes the
  *     window: tables active / partitions / amber / red; the write-rate
- *     cell and flag chip amber/red with the verdict. A plain row's click
- *     drills into…
+ *     cell and flag chip amber/red with the verdict; a family row's
+ *     click expands it in place.
  *
- *   • TREND — the selected table's write-rate bars (colored by each
- *     pass's flag) + read-rate line over the window
- *     (GET /api/monitor/db/trend — a partitioned parent's passes
- *     aggregate its whole family; the expanded family row mounts the
- *     same chart in context).
+ *   • TREND — the family workload trend (Σ partitions), mounted INSIDE
+ *     the expanded family row: write-rate bars (colored by each pass's
+ *     flag) + read-rate line over the window (GET /api/monitor/db/trend
+ *     — a partitioned parent's passes aggregate its whole family). The
+ *     former page-level "workload trend" drill-down is retired — its
+ *     function is replaced by this family aggregate chart.
  *
  *   • ALERTS — the write-heavy monitor log (monitor.db_table_alert via
  *     /api/monitor/db/alerts): every flag STATE TRANSITION (raise /
@@ -45,7 +46,7 @@
  * snapshots) over the archive's full retained history, so tables idle in
  * recent windows still show their last active day. The
  * header's VIEW TOGGLE switches the tab between its three halves —
- * table (the workload panel + trend drill-down + alert trail) / sql
+ * table (the workload panel + the in-row family trend + alert trail) / sql
  * (the statement audit) / instance (the vitals + trend) — and the
  * workload panel's ORDER selector picks the server-side ordering
  * (workload heaviness | recent activity) before pagination.
@@ -71,7 +72,6 @@ import {
 } from "@/lib/api-client/monitor";
 import { fmtDateTimeShanghai } from "@/shared/datetime";
 import TableWorkloadTable from "./TableWorkloadTable";
-import DbTrendChart from "./DbTrendChart";
 import AlertsPanel from "./AlertsPanel";
 import SqlAuditPanel from "./SqlAuditPanel";
 import InstanceVitalsPanel from "./InstanceVitalsPanel";
@@ -112,7 +112,6 @@ export default function DbAuditPage() {
   const hours = windowSel === "archive" ? 0 : windowSel;
   const [view, setView] = useState<DbAuditView>("table");
   const [order, setOrder] = useState<DbTableOrder>("workload");
-  const [selected, setSelected] = useState<{ schema: string; table: string } | null>(null);
   const { data, error, loading, refresh } = useChartData(
     () => fetchDbTables(hours, 500, order, source),
     [hours, order, source],
@@ -239,28 +238,7 @@ export default function DbAuditPage() {
             />
           </Box>
 
-          <TableWorkloadTable
-            rows={rows}
-            selected={selected}
-            hours={hours}
-            source={source}
-            onSelect={(r) =>
-              setSelected(
-                selected != null &&
-                  selected.schema === r.schema &&
-                  selected.table === r.table
-                  ? null // clicking the selected row clears the drill-down
-                  : { schema: r.schema, table: r.table },
-              )
-            }
-          />
-
-          <DbTrendChart
-            schema={selected?.schema ?? null}
-            table={selected?.table ?? null}
-            hours={hours}
-            source={source}
-          />
+          <TableWorkloadTable rows={rows} hours={hours} source={source} />
 
           <AlertsPanel />
         </>

@@ -11,7 +11,9 @@ export interface SignalActionChipProps {
   /** "buy" / "sell" — case-insensitive; anything non-buy renders sell. */
   action: string;
   /** 1..100 confidence — ramps border width + border/text alpha; null /
-   *  undefined renders at full intensity (alpha 1, 2px border). */
+   *  undefined renders at full intensity (alpha 1, 2px border).
+   *  NEGATIVE = the REJECT tier: the label reads "NO BUY"/"NO SELL" and
+   *  the intensity ramps on the magnitude. */
   confidence?: number | null;
   /** Override the success/error hue (e.g. the Singleton last-day-sell
    *  purple) while keeping the confidence treatment. */
@@ -26,7 +28,10 @@ export interface SignalActionChipProps {
 
 /** The shared outlined buy/sell chip. Label = uppercased action
  *  ("BUY"/"SELL") so every consumer reads identically; a wait record
- *  reads "WAIT" in the neutral grey. */
+ *  reads "WAIT" in the neutral grey; a NEGATIVE-confidence record (the
+ *  REJECT tier, 2026-11-16) reads "NO BUY"/"NO SELL" in its action's
+ *  own hue at the MAGNITUDE's intensity — the advice is against the
+ *  action at this price, never for the inverse action. */
 export default function SignalActionChip({
   action,
   confidence = null,
@@ -35,17 +40,24 @@ export default function SignalActionChip({
   size = "small",
 }: SignalActionChipProps) {
   const theme = useTheme();
+  const negConf = !rejected && confidence != null && confidence < 0;
   const main = rejected
     ? theme.palette.text.secondary
     : (color ?? undefined);
   return (
     <Chip
       size={size}
-      label={rejected ? "WAIT" : action.toUpperCase()}
+      label={
+        rejected
+          ? "WAIT"
+          : negConf
+            ? `NO ${action.toUpperCase()}`
+            : action.toUpperCase()
+      }
       variant="outlined"
       sx={actionChipSx(
         rejected ? "neutral" : action,
-        rejected ? 100 : (confidence ?? 100),
+        rejected ? 100 : Math.abs(confidence ?? 100),
         theme,
         main,
       )}

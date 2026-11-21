@@ -172,20 +172,6 @@
     ],
     "is_industry_not_strategy": false
   },
-  "DUMMY_STRAT_VALUE": {
-    "name": "价值综合指数",
-    "exchange": null,
-    "sector_id": "STRATEGY",
-    "industry_id": "STRAT_VALUE",
-    "tags": [
-      {
-        "sector_id": "STRATEGY",
-        "industry_id": "STRAT_VALUE"
-      }
-    ],
-    "is_industry_not_strategy": false,
-    "is_dummy": true
-  },
   "H30352": {
     "name": "500价值",
     "exchange": "HK",

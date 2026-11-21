@@ -136,19 +136,5 @@
       }
     ],
     "is_industry_not_strategy": false
-  },
-  "DUMMY_STRAT_THEMED": {
-    "name": "主题综合指数",
-    "exchange": null,
-    "sector_id": "STRATEGY",
-    "industry_id": "STRAT_THEMED",
-    "tags": [
-      {
-        "sector_id": "STRATEGY",
-        "industry_id": "STRAT_THEMED"
-      }
-    ],
-    "is_industry_not_strategy": false,
-    "is_dummy": true
   }
 }

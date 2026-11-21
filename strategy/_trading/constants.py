@@ -48,6 +48,20 @@ NORMALIZATION_BASE = 100.0
 SHARES_PER_QTY = 100.0
 
 # ---------------------------------------------------------------------------
+# Fault tolerance (adverse-fill stress)
+# ---------------------------------------------------------------------------
+# The standing stress assumption, pinned to 10% (2026-11-17, user-directed
+# "fix fault tolerance to 10%"). At runtime ``fault_tolerance`` > 0 shifts
+# every BUY fill UP by ``ft% × |delta_close|`` (engine worst-case entry
+# stress) and, outside optimization studies, appends the post-hoc
+# bidirectional stressed-conf annotation (``_algo/fault_tolerance.py``).
+# The trainer evaluates at the SAME value so trained params are graded
+# under production conditions (annotation skipped there via
+# ``ft_annotate=False``). NOT stored in trained algo_configs rows — a
+# standing assumption, not a config (``_optm_engine/persist._STRIP_KEYS``).
+DEFAULT_FAULT_TOLERANCE = 10.0
+
+# ---------------------------------------------------------------------------
 # Annualization (for Sharpe + return-rate formulas)
 # ---------------------------------------------------------------------------
 # ~252 trading days per year on A-share / US-equity calendars.

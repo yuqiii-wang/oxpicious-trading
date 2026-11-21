@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, Optional
 
+from _common.caution_log import record_ai_suspicion
 from _common.sql_writes import render_sql_write
 from llm_agents.deep_agents import events
 
@@ -55,6 +56,18 @@ class OutputStoreMixin(_StoreBase):
             payload = {"answer": clean}
             if critical:
                 payload[CRITICAL_KEY] = True
+                # A [CRITICAL]-flagged finding IS the AI-suspicion
+                # contract (monitor.caution_log, severity critical): the
+                # context row stays inside the run's retention; the
+                # caution row stays in the operator's working set.
+                record_ai_suspicion(
+                    "run flagged its final result [CRITICAL]",
+                    dedupe_key=f"critical-final:{thread_id}",
+                    detail={"thread_id": thread_id,
+                            "answer_tail": clean[-400:]},
+                    service="llm_agents.deep_agents",
+                    severity="critical",
+                )
         elif error:
             payload = {"error": str(error)[:_NOTE_MAX]}
         if payload is None:
@@ -107,6 +120,16 @@ class OutputStoreMixin(_StoreBase):
             payload = {"output": clean}
             if critical:
                 payload[CRITICAL_KEY] = True
+                # Same [CRITICAL] contract on the chain's handoff
+                # artifact (monitor.caution_log, severity critical).
+                record_ai_suspicion(
+                    "graph output flagged [CRITICAL]",
+                    dedupe_key=f"critical-graph-output:{thread_id}",
+                    detail={"thread_id": thread_id, "node": node,
+                            "output_tail": clean[-400:]},
+                    service="llm_agents.deep_agents",
+                    severity="critical",
+                )
         elif error:
             payload = {"error": str(error)[:_NOTE_MAX]}
         if payload is None:

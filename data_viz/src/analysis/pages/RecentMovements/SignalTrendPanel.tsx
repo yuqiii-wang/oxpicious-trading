@@ -42,6 +42,7 @@ import {
   SignalPopulationToggles,
   SignalRulesAskButton,
   SignalRulesPanel,
+  SignalVolatilityChart,
 } from "@/shared/components/signal-code-trend";
 import type { CodeTrendChartOptions, CodeTrendSecType } from "@/ui/OhlcChart";
 import { stripCodeSuffix } from "@/ui/OhlcChart/codeTrendSources";
@@ -255,11 +256,23 @@ export default function SignalTrendPanel({
       {/* The crowdedness family plots its crowdedness TRIGGER SOURCE
           (the score + ma5 curves from analysis.market_crowdedness), not
           the plain OHLC code trend — the family's pick swaps the chart;
-          the markers ride the crowdedness curves at the event dates. */}
+          the markers ride the crowdedness curves at the event dates.
+          The volatility family swaps the same way: the Commons
+          Volatility page's top chart (close + HV 20d + EWMA — the
+          family's trigger axes) with the markers on the close curve. */}
       {signalType === "crowdedness" && secType === "index" ? (
         <SignalCrowdednessChart
           code={code}
           name={name}
+          population={signals}
+          selectedSignalDate={expandedDate}
+          onDateClick={handleDateClick}
+        />
+      ) : signalType === "volatility" && secType === "index" ? (
+        <SignalVolatilityChart
+          code={code}
+          name={name}
+          secType="index"
           population={signals}
           selectedSignalDate={expandedDate}
           onDateClick={handleDateClick}

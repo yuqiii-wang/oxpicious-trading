@@ -42,6 +42,17 @@ consumes the FINISHED events:
     tier (cells sourced by a portfolio family's coordination) fires
     inside its portfolio, never standalone.
 
+  The fetch also CARRIES the REJECT tier (the 2026-11-16
+  negative-confidence rows — ``engines/reject.py``: "do NOT take this
+  action at this price", NEVER the inverse action) as SEPARATE
+  ``rej_action`` / ``rej_confidence`` evidence columns. Rejects are
+  never replayed (see the SIGN-SAFETY in :meth:`apply_signals`); the
+  comb stack's reject policy (``_comb/reject.py``) is their only
+  consumer — family-local same-side suppression, default OFF (the
+  2026-11-18 study measured CROSS-family reject offsets harmful:
+  buys exposed to ≥2 negative-state other families measure +2.90% vs
+  +1.89% — a cross-family veto would cancel exactly the best buys).
+
 Because the signal math is no longer the strategy's, a subclass carries
 NO model params: ``DEFAULT_PARAMS`` documents the pickup source only and
 ``TUNABLE_SPACE`` is empty (the optimization engine tunes just the
@@ -101,6 +112,31 @@ class AnalysisSignalAlgoBase(AlgoBase):
         "hist_reference", "hist_confidence",
     )
 
+    # REJECT-tier evidence columns (NULL on non-reject bars — the
+    # negative-confidence rows, engines/reject.py). Carried for the comb
+    # stack's reject policy as EVIDENCE ONLY; never read by the replay
+    # (apply_signals sign-safety) and never shown in reason text.
+    REJECT_COLUMNS: tuple = ("rej_action", "rej_confidence")
+
+    # NO-ACTION overlay evidence columns (NULL on unmarked bars — the
+    # day-level marks on FIRED positive days, engines/no_action +
+    # analysis_signals.no_action_signals). Like the reject mirror:
+    # EVIDENCE ONLY, carried for the comb stack's no-action policy
+    # (_comb/no_action.py — family-local same-side suppression of the
+    # marked fired day); never read by the replay and never shown in
+    # reason text.
+    NO_ACTION_COLUMNS: tuple = ("na_action", "na_confidence")
+
+    # SIGNAL-AMPLIFICATION evidence columns (NULL on non-amplifier days
+    # — the amplifier tier's per-day Σ amplify_bp for THIS family+side,
+    # analysis_signals.signal_amplification_history.bindings, joined
+    # from the bindings JSONB by action). Like the reject/no-action
+    # mirrors: EVIDENCE ONLY, carried for the comb stack's amplifier
+    # policy (_comb/amplifier.py — per-event evidence sizing, the U2
+    # sibling, default ON); never read by the replay and never shown in
+    # reason text.
+    AMPLIFIER_COLUMNS: tuple = ("amp_bp_buy", "amp_bp_sell")
+
     # No model params: the signal math lives in the analysis tier.
     ALGO_PARAM_KEYS: tuple = ()
     DEFAULT_PARAMS: dict = {
@@ -143,14 +179,52 @@ class AnalysisSignalAlgoBase(AlgoBase):
             STANDALONE-tier trading events (``signal_type`` =
             ``SIGNAL_TYPE_CODE``, ``is_in_portfolio = FALSE``,
             ``action IN (buy, sell)`` — wait rows are observational and
-            never picked up). The events subquery is DISTINCT ON
+            never picked up; ``confidence >= 0`` — the 2026-11-16
+            NEGATIVE-confidence REJECT rows (engines/reject.py) are
+            advice AGAINST the action, never replayable trades). The
+            events subquery is DISTINCT ON
             (code, date) so a family with multiple same-day sub types
             cannot duplicate OHLC rows; the lowest sub_type code wins
             (deterministic; for mutually-exclusive sub types like macd's
             cross up/dn it never matters).
+          - the REJECT mirror (r) — the same standalone-tier universe at
+            ``confidence < 0``, joined as SEPARATE ``rej_*`` evidence
+            columns (own DISTINCT ON subquery, same ordering) so the
+            reject tier is CARRIED, never replayed: the positive pickup
+            join above is untouched (bit-identical ``hist_*`` columns)
+            and ``apply_signals``'s sign-safety keeps a reject row out
+            of ``signal_confidence`` even if the ``confidence >= 0``
+            guard were ever relaxed. Consumers: the comb stack's reject
+            policy (``_comb/reject.py`` — family-local same-side
+            suppression, default OFF).
+          - the NO-ACTION overlay mirror (n) — the day-level marks on
+            FIRED positive days (``analysis_signals.no_action_signals``:
+            "do NOT take this action at this price", the declined action
+            + negative bp), joined as SEPARATE ``na_*`` evidence columns
+            (own DISTINCT ON subquery, same lowest-sub_type-wins
+            ordering). The marks sit ON fired days BY CONSTRUCTION, so
+            unlike the reject mirror they align with a picked-up
+            positive event — the comb stack's no-action policy
+            (``_comb/no_action.py``) suppresses that family's own
+            same-side signal on the marked bar; the positive pickup
+            itself is untouched (bit-identical ``hist_*``) and the
+            default OFF policy never reads ``na_*`` at all.
+          - the SIGNAL-AMPLIFICATION mirror (a) — the amplifier tier's
+            per-day Σ amplify_bp for THIS family (the bindings JSONB
+            exploded by action into ``amp_bp_buy`` / ``amp_bp_sell``,
+            summed per (code, date) over the day's bound amplifiers),
+            from ``analysis_signals.signal_amplification_history``.
+            Carried for the comb stack's amplifier policy
+            (``_comb/amplifier.py`` — per-event evidence sizing, the U2
+            sibling, DEFAULT ON: the day's bound amplifiers scale the
+            family's own signed signal, clamped to the U3 band). The
+            sums ride every bar but only matter where an event fired
+            (the transform scales ``sig_<family>``, 0 elsewhere); the
+            positive pickup itself is untouched (bit-identical
+            ``hist_*``).
 
-        Non-event bars carry NULL ``hist_*`` columns — apply_signals
-        maps them to a zero signal.
+        Non-event bars carry NULL ``hist_*`` / ``rej_*`` / ``na_*`` /
+        ``amp_*`` columns — apply_signals maps them to a zero signal.
         """
         if not codes:
             return pd.DataFrame()
@@ -166,7 +240,13 @@ class AnalysisSignalAlgoBase(AlgoBase):
                 h.signal_sub_type AS hist_sub_type,
                 h.signal         AS hist_signal,
                 h.signal_reference AS hist_reference,
-                h.confidence     AS hist_confidence
+                h.confidence     AS hist_confidence,
+                r.rej_action     AS rej_action,
+                r.rej_confidence AS rej_confidence,
+                n.na_action      AS na_action,
+                n.na_confidence  AS na_confidence,
+                a.amp_bp_buy     AS amp_bp_buy,
+                a.amp_bp_sell    AS amp_bp_sell
             FROM {basic_stats_table(sec_type)} b
             LEFT JOIN (
                 SELECT DISTINCT ON (code, date)
@@ -177,9 +257,50 @@ class AnalysisSignalAlgoBase(AlgoBase):
                   AND signal_type = $4::smallint
                   AND is_in_portfolio = FALSE
                   AND action = ANY($5::smallint[])
+                  AND confidence >= 0
                 AND code = ANY($2::text[])
                 ORDER BY code, date, signal_sub_type
             ) h ON h.code = b.code AND h.date = b.date
+            LEFT JOIN (
+                SELECT DISTINCT ON (code, date)
+                    code, date, action AS rej_action,
+                    confidence AS rej_confidence
+                FROM analysis_signals.history_signals
+                WHERE sec_type = $3::smallint
+                  AND signal_type = $4::smallint
+                  AND is_in_portfolio = FALSE
+                  AND action = ANY($5::smallint[])
+                  AND confidence < 0
+                AND code = ANY($2::text[])
+                ORDER BY code, date, signal_sub_type
+            ) r ON r.code = b.code AND r.date = b.date
+            LEFT JOIN (
+                SELECT DISTINCT ON (code, date)
+                    code, date, action AS na_action,
+                    confidence AS na_confidence
+                FROM analysis_signals.no_action_signals
+                WHERE sec_type = $3::smallint
+                  AND signal_type = $4::smallint
+                  AND action = ANY($5::smallint[])
+                AND code = ANY($2::text[])
+                ORDER BY code, date, signal_sub_type
+            ) n ON n.code = b.code AND n.date = b.date
+            LEFT JOIN (
+                SELECT h2.code, h2.date,
+                       SUM((b2->>'amplify_bp')::numeric)
+                           FILTER (WHERE (b2->>'action')::smallint = 0)
+                           AS amp_bp_buy,
+                       SUM((b2->>'amplify_bp')::numeric)
+                           FILTER (WHERE (b2->>'action')::smallint = 1)
+                           AS amp_bp_sell
+                FROM analysis_signals.signal_amplification_history h2
+                CROSS JOIN LATERAL
+                    jsonb_array_elements(h2.bindings) b2
+                WHERE h2.sec_type = $3::smallint
+                  AND h2.code = ANY($2::text[])
+                  AND b2->>'signal_type' = $4::text
+                GROUP BY h2.code, h2.date
+            ) a ON a.code = b.code AND a.date = b.date
             WHERE b.code = ANY($2::text[])
             ORDER BY b.code, b.date ASC
         """
@@ -191,7 +312,8 @@ class AnalysisSignalAlgoBase(AlgoBase):
         )
         numeric_cols = [
             "open_price", "high_price", "low_price", "close_price",
-            *self.REQUIRED_COLUMNS,
+            *self.REQUIRED_COLUMNS, *self.REJECT_COLUMNS,
+            *self.NO_ACTION_COLUMNS, *self.AMPLIFIER_COLUMNS,
         ]
         return rows_to_df(rows, numeric_cols)
 
@@ -208,6 +330,17 @@ class AnalysisSignalAlgoBase(AlgoBase):
             positive, SELL negative. Non-event bars → 0 (no signal).
             The recorded bp evidence is NOT used for sizing (see
             :attr:`EVENT_CONFIDENCE`).
+          - SIGN-SAFETY (2026-11-18): an event row replays ONLY when
+            its recorded confidence is non-negative — a REJECT row
+            (negative confidence, "do NOT take this action at this
+            price") maps to 0, NEVER to a full-size trade of its own
+            action. The fetch already drops reject rows from the
+            ``hist_*`` pickup (``confidence >= 0``); this mask is the
+            defense-in-depth that keeps the invariant true even if that
+            SQL guard is ever relaxed or a new fetch path appears —
+            without it a leaked "no-buy" reject would replay as a BUY
+            (the sign semantics live in the confidence SIGN, and the
+            replay signs by action alone).
           - ``signal_value`` = the event's ``signal`` (the day's indicator
             value; family-local meaning). Non-event bars → 0.
 
@@ -224,10 +357,14 @@ class AnalysisSignalAlgoBase(AlgoBase):
         action = df["hist_action"]
         is_buy = action == ACTION_CODE["buy"]
         is_sell = action == ACTION_CODE["sell"]
+        # Fill BEFORE comparing (cudf rule): non-event bars are NaN → the
+        # -1 sentinel reads as not-replayable (they already fail
+        # is_buy/is_sell — the mask is about REJECT rows).
+        is_replayable = df["hist_confidence"].fillna(-1.0) >= 0
         conf = self.EVENT_CONFIDENCE
         signed = (
             pd.Series(conf, index=df.index).where(is_buy, -conf)
-            .where(is_buy | is_sell, 0.0)
+            .where((is_buy | is_sell) & is_replayable, 0.0)
             .fillna(0.0)
         )
 

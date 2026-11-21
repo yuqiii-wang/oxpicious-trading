@@ -162,19 +162,5 @@
       }
     ],
     "is_industry_not_strategy": false
-  },
-  "DUMMY_STRAT_GROWTH": {
-    "name": "成长综合指数",
-    "exchange": null,
-    "sector_id": "STRATEGY",
-    "industry_id": "STRAT_GROWTH",
-    "tags": [
-      {
-        "sector_id": "STRATEGY",
-        "industry_id": "STRAT_GROWTH"
-      }
-    ],
-    "is_industry_not_strategy": false,
-    "is_dummy": true
   }
 }

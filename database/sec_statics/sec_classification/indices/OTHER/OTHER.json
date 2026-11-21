@@ -37,19 +37,5 @@
       }
     ],
     "is_industry_not_strategy": false
-  },
-  "DUMMY_OTHER": {
-    "name": "未分类综合指数",
-    "exchange": null,
-    "sector_id": "OTHER",
-    "industry_id": "OTHER",
-    "tags": [
-      {
-        "sector_id": "OTHER",
-        "industry_id": "OTHER"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
   }
 }

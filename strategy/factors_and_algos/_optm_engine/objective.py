@@ -29,8 +29,9 @@ from typing import Any, Dict, List
 
 import pandas as pd
 
+from strategy._trading.constants import DEFAULT_FAULT_TOLERANCE
 from strategy._trading.engine import compute_total_buy_cost
-from strategy.factors_and_algos._algo import AlgoBase
+from strategy.factors_and_algos._optm_engine.backtester import OptmBacktester
 from strategy.factors_and_algos._optm_engine.loss import (
     CALMAR_LOSS,
     LossEvaluation,
@@ -46,35 +47,43 @@ from strategy.factors_and_algos._optm_engine.loss.metrics import (
 
 
 class OptmContext:
-    """Immutable per-study context: algo + fetch-once per-code data + statics.
+    """Immutable per-study context: backtester + fetch-once data + statics.
 
+    ``backtester`` — the evaluation adapter (``AlgoBacktester`` for a
+                  single algo / binary mode, ``CollectorBacktester`` for
+                  a mixed-family portfolio; see ``backtester.py``).
+    ``is_mixed``  — True in mixed mode: the trainer replaces Stage-A TPE
+                  with the curated Set C comb grid (the portfolio's
+                  weight rules), see ``trainer.py``.
     ``dfs``     — Stage A evaluation set (IS split, or the full series
                   when ``--oos-frac 0``). Maps code → DataFrame slice
                   with all model columns present (e.g. MACD's
                   ema6/12/20/26/60/120/252), fetched ONE time before the study.
     ``oos_dfs`` — Stage B evaluation set (OOS split, or the full series).
     ``statics`` carries the fixed execution assumptions (fee_rate,
-    slippage_band, buy_notional) merged into every trial's params;
-    ``base_params`` carries ``--params-json`` overrides.
+    slippage_band, buy_notional, fault_tolerance) merged into every
+    trial's params; ``base_params`` carries ``--params-json`` overrides.
     """
 
     def __init__(
         self,
-        algo: AlgoBase,
+        backtester: OptmBacktester,
         sec_type: str,
         codes: List[str],
         dfs: Dict[str, pd.DataFrame],
         oos_dfs: Dict[str, pd.DataFrame],
         statics: Dict[str, Any],
         base_params: Dict[str, Any] | None = None,
+        is_mixed: bool = False,
     ):
-        self.algo = algo
+        self.backtester = backtester
         self.sec_type = sec_type
         self.codes = list(codes)
         self.dfs = dfs
         self.oos_dfs = oos_dfs
         self.statics = dict(statics)
         self.base_params = dict(base_params or {})
+        self.is_mixed = is_mixed
 
 
 def _merge_params(ctx: OptmContext, overrides: Dict[str, Any]) -> Dict[str, Any]:
@@ -88,24 +97,32 @@ def _merge_params(ctx: OptmContext, overrides: Dict[str, Any]) -> Dict[str, Any]
     from strategy.factors_and_algos._optm_engine.space import (
         snap_categorical_params,
     )
-    params = snap_categorical_params(ctx.algo, params)
+    params = snap_categorical_params(ctx.backtester, params)
     # Optimization-only execution settings: force the final liquidation
     # so every trial's PnL includes the mark-out of the open position.
     params["skip_final_liquidation"] = False
-    params.setdefault("fault_tolerance", 0)
+    # Studies evaluate at the pinned production fault tolerance (the
+    # engine's BUY-fill stress) — statics normally carry it already.
+    params.setdefault("fault_tolerance", DEFAULT_FAULT_TOLERANCE)
     return params
 
 
 def _run_backtests(
     ctx: OptmContext, dfs: Dict[str, pd.DataFrame], params: Dict[str, Any],
+    segment: str = "is",
 ) -> Dict[str, dict]:
     """Run one param set across all codes on an evaluation set.
+
+    ``segment`` ("is" / "oos" / "full") prepares the backtester before
+    the loop — the mixed collector swaps its per-algo frames to the
+    segment's sliced copies; the binary adapter is a no-op.
 
     Returns per-code ``{"decisions", "daily_rows", "pnl", "capital"}``.
     Decisions are sorted + numbered (the daily-rows helper expects it);
     ``pnl`` = Σ SELL realized_pnl (incl. the final-liquidation SELL);
     ``capital`` = peak capital deployed (compute_total_buy_cost).
     """
+    ctx.backtester.prepare(segment)
     per_code: Dict[str, dict] = {}
     for code in ctx.codes:
         df = dfs.get(code)
@@ -114,7 +131,9 @@ def _run_backtests(
                               "pnl": 0.0, "capital": 0.0}
             continue
 
-        decisions = ctx.algo.run_backtest(df, params, ctx.sec_type, [code])
+        decisions = ctx.backtester.run_backtest(
+            df, params, ctx.sec_type, [code],
+        )
         decisions.sort(key=lambda d: d["exec_date"])
         for i, d in enumerate(decisions, start=1):
             d["decision_no"] = i
@@ -131,7 +150,9 @@ def _run_backtests(
         anchor = float(first_buy["fill_price"]) if first_buy else None
         daily_rows: List[dict] = []
         if anchor is not None:
-            daily_rows = ctx.algo.compute_daily_rows(df, decisions, anchor)
+            daily_rows = ctx.backtester.compute_daily_rows(
+                df, decisions, anchor,
+            )
 
         pnl = sum(
             float(d.get("realized_pnl") or 0.0)
@@ -193,7 +214,7 @@ def evaluate_set_a(ctx: OptmContext, set_a_params: dict) -> dict:
              if k not in ctx.base_params}
     params = _merge_params(ctx, {**set_a_params, **set_b})
 
-    per_code = _run_backtests(ctx, ctx.dfs, params)
+    per_code = _run_backtests(ctx, ctx.dfs, params, segment="is")
     agg = _aggregate(per_code)
 
     bundle = OMEGA_LOSS.evaluate(LossEvaluation.from_aggregate(agg))
@@ -217,13 +238,61 @@ def evaluate_set_b(
     """
     params = _merge_params(ctx, {**set_a_params, **set_b_params})
 
-    per_code = _run_backtests(ctx, ctx.oos_dfs, params)
+    per_code = _run_backtests(ctx, ctx.oos_dfs, params, segment="oos")
     agg = _aggregate(per_code)
     ev = LossEvaluation.from_aggregate(agg)
 
     # total_return / max_dd_pct come from the loss bundle's context
     # fields; here we only add execution detail the loss doesn't know.
     bundle = CALMAR_LOSS.evaluate(ev)
+    # Official risk score (skill Part 9): computed only for points that
+    # trade AND pass the DD cap — it is the tiebreaker in final
+    # selection, never a reason to keep a breaching point.
+    bundle["risk_score"] = None
+    if not bundle.get("no_trades") and not bundle.get("violation"):
+        from strategy.factors_and_algos._optm_engine.risk_score import (
+            official_risk_score,
+        )
+        bundle["risk_score"] = official_risk_score(per_code, ctx.oos_dfs)
+    bundle.update({
+        "pnl": round(agg["total_pnl"], 4),
+        "capital": round(ev.total_capital, 4),
+        "max_dd_abs": round(ev.max_dd_abs, 6),
+        "dd_trough_date": agg["dd"].get("trough_date"),
+        "n_decisions": agg["n_decisions"],
+        "per_code": _per_code_summary(per_code),
+    })
+    return bundle
+
+
+def evaluate_set_c(ctx: OptmContext, set_c_params: dict) -> dict:
+    """Stage C (mixed mode only): Calmar on IS over one curated comb cell.
+
+    ``set_c_params`` carries ``{"comb": <CombParams model_dump>,
+    "conf_threshold": x}`` — one cell of the Set C comb grid
+    (``space.set_c_comb_grid``). Set B keys are held at their neutral
+    defaults. Calmar (not Omega) is the grading loss: the comb study
+    (skill Part 3) measured that combs must be judged on Calmar/DD +
+    the official risk score, never on omega alone. The winner's comb
+    block then rides ``set_a_params`` through Set B / final selection.
+    """
+    from strategy.factors_and_algos._optm_engine.space import SET_B_DEFAULTS
+
+    set_b = {k: v for k, v in SET_B_DEFAULTS.items()
+             if k not in ctx.base_params}
+    params = _merge_params(ctx, {**set_c_params, **set_b})
+
+    per_code = _run_backtests(ctx, ctx.dfs, params, segment="is")
+    agg = _aggregate(per_code)
+    ev = LossEvaluation.from_aggregate(agg)
+
+    bundle = CALMAR_LOSS.evaluate(ev)
+    bundle["risk_score"] = None
+    if not bundle.get("no_trades") and not bundle.get("violation"):
+        from strategy.factors_and_algos._optm_engine.risk_score import (
+            official_risk_score,
+        )
+        bundle["risk_score"] = official_risk_score(per_code, ctx.dfs)
     bundle.update({
         "pnl": round(agg["total_pnl"], 4),
         "capital": round(ev.total_capital, 4),
@@ -243,7 +312,7 @@ def make_objective_set_a(ctx: OptmContext):
             suggest_set_a_params,
         )
 
-        trial_params = suggest_set_a_params(trial, ctx.algo)
+        trial_params = suggest_set_a_params(trial, ctx.backtester)
         metrics = evaluate_set_a(ctx, trial_params)
         trial.set_user_attr("metrics", metrics)
         trial.set_user_attr("params_used", trial_params)
@@ -273,6 +342,7 @@ __all__ = [
     "OptmContext",
     "evaluate_set_a",
     "evaluate_set_b",
+    "evaluate_set_c",
     "make_objective_set_a",
     "make_objective_set_b",
 ]

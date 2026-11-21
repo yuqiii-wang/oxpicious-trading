@@ -11,19 +11,5 @@
       }
     ],
     "is_industry_not_strategy": true
-  },
-  "DUMMY_CHEM": {
-    "name": "化工综合指数",
-    "exchange": null,
-    "sector_id": "MAT",
-    "industry_id": "CHEM",
-    "tags": [
-      {
-        "sector_id": "MAT",
-        "industry_id": "CHEM"
-      }
-    ],
-    "is_industry_not_strategy": true,
-    "is_dummy": true
   }
 }

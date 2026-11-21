@@ -216,12 +216,19 @@ def run_ft_stress(
     # 2. Re-run apply_signals on each stressed OHLC (same tech stats), then
     #    apply the SAME base signal tuning (sub-threshold conf < 5 → 0) so
     #    the FT magnitude correctly reflects "trade removed under stress"
-    #    when the stressed signal drops below the threshold.
+    #    when the stressed signal drops below the threshold — skipped for
+    #    algos that consume no dust threshold (``DUST_FILTER`` False — the
+    #    oracle): their stressed magnitudes stay the raw re-applied signal.
     from strategy.factors_and_algos._algo.tuning import tune_signals
+    dust = getattr(algo, "DUST_FILTER", True)
     if not stressed_up.empty:
-        stressed_up = tune_signals(algo.apply_signals(stressed_up, params))
+        stressed_up = algo.apply_signals(stressed_up, params)
+        if dust:
+            stressed_up = tune_signals(stressed_up)
     if not stressed_down.empty:
-        stressed_down = tune_signals(algo.apply_signals(stressed_down, params))
+        stressed_down = algo.apply_signals(stressed_down, params)
+        if dust:
+            stressed_down = tune_signals(stressed_down)
 
     # 3. Attach both directional stressed confidences to each decision.
     baseline_decisions = attach_ft_stressed_conf(

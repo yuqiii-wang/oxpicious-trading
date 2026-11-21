@@ -3,9 +3,11 @@
   "max_parallel": 1,
   "included_parallel_services": [],
   "excluded_parallel_services": [],
-  "freq": "always",
+  "is_resident": true,
+  "freq": null,
+  "priority": 80,
   "schedule": "always-on daemon (FastAPI on 127.0.0.1:8772) started by the stream watchdog like the other daemons",
   "notes": "Server-cluster strategist (python -m server_cluster.strategist): the resident FastAPI API entry over the strategy.* + live.* areas' cmds — POST /jobs/run (detached spawn, tag-deduped; the UI's singleton-run/train/analysis-run/live tags), /jobs/status + /jobs/result (service-log tail), /jobs/{tag}/stop. No residents (strategy.*/live.* are one-shot pipelines). The server process never imports pipeline packages — children run detached with output appended to logs/<date>/<module>.log; orphaned children are re-adopted at startup from open monitor.service_audit rows. One instance only — the registration guard auto-exits a second run.",
   "source_ref": "server_cluster/__init__.py;server_cluster/_common/server.py;server_cluster/_common/routers/;server_cluster/strategist/__main__.py",
-  "updated_at": "2026-11-11T00:00:00.000000+00:00"
+  "updated_at": "2026-11-20T15:25:15.716730+00:00"
 }

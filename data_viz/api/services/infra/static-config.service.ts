@@ -18,14 +18,20 @@
  *     Each file holds that service's ONE config object:
  *     { service, max_parallel, max_parallel_runs,
  *     included_parallel_services,
- *     excluded_parallel_services, freq, schedule, notes, source_ref (the
+ *     excluded_parallel_services, is_resident, freq, schedule, notes,
+ *     source_ref (the
  *     config's code location(s) as RELATIVE FILE PATHS only —
  *     never line numbers; ';'-separated when several), updated_at }.
  *     max_parallel is the concurrency CAP (read at registration by
- *     _common/service_heartbeat.py — keep the shape compatible); freq is
- *     the SUPPOSED-RUN cadence mirrored from scripts/*.sh (always |
- *     daily | monthly | quarterly | semiannually | once | occasionally), shown on
- *     the Service Monitor page's Pipeline processes table. The two
+ *     _common/service_heartbeat.py — keep the shape compatible).
+ *     is_resident splits the fleet in two: true = an ALWAYS-LIVE
+ *     resident daemon (the resident supervisor / ensure-up path keeps
+ *     it up; freq null — cadence does not apply); false = a one-time
+ *     task whose freq (daily | weekly | monthly | quarterly |
+ *     semiannually | once | occasionally | on_demand — the retired
+ *     "always" labeling moved to is_resident 2026-11-20) orchestrates
+ *     when it starts, shown on the Service Monitor page's Pipeline
+ *     processes table. The two
  *     parallel-services lists gate CROSS-service parallelism (empty
  *     included = unrestricted; non-empty = whitelist; excluded = denylist;
  *     entries are rooted dotted prefixes — a scope, a sub-scope path, or
@@ -154,9 +160,23 @@ export interface ServiceConfigEntry {
   max_parallel_runs: number | null;
   included_parallel_services: string[];
   excluded_parallel_services: string[];
-  /** always | daily | monthly | quarterly | semiannually | once |
-   *  occasionally (default.json fallback: on_demand). */
-  freq: string;
+  /** true = an ALWAYS-LIVE resident daemon (the resident supervisor /
+   *  ensure-up path keeps it up); false = a one-time task whose freq
+   *  orchestrates when it starts. */
+  is_resident: boolean;
+  /** daily | weekly | monthly | quarterly | semiannually | once |
+   *  occasionally | on_demand — the one-time task's start cadence;
+   *  null for a resident (is_resident true: cadence does not apply).
+   *  default.json fallback: on_demand. */
+  freq: string | null;
+  /** The orchestration give-way rank — higher wins conflicts (a build
+   *  stops for a download; less frequent gives way to more frequent; a
+   *  resident outranks daily). The file's explicit int when it carries
+   *  one, else derived from is_resident/freq + service domain
+   *  (deriveServicePriority — the TS mirror of
+   *  _common/service_heartbeat.py derive_priority, which is the
+   *  authoritative loader). */
+  priority: number;
   /** Human-readable timing detail (null on the fallback). */
   schedule: string | null;
   notes: string | null;
@@ -241,7 +261,9 @@ const SERVICE_ENTRY_FALLBACK: ServiceConfigEntry = {
   max_parallel_runs: null,
   included_parallel_services: [],
   excluded_parallel_services: [],
+  is_resident: false,
   freq: DEFAULT_SERVICE_FREQ,
+  priority: 0,
   schedule: null,
   notes: null,
   source_ref: "",
@@ -283,10 +305,52 @@ export function validParallelServiceEntries(): Set<string> {
   return entries;
 }
 
+/** freq → rank (higher = more frequent = higher priority; residents get
+ *  the always-live band) + the downloads-domain bonus (downloads outrank
+ *  every non-download regardless of cadence) — the TS mirror of
+ *  _common/service_heartbeat.py FREQ_PRIORITY / RESIDENT_PRIORITY /
+ *  derive_priority. The Python loader is authoritative at runtime; this
+ *  only supplies the field when a tree file carries no explicit
+ *  ``priority``. */
+const RESIDENT_PRIORITY = 80;
+const FREQ_PRIORITY: Record<string, number> = {
+  daily: 70,
+  weekly: 60,
+  monthly: 50,
+  quarterly: 40,
+  semiannually: 30,
+  once: 20,
+  occasionally: 10,
+  on_demand: 0,
+};
+const DOWNLOADS_PRIORITY_BONUS = 100;
+
+export function deriveServicePriority(
+  service: string,
+  freq: string | null,
+  isResident = false,
+): number {
+  const base = isResident
+    ? RESIDENT_PRIORITY
+    : FREQ_PRIORITY[freq ?? ""] ?? FREQ_PRIORITY.on_demand;
+  return (
+    base + (service.startsWith("downloads.") ? DOWNLOADS_PRIORITY_BONUS : 0)
+  );
+}
+
 function normalizeServiceEntry(doc: unknown, service: string): ServiceConfigEntry {
   const d = (
     typeof doc === "object" && doc != null ? doc : {}
   ) as Partial<ServiceConfigEntry>;
+  const isResident = d.is_resident === true;
+  // A resident carries no freq (cadence does not apply — it always
+  // lives); a task carries one, defaulting to on_demand.
+  const freq =
+    !isResident && typeof d.freq === "string" && d.freq !== ""
+      ? d.freq
+      : isResident
+        ? null
+        : DEFAULT_SERVICE_FREQ;
   return {
     service,
     max_parallel:
@@ -307,7 +371,14 @@ function normalizeServiceEntry(doc: unknown, service: string): ServiceConfigEntr
     excluded_parallel_services: normalizeParallelServices(
       d.excluded_parallel_services,
     ),
-    freq: typeof d.freq === "string" && d.freq !== "" ? d.freq : DEFAULT_SERVICE_FREQ,
+    is_resident: isResident,
+    freq,
+    priority:
+      typeof d.priority === "number" &&
+      Number.isInteger(d.priority) &&
+      d.priority >= 0
+        ? d.priority
+        : deriveServicePriority(service, freq, isResident),
     schedule: typeof d.schedule === "string" ? d.schedule : null,
     notes: typeof d.notes === "string" ? d.notes : null,
     source_ref: typeof d.source_ref === "string" ? d.source_ref : "",
@@ -341,11 +412,26 @@ export function readServiceConfig(): ServiceConfigEntry[] {
     .sort((a, b) => a.service.localeCompare(b.service));
 }
 
+/** The default.json fallback entry under the REQUESTING service's name.
+ *  default.json carries no ``priority`` of its own, so the fallback's
+ *  rank RE-DERIVES for that service — a config-less ``downloads.*``
+ *  service still ranks in the downloads band, same as the Python
+ *  priority_for chain (which derives from the requesting service's name
+ *  too). */
+function defaultUnderService(service: string): ServiceConfigEntry {
+  const def = readDefaultServiceConfig();
+  return {
+    ...def,
+    service,
+    priority: deriveServicePriority(service, def.freq, def.is_resident),
+  };
+}
+
 /** One service's config entry: its own tree file when it has one, else
  *  the default.json fallback (cap 1, freq on_demand) under the service's
  *  name. */
 export function serviceConfigFor(service: string): ServiceConfigEntry {
-  const fallback = { ...readDefaultServiceConfig(), service };
+  const fallback = defaultUnderService(service);
   return normalizeServiceEntry(
     readJsonCached<unknown>(dottedServicePath(SERVICE_CONFIG_DIR, service), fallback),
     service,
@@ -363,8 +449,7 @@ export function serviceConfigLooseFor(service: string): ServiceConfigEntry {
   try {
     return serviceConfigFor(service);
   } catch {
-    const fallback = { ...readDefaultServiceConfig(), service };
-    return normalizeServiceEntry(fallback, service);
+    return defaultUnderService(service);
   }
 }
 

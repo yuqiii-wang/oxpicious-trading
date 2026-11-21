@@ -25,3 +25,12 @@ class TrainingResult:
     grid_size: int
     #: Full-series sanity check of the winner (report only).
     full_series_metrics: Optional[Dict[str, Any]] = None
+    #: Train-gate comparison (2026-11-19): the winner vs the untrained
+    #: default on the untouched gate segment
+    #: (``NestedTrainer.run_train_gate``). None when ``--gate-frac 0``
+    #: (gate disabled) or the segment was too short to carve.
+    gate_metrics: Optional[Dict[str, Any]] = None
+    #: CSCV-lite overfitting diagnostic over the buffered trial records
+    #: (``trainer.compute_pbo``). None when the IS/OOS pairing is too
+    #: thin (<3 candidates with both IS and OOS grades).
+    pbo: Optional[Dict[str, Any]] = None

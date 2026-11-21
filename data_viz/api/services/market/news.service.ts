@@ -38,6 +38,7 @@ import type {
   SectorNode,
 } from "@shared/types";
 import { cachedRows } from "../infra/classification-cache.js";
+import { labelDecodeSql } from "../infra/label-codes.js";
 import { segmentSearchTerms, splitSearchTerms } from "../infra/search-query.service.js";
 
 // ---------------------------------------------------------------------------
@@ -448,6 +449,9 @@ async function finishItems(
       where_clause: sqlFrag(whereClause),
       limit: sqlFrag(`${limit}`),
       offset: sqlFrag(`${offset}`),
+      // label_dim decode of d.category (news_category: discussion /
+      // analysis / opinion / statement / other) — rows stay string-typed.
+      category_decode: sqlFrag(labelDecodeSql("news_category", "d.category")),
     }).sql,
     params,
   );
@@ -463,7 +467,11 @@ export async function getNewsItem(newsId: number): Promise<NewsItemDetail | null
   // The SELECT lives in the sql view data_viz/api/services/news/news_item.
   const rows = await querySqlView<NewsItemDetail & QueryResultRow>(
     "data_viz/api/services/news/news_item",
-    { news_id: newsId },
+    {
+      news_id: newsId,
+      // label_dim decode of d.category (news_category) — string-typed row.
+      category_decode: sqlFrag(labelDecodeSql("news_category", "d.category")),
+    },
   );
   return rows[0] ?? null;
 }

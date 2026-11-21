@@ -24,19 +24,5 @@
       }
     ],
     "is_industry_not_strategy": false
-  },
-  "DUMMY_BROAD_GEM": {
-    "name": "创业板综合指数",
-    "exchange": null,
-    "sector_id": "BROAD",
-    "industry_id": "BROAD_GEM",
-    "tags": [
-      {
-        "sector_id": "BROAD",
-        "industry_id": "BROAD_GEM"
-      }
-    ],
-    "is_industry_not_strategy": false,
-    "is_dummy": true
   }
 }

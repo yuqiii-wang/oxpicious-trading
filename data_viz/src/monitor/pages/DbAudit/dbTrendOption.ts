@@ -57,15 +57,11 @@ export function buildDbTrendOption(
     yAxis: [
       {
         type: "value",
-        name: "write rows/s",
-        nameTextStyle: { color: c.textColor, fontSize: 9 },
         axisLabel: { color: c.textColor, fontSize: 9 },
         splitLine: { lineStyle: { color: c.splitLineColor } },
       },
       {
         type: "value",
-        name: "read scans/s",
-        nameTextStyle: { color: c.textColor, fontSize: 9 },
         axisLabel: { color: c.textColor, fontSize: 9 },
         splitLine: null,
       },

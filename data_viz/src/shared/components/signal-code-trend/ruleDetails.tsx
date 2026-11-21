@@ -117,7 +117,16 @@ export function ruleDetails(r: SignalRule): ReactNode {
             + (confScale != null && confScale < 1
               ? ` · conf ×${confScale.toFixed(2)}`
               : "")
-          : "pending",
+          : gate?.reject_bar_pct != null
+            // the REJECT tier (engines/reject.py, 2026-11-16): the best
+            // candidate measured a NEGATIVE dir_ave — the rows carry the
+            // real action at negative confidence, advice AGAINST taking
+            // it at this price
+            ? "gate REJECTED — evidence against the action here"
+              + (confScale != null && confScale < 1
+                ? ` · conf ×${confScale.toFixed(2)}`
+                : "")
+            : "pending",
     },
     evidence.length > 0 ? { label: "evidence", value: evidence.join(" · ") } : null,
     conf?.base_pct != null

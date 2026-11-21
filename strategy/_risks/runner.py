@@ -94,8 +94,7 @@ class RiskRunner:
                 logger.info(f"\n[{st}] no trade_decision data found; skipping.")
                 continue
 
-            logger.info(f"\n[{st}] Computing risk metrics for {len(pairs)} (seq, code) pair(s)...")
-            # Include position_after so the price-drawdown computation can detect
+            logger.info(f"\n[{st}] Computing risk metrics for {len(pairs)} (seq, code) pair(s)...")            # Include position_after so the price-drawdown computation can detect
             # unzero holding periods; default fetch_decisions omits it.
             # Include total_qty_before so the FT amplified P&L can derive the
             # baseline SELL confidence = (qty / total_qty_before) * 100 and
@@ -109,7 +108,7 @@ class RiskRunner:
             risk_seq_rows: List[Dict[str, Any]] = []
             risk_period_rows: List[Dict[str, Any]] = []
             risk_factor_rows: List[Dict[str, Any]] = []
-            for seq_id, code in pairs:
+            for seq_id, code, seq_strategy_name in pairs:
                 decisions = await fetch_decisions(self.conn, seq_id, columns=decision_cols)
                 if not decisions:
                     continue
@@ -132,6 +131,7 @@ class RiskRunner:
                 rs = compute_risk_seq(
                     seq_id, code, decisions, close_prices, daily_rows,
                     total_buy_cost,
+                    strategy_name=seq_strategy_name,
                 )
                 if rs is None:
                     continue
@@ -162,7 +162,7 @@ class RiskRunner:
                       f"grade={rs['risk_grade']}")
 
             if self.force:
-                for seq_id, code in pairs:
+                for seq_id, code, _name in pairs:
                     await self.conn.execute(
                         "DELETE FROM strategy.strategy_risk_period "
                         "WHERE seq_id = $1 AND code = $2",

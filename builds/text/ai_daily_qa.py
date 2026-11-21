@@ -45,7 +45,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from _common.build_commons import bulk_upsert_async
 from builds.text.loaders._parsing import parse_date_str
-from builds.text.loaders.ai_daily import iter_ai_daily_envelopes
+from builds.text.loaders.ai_daily import (
+    iter_ai_daily_envelopes,
+    resolve_hit_title,
+)
 from llm_agents.llm_qa import upsert_qa
 from llm_agents.online_search_summary import DAILY_CATEGORY
 from llm_agents.online_search_summary.core.citations import (
@@ -85,7 +88,10 @@ def _hit(d: Dict[str, Any]) -> Optional[SearchHit]:
     """
     if not isinstance(d, dict):
         return None
-    title = (d.get("title") or "").strip()
+    # Same title resolution as the loader's hit_news_row — the ref-key
+    # below must stay byte-identical to the text.news row key the
+    # loader wrote (the shared cache makes the LLM headline agree).
+    title = resolve_hit_title(d.get("title") or "")
     if not title:
         return None
     return SearchHit(

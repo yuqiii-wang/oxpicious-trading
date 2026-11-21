@@ -1,7 +1,8 @@
 """server_cluster.llm.__main__ — run the resident host.
 
     python -m server_cluster.llm [--host H] [--port P]
-        [--config PATH] [--idle-offload-s S] [--no-warmup]
+        [--config PATH] [--idle-offload-s S] [--idle-unload-s S]
+        [--no-warmup]
 
 ALWAYS-ON: registered in ``_common/service_heartbeat.py``
 MONITORED_SERVICES (the service name IS this module path — the stream
@@ -45,7 +46,12 @@ def main() -> None:
                         help="host_config.json path (default: the package's "
                         "own file; absent -> built-in defaults).")
     parser.add_argument("--idle-offload-s", type=float, default=None,
-                        help="Override the idle-offload age in seconds "
+                        help="Override the tier-1 idle-offload age in "
+                        "seconds, GPU -> CPU (default: the config's, "
+                        "1800).")
+    parser.add_argument("--idle-unload-s", type=float, default=None,
+                        help="Override the tier-2 idle age in seconds "
+                        "on top of the offload, CPU RAM weights drop "
                         "(default: the config's, 3600).")
     parser.add_argument("--no-warmup", action="store_true",
                         help="Skip the startup warm-up pass (models load "
@@ -62,6 +68,8 @@ def main() -> None:
         config.port = args.port
     if args.idle_offload_s is not None:
         config.idle_offload_s = args.idle_offload_s
+    if args.idle_unload_s is not None:
+        config.idle_unload_s = args.idle_unload_s
     if args.no_warmup:
         config.warmup_on_start = False
 
@@ -82,8 +90,9 @@ def main() -> None:
     host = LocalModelHost(config)
     logger.info(
         "local model host: serving %s:%d (warmup=%s idle_offload_s=%.0f "
-        "models=%s)", config.host, config.port, config.warmup_on_start,
-        config.idle_offload_s, ", ".join(host.manager.ids()))
+        "idle_unload_s=%.0f models=%s)", config.host, config.port,
+        config.warmup_on_start, config.idle_offload_s,
+        config.idle_unload_s, ", ".join(host.manager.ids()))
     uvicorn.run(host.app, host=config.host, port=config.port,
                 log_level="info")
 

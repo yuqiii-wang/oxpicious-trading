@@ -165,11 +165,43 @@ export default function SignalHistoryPanel({
         key: "action",
         label: "Action",
         render: (g) => (
-          <SignalActionChip
-            action={g.rep.action}
-            confidence={g.rep.confidence}
-            rejected={g.rep.is_rejection === true}
-          />
+          <Box component="span" sx={{ whiteSpace: "nowrap" }}>
+            <SignalActionChip
+              action={g.rep.action}
+              confidence={g.rep.confidence}
+              rejected={g.rep.is_rejection === true}
+            />
+            {g.group.some((x) => x.is_no_action) && (
+              <Tooltip
+                title={
+                  "The NO-ACTION overlay marks this fired day: do NOT " +
+                  "take the marked action at this price (never the " +
+                  "inverse). Reason: " +
+                  [
+                    ...new Set(
+                      g.group
+                        .filter((x) => x.is_no_action)
+                        .map((x) => x.no_action_reason ?? "marked"),
+                    ),
+                  ].join(", ") +
+                  " — expand for the marked record."
+                }
+                arrow
+              >
+                <Box
+                  component="span"
+                  sx={{
+                    ml: 0.75,
+                    fontSize: "0.65rem",
+                    color: theme.palette.warning.dark,
+                    verticalAlign: "middle",
+                  }}
+                >
+                  ⃠ no action
+                </Box>
+              </Tooltip>
+            )}
+          </Box>
         ),
       },
       {

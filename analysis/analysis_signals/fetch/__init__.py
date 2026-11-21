@@ -38,6 +38,7 @@ from .inputs import (
     fetch_rsi_inputs,
     resolve_crowdedness_universe,
     resolve_options_universe,
+    resolve_volatility_universe,
 )
 from .regimes import fetch_market_regimes
 
@@ -64,4 +65,5 @@ __all__ = [
     "fetch_market_regimes",
     "resolve_crowdedness_universe",
     "resolve_options_universe",
+    "resolve_volatility_universe",
 ]

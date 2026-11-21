@@ -1,10 +1,16 @@
 """Entry point: ``python -m downloads.index.csindex.quote``.
 
-Default (no args): nightly increment — from2020 (cached-skip) + 1m
-window + intraday per code. The PE fetch + history merge are SKIPPED by
-default (the recent rows reach the DB via SSE trend / SZSE / CNINDEX /
-BSE snapshots in builds CSINDEX DAILY's source ladder; the history CSVs
-are only the deep-history fallback).
+Default (no args): nightly sweep — from2020 (cached-skip) + 1m window +
+intraday per code. The PE fetch + history merge are SKIPPED by default
+(the recent rows reach the DB via SSE trend / SZSE / CNINDEX / BSE
+snapshots in builds CSINDEX DAILY's source ladder; the history CSVs are
+only the deep-history fallback).
+
+--pe-only: the nightly PE step — per code ONLY the incremental PE
+fetch + the history-CSV merge that folds it in (no from2020/1m/
+intraday/mop-up work). Runs as its OWN orchestration step so the wave
+scheduler holds it parallel with unrelated-src steps (same src_host
+keeps it serial vs this sweep — the two never share a wave).
 
 --refresh-history: also run the PE fetch + history merge (the slow
 full-table exports) — the one-time convergence for caches left behind
@@ -46,6 +52,16 @@ class CsindexQuoteDownload(DownloadJob):
             ),
         )
         parser.add_argument(
+            "--pe-only",
+            action="store_true",
+            help=(
+                "Nightly PE step mode: per code only the incremental PE "
+                "fetch + history-CSV merge (no from2020/1m/intraday) — "
+                "the PE series is the one csindex output the nightly "
+                "chain needs early."
+            ),
+        )
+        parser.add_argument(
             "--refresh-history",
             action="store_true",
             help=(
@@ -66,6 +82,7 @@ class CsindexQuoteDownload(DownloadJob):
                 ensure_prev_trading_day=self.args.ensure_prev_trading_day,
                 sleep_sec=self.args.sleep_sec,
                 refresh_history=self.args.refresh_history,
+                pe_only=self.args.pe_only,
             )
         )
 

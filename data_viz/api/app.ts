@@ -18,6 +18,7 @@ import cors from "cors";
 import compression from "compression";
 
 import { sendError, sendThrowable } from "./lib/http.js";
+import { recordCaution } from "./services/caution-log.service.js";
 import debtRoutes from "./routes/debt.js";
 import optionsRoutes from "./routes/options.js";
 import etfMarginRoutes from "./routes/etf-margin.js";
@@ -85,11 +86,35 @@ app.use("/api/health", (_req: Request, res: Response) => {
  * CONTRACTS.md). Honors HttpError and the service-layer
  * `Object.assign(new Error, { status })` convention via sendThrowable.
  */
-app.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {
+app.use((error: Error, req: Request, res: Response, _next: NextFunction) => {
   // Express identifies an error middleware by 4-arg arity — `_next` is
   // required in the signature even though every error is answered here.
   void _next;
   console.error("[api] unhandled error:", error);
+  // UNEXPECTED API errors are cautions too (monitor.caution_log, the
+  // Cautions tab): console.error dies with the process; the row stays
+  // queryable. Client errors (HttpError 4xx / the `{status}` convention
+  // — a bad param, a missing row) are the API working correctly and are
+  // NOT cautions; 5xx and statusless throws are. Deduped per
+  // method+path+error class — a failing endpoint bumps its one open row
+  // instead of flooding the table. recordCaution is never-throw, so
+  // this cannot loop on a DB outage.
+  const status = (error as Error & { status?: number }).status;
+  if (status == null || status >= 500) {
+    void recordCaution({
+      service: "data_viz.api",
+      source: "service",
+      severity: "error",
+      title: `API ${req.method} ${req.path} failed: ${error.name}: ${error.message}`,
+      dedupeKey: `${req.method}:${req.path}:${error.name}`,
+      detail: {
+        method: req.method,
+        path: req.path,
+        query: req.query as Record<string, unknown>,
+        error: `${error.name}: ${error.message}`,
+      },
+    });
+  }
   sendThrowable(res, error);
 });
 
