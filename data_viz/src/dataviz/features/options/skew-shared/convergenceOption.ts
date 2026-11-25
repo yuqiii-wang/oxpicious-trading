@@ -51,6 +51,7 @@ import {
 } from "@/theme/chart-palette";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import { fmtCompact } from "@/lib/series";
+import { fmtDate, fmtMonth } from "@/shared/datetime";
 import { GREEK_SKEW_PRICE_K } from "./types";
 import { expiryOiWidths, sharedSkewAxisDates } from "./sharedSkewOption";
 import type { OtmOiShare } from "../vol-smile/types";
@@ -247,7 +248,7 @@ export function buildSkewConvergenceOption(
         });
         const children: React.ReactNode[] = [];
         children.push(
-          React.createElement(tooltipComponents.Header, null, dateStr),
+          React.createElement(tooltipComponents.Header, null, fmtDate(dateStr)),
         );
         for (const p of filtered) {
           const v = (Array.isArray(p.value) ? p.value[1] : p.value) as number;
@@ -264,7 +265,7 @@ export function buildSkewConvergenceOption(
                 { style: { color: p.color ?? "" } },
                 "●",
               ),
-              ` ${p.seriesName ?? ""}: `,
+              ` ${fmtMonth(p.seriesName ?? "")}: `,
               React.createElement(
                 tooltipComponents.Bold,
                 null,

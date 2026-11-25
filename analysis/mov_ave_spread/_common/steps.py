@@ -10,10 +10,15 @@ around its step-specific compute + sanitize:
        force                 -> purge the scope (per-sec_type DELETE,
                                 or whole-table TRUNCATE when unscoped)
        incremental (default) -> per-sec_type missing-date detection vs
-                                the source identity tables, unioned
+                                the source identity tables, unioned with
+                                the parent's CORE target dates (lockstep
+                                family: a date reopened in the detail /
+                                trailing tables is reopened here too)
   1. compute the step columns over the FULL per-code history
   2. filter to the target dates (datetime64 isin — never a python-date
-     set), build rows, chunked insert (dict-sanitize or CSV-COPY path)
+     set), build rows, chunked insert (dict-sanitize or CSV-COPY path;
+     a target date the table already holds is UPSERTED instead — the
+     date-skip write would drop its rows)
   3. upsert analysis.analysis_identity
 
 :class:`TableStep` is that skeleton as a template-method base class:
@@ -44,12 +49,15 @@ from _common.build_commons import (
     find_missing_analysis_dates,
 )
 from _common.db_commons import (
+    bulk_upsert_async,
     chunked_purge_async,
     csv_copy_from_frame_async,
 )
 from _common.df_utils import (
     column_subset,
+    host_array,
     host_unique,
+    safe_columns,
     to_dt64,
 )
 from _common.labels import SEC_TYPE_CODE, SEC_TYPE_LABEL
@@ -58,12 +66,17 @@ from analysis._common import (
     build_and_insert_chunked_df,
     upsert_analysis_identity,
 )
-from analysis.mov_ave_spread.config import SEC_TYPE_IDENTITY_TABLE
+from analysis.mov_ave_spread.config import (
+    DETAIL_TABLE,
+    SEC_TYPE_IDENTITY_TABLE,
+    TRAILING_TABLE,
+)
 
 import logging
 logger = logging.getLogger(__name__)
 from analysis.mov_ave_spread._common.data_definitions import (
     StepRun,
+    StepTargets,
 )
 
 # ---------------------------------------------------------------------------
@@ -104,6 +117,49 @@ async def _recent_date_floor(
         f"ORDER BY date DESC OFFSET {int(INCREMENTAL_RECENT_DATES)} LIMIT 1",
     )
     return row["date"] if row else None
+
+
+async def find_code_gaps(
+    conn, table: str, identity_table: str, *,
+    sec_type: int, since: dt.date,
+) -> dict:
+    """date -> {code}: the identity table's (code, date) rows from
+    ``since`` on that ``table`` lacks for the sec_type — the per-code
+    gaps a date-grain missing-date scan cannot see (one code's row makes
+    the date "present" for the whole sec_type, so a bar that lands after
+    the date was first computed never gets its row). The caller keeps
+    only the (code, date) pairs its source frame actually carries: an
+    identity row the fetch drops would otherwise reopen its date on
+    every run."""
+    rows = await conn.fetch(
+        f"SELECT i.date, i.code FROM {identity_table} i "
+        f"LEFT JOIN {table} a "
+        f"ON a.code = i.code AND a.sec_type = $1 AND a.date = i.date "
+        f"WHERE i.date >= $2 AND a.code IS NULL", sec_type, since)
+    gaps: dict = {}
+    for r in rows:
+        gaps.setdefault(r["date"], set()).add(r["code"])
+    return gaps
+
+
+async def find_core_code_gaps(conn, sec_type: str) -> dict:
+    """The parent's per-code gaps: :func:`find_code_gaps` over BOTH core
+    tables (detail + trailing — the pair the date-grain phase-0 unions),
+    inside the default increment window (the newest
+    INCREMENTAL_RECENT_DATES identity dates). A date reopened here is
+    recomputed for the WHOLE sec_type and handed to every same-grain
+    step as a core target date."""
+    floor = await _recent_date_floor(conn, (sec_type,))
+    if floor is None:
+        return {}
+    gaps: dict = {}
+    for table in (DETAIL_TABLE, TRAILING_TABLE):
+        found = await find_code_gaps(
+            conn, table, SEC_TYPE_IDENTITY_TABLE[sec_type],
+            sec_type=SEC_TYPE_CODE[sec_type], since=floor)
+        for d, codes in found.items():
+            gaps.setdefault(d, set()).update(codes)
+    return gaps
 
 
 async def diff_write_scope_async(
@@ -211,6 +267,44 @@ async def diff_write_scope_async(
         await conn.execute(f"DROP TABLE IF EXISTS {tmp}")
 
 
+async def upsert_long_frame_async(
+    conn, table: str, long_df: pd.DataFrame, key_cols: tuple[str, ...],
+) -> int:
+    """Upsert a step's LONG frame over rows that already exist — the
+    refresh path for a date the table holds (the incremental write is a
+    date-skip + COPY: it drops every row whose date is present, so a
+    recomputed date must go through ON CONFLICT instead). Same shape as
+    :func:`diff_write_scope_async`'s write: the frame is CSV-COPY'd into
+    a TEMP table cast to the target's column types, then inserted
+    set-based (precision-safe on NUMERIC/float columns)."""
+    if long_df.empty:
+        return 0
+    columns = safe_columns(long_df)
+    tmp = "_mov_ave_refresh_tmp"
+    col_sql = ", ".join(f'"{c}"' for c in columns)
+    tmp_cols = ", ".join(f't."{c}"' for c in columns)
+    set_clause = ", ".join(
+        f'"{c}" = EXCLUDED."{c}"' for c in columns if c not in key_cols)
+    await conn.execute(f"DROP TABLE IF EXISTS {tmp}")
+    await conn.execute(
+        f"CREATE TEMP TABLE {tmp} AS TABLE {table} WITH NO DATA")
+    try:
+        await csv_copy_from_frame_async(conn, tmp, long_df, columns=columns)
+        n = await conn.fetchval(f"""
+            WITH ins AS (
+                INSERT INTO {table} ({col_sql})
+                SELECT {tmp_cols}
+                FROM {tmp} t
+                ON CONFLICT ({", ".join(key_cols)}) DO UPDATE SET {set_clause}
+                RETURNING 1
+            )
+            SELECT COUNT(*) FROM ins
+        """)
+    finally:
+        await conn.execute(f"DROP TABLE IF EXISTS {tmp}")
+    return int(n)
+
+
 def infer_sec_types(
     frame: pd.DataFrame, sec_type: str | None,
 ) -> tuple[str, ...]:
@@ -249,7 +343,26 @@ def filter_target_dates(
     out = frame[frame["date"].isin(td64)].reset_index(drop=True)
     logger.info(f"    -> incremental filter: {len(out):,} of {n_before:,} "
           f"rows are in target_dates")
+    if out.empty and n_before:
+        # A target date with no source row is uncomputable (its identity
+        # codes are dropped by the fetch's join) yet reopens the sec_type
+        # on every run — name it, so the nightly cost is explainable.
+        logger.info(f"    -> target dates with no source rows: "
+                    f"{sorted(target_dates)[:12]}")
     return out
+
+
+def frame_code_date_pairs(frame: pd.DataFrame) -> set:
+    """``{(code, date)}`` of a SMALL frame carrying ``code`` and ``date``
+    — the host-side membership set the parent uses to keep only the
+    per-code gaps the fetched source can actually compute. Each column
+    is unwrapped ONCE and the work finishes on the host: a python-date
+    column written back into a cudf-backed frame is the object-dtype
+    ``MixedTypeError`` fallback class, and the tuple set is needed on the
+    host anyway."""
+    codes = host_array(frame["code"].to_numpy()).tolist()
+    dates = host_array(frame["date"].to_numpy())
+    return set(zip(codes, dates.astype("datetime64[D]").astype(object).tolist()))
 
 
 async def purge_step_scope(
@@ -278,7 +391,7 @@ async def purge_step_scope(
         logger.info("    -> truncated; will recompute all rows")
 
 
-async def resolve_target_dates(
+async def resolve_step_targets(
     conn,
     table: str,
     sec_types: tuple[str, ...],
@@ -287,13 +400,20 @@ async def resolve_target_dates(
     code_filter: str | None,
     backfill: bool,
     detect_fn: Optional[Callable[[object, str], Awaitable[Set]]] = None,
-) -> Optional[Set]:
-    """Determine the step's target dates; ``None`` means compute ALL
-    (single-code / force mode), a (possibly empty) set is the incremental
-    union. ``detect_fn(conn, st)`` adds per-sec_type extra target dates
-    (repair dates, bounce-confirmation recompute) and may purge stale
-    rows first. ``backfill`` (the --backfill flag) lifts the default
-    increment bound."""
+    core_dates: Optional[Set] = None,
+) -> Optional[StepTargets]:
+    """Determine the step's write scope; ``None`` means compute ALL
+    (single-code / force mode), a :class:`StepTargets` carries the
+    incremental scope. ``detect_fn(conn, st)`` adds per-sec_type extra
+    target dates (repair dates, bounce-confirmation recompute) and may
+    purge stale rows first. ``core_dates`` — the parent's target dates
+    for the core detail / trailing tables — are unioned in: the family
+    moves in lockstep, so a date (re)opened in the core (a per-code gap,
+    a purge, a corrected source bar) is (re)opened in every same-grain
+    step even when the step's own table already holds it; those held
+    dates come back as ``refresh`` and are upserted rather than skipped.
+    ``backfill`` (the --backfill flag) lifts the default increment
+    bound."""
     if code_filter is not None:
         # Single-code mode (--code): the caller already DELETEd this
         # code's rows from the table, so compute ALL dates for this code
@@ -321,8 +441,12 @@ async def resolve_target_dates(
             td_st = td_st | extra
         target_dates_union |= td_st
         logger.info(f"    -> {st}: {len(td_st)} target dates")
+    core_dates = set(core_dates or ())
+    target_dates_union |= core_dates
     logger.info(f"    -> union across sec_types: "
-          f"{len(target_dates_union)} dates to (re)compute")
+          f"{len(target_dates_union)} dates to (re)compute"
+          + (f" (+{len(core_dates)} from the core detail/trailing tables)"
+             if core_dates else ""))
 
     # Default increment bound: only the LATEST missing dates are built —
     # detect_fn repair dates stay exempt (deliberate recomputes), while
@@ -338,7 +462,21 @@ async def resolve_target_dates(
                     f"{floor}): {backlog:,} backlog dates deferred — run "
                     f"with --backfill to converge them")
             target_dates_union = bounded | repair_dates
-    return target_dates_union
+    # Dates the table already holds cannot take the date-skip + COPY
+    # write: the core's and the repair dates are the only targets that
+    # may be present (own missing dates are not, by construction).
+    held = target_dates_union & (core_dates | repair_dates)
+    refresh: set = set()
+    if held:
+        present = {r["date"] for r in await conn.fetch(
+            f"SELECT DISTINCT date FROM {table} "
+            f"WHERE sec_type = ANY($1::smallint[])",
+            [sec_type_code(st) for st in sec_types])}
+        refresh = held & present
+        if refresh:
+            logger.info(f"    -> {len(refresh)} target date(s) already in "
+                        f"the table — refresh upsert over the stored rows")
+    return StepTargets(dates=target_dates_union, refresh=refresh)
 
 
 
@@ -402,6 +540,10 @@ class TableStep(abc.ABC):
     description: str = ""
     needed_cols: tuple[str, ...] = ()
     write_flavor: str = "rows"
+    # PK columns of ``table`` — the ON CONFLICT target of the refresh
+    # upsert (a target date the table already holds). Overridden by the
+    # steps whose grain is wider than (sec_type, code, date).
+    key_cols: tuple[str, ...] = ("sec_type", "code", "date")
     in_skip_gate: bool = False
 
     # ------------------------------------------------------------------
@@ -440,6 +582,72 @@ class TableStep(abc.ABC):
 
     async def post_write(self, run: StepRun, sec_type: str | None) -> None:
         """Async hook after the step's rows are written."""
+
+    # ------------------------------------------------------------------
+    # Write paths
+    # ------------------------------------------------------------------
+    async def _write_chunks(
+        self, run: StepRun, frame: pd.DataFrame, st_codes: tuple[int, ...],
+    ) -> int:
+        """The ordinary write — date-skip + COPY in incremental mode,
+        plain COPY in force mode. sec_type rides as its stored SMALLINT
+        code end-to-end (the label-code contract) — row builders / CSV
+        writers / DB all take the code; labels stay the loop/log
+        vocabulary."""
+        if frame.empty:
+            return 0
+        if self.write_flavor == "frame":
+            return await build_and_insert_chunked_df(
+                run.conn, run.pool, frame,
+                self.build_frame,
+                table_name=self.table,
+                force=run.force,
+                sec_types=st_codes,
+                max_concurrent=run.max_concurrent,
+                label=self.detail_name,
+            )
+        return await build_and_insert_chunked(
+            run.conn, run.pool, frame,
+            self.sanitize_rows,
+            table_name=self.table,
+            key_columns=list(self.key_cols),
+            force=run.force,
+            sec_types=st_codes,
+            max_concurrent=run.max_concurrent,
+            label=self.detail_name,
+        )
+
+    async def _write_with_refresh(
+        self, run: StepRun, frame: pd.DataFrame,
+        targets: StepTargets, st_codes: tuple[int, ...],
+    ) -> int:
+        """Split the target rows by write path: dates the table lacks
+        take :meth:`_write_chunks`; each date it already holds
+        (``targets.refresh``) is recomputed for the WHOLE sec_type and
+        upserted — ON CONFLICT DO UPDATE over the stored rows. One date
+        at a time, so a refresh never holds more than one date's rows as
+        dicts / one long frame."""
+        n = 0
+        new_dates = targets.dates - targets.refresh
+        if new_dates:
+            n += await self._write_chunks(
+                run, filter_target_dates(frame, new_dates), st_codes)
+        for d in sorted(targets.refresh):
+            part = filter_target_dates(frame, {d})
+            if part.empty:
+                continue
+            if self.write_flavor == "frame":
+                n_part = await upsert_long_frame_async(
+                    run.conn, self.table, self.build_frame(part),
+                    self.key_cols)
+            else:
+                n_part = await bulk_upsert_async(
+                    run.conn, self.table, self.sanitize_rows(part),
+                    list(self.key_cols))
+            logger.info(f"    -> refresh upsert ({self.detail_name}) {d}: "
+                        f"{n_part:,} rows")
+            n += n_part
+        return n
 
     # ------------------------------------------------------------------
     # Parent phase-0 consult: does this step have work for a sec_type?
@@ -500,14 +708,15 @@ class TableStep(abc.ABC):
 
         sec_types = infer_sec_types(step_df, sec_type)
 
-        # ---- Phase 0: determine target dates --------------------------------
-        target_dates_union = await resolve_target_dates(
+        # ---- Phase 0: determine the write scope ------------------------------
+        targets = await resolve_step_targets(
             run.conn, self.table, sec_types,
             force=run.force, code_filter=run.code_filter,
             backfill=run.backfill,
             detect_fn=self.detect_extra_dates,
+            core_dates=run.core_target_dates,
         )
-        if target_dates_union is not None and not target_dates_union:
+        if targets is not None and not targets.dates:
             logger.info("    -> DB is up to date; nothing to do.")
             return
 
@@ -520,8 +729,8 @@ class TableStep(abc.ABC):
         await self.post_compute(run, step_df, sec_type)
 
         # ---- Incremental filter ---------------------------------------------
-        if target_dates_union is not None:
-            step_df = filter_target_dates(step_df, target_dates_union)
+        if targets is not None:
+            step_df = filter_target_dates(step_df, targets.dates)
 
         if step_df.empty:
             logger.info(f"    -> no rows to upsert; skipping "
@@ -529,34 +738,16 @@ class TableStep(abc.ABC):
             return
 
         # ---- Phase 2: build + insert (chunked by date) ----------------------
-        # sec_type rides as its stored SMALLINT code end-to-end (the
-        # label-code contract) — row builders / CSV writers / DB all take
-        # the code; labels stay the loop/log vocabulary.
         logger.info(f"\n[{self.tag}2] Building + inserting {len(step_df):,} "
               f"{self.detail_name} rows in date-bounded chunks "
               f"({'COPY' if run.force else 'upsert'} per chunk)...")
-        st_codes = tuple(sec_type_code(s) for s in sec_types)
-        if self.write_flavor == "frame":
-            n = await build_and_insert_chunked_df(
-                run.conn, run.pool, step_df,
-                self.build_frame,
-                table_name=self.table,
-                force=run.force,
-                sec_types=() if run.code_filter is not None else st_codes,
-                max_concurrent=run.max_concurrent,
-                label=self.detail_name,
-            )
+        st_codes = tuple(
+            sec_type_code(s) for s in sec_types
+        ) if run.code_filter is None else ()
+        if targets is not None and targets.refresh:
+            n = await self._write_with_refresh(run, step_df, targets, st_codes)
         else:
-            n = await build_and_insert_chunked(
-                run.conn, run.pool, step_df,
-                self.sanitize_rows,
-                table_name=self.table,
-                key_columns=["sec_type", "code", "date"],
-                force=run.force,
-                sec_types=() if run.code_filter is not None else st_codes,
-                max_concurrent=run.max_concurrent,
-                label=self.detail_name,
-            )
+            n = await self._write_chunks(run, step_df, st_codes)
         del step_df
         logger.info(f"    -> inserted {n:,} rows")
 

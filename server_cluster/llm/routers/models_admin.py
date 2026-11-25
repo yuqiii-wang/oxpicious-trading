@@ -25,6 +25,7 @@ from fastapi import APIRouter, Request
 
 from ..data_definitions.admin import LoadOffloadResult, OffloadAllResult
 from ..manager import ModelManager
+from .deps import check_bearer
 from .errors import model_load_failed, not_found_model
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,9 @@ async def retrieve_model(request: Request, model_id: str) -> Any:
 async def _lifecycle_action(request: Request, model_id: str,
                             action: str) -> Any:
     manager: ModelManager = request.app.state.manager
+    denied = check_bearer(request, request.app.state.config, manager)
+    if denied is not None:
+        return denied
     if model_id not in manager:
         return not_found_model(model_id)
     fn = {"load": manager.load, "offload": manager.offload,
@@ -98,5 +102,8 @@ async def offload_all_models(request: Request) -> OffloadAllResult:
     to the per-model lifecycle routes (POST has no single-segment
     ``/{model_id}`` route, so the static path cannot shadow one)."""
     manager: ModelManager = request.app.state.manager
+    denied = check_bearer(request, request.app.state.config, manager)
+    if denied is not None:
+        return denied
     offloaded = await asyncio.to_thread(manager.offload_all)
     return OffloadAllResult(offloaded=offloaded)

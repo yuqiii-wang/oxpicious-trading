@@ -109,10 +109,13 @@ class OrchestrationRunRequest(BaseModel):
                       "scripts/orchestration/ (e.g. analysis_daily).")
     arrange: bool = Field(default=False, description=(
         "Arrange the tier first (the maintainer's nightly chain passes "
-        "true): upsert every step service's freq-window verdict into "
-        "monitor.orchestration_task_state and SKIP the not-due steps "
-        "(state skipped_not_due) instead of spawning them to internally "
-        "no-op off-cadence. The arrangement itself is recorded even with "
+        "true): upsert every step service's verdict into "
+        "monitor.orchestration_task_state — its data pre-check where one "
+        "is declared (the latest closed sessions absent from its data "
+        "table, and whether their source csv is staged), else its "
+        "freq-window verdict — and SKIP the not-due steps (state "
+        "skipped_not_due) instead of spawning them to internally no-op "
+        "off-cadence. The arrangement itself is recorded even with "
         "force — only the skipping is bypassed.")
     )
     force: bool = Field(default=False, description=(
@@ -136,9 +139,10 @@ class OrchestrationStepStatus(BaseModel):
                         "STRICTLY higher-priority run is in flight — the "
                         "service_config priority give-way; it resumes "
                         "when the blocker clears. skipped_not_due = the "
-                        "arrangement's verdict: the service's freq "
-                        "window holds, so the arranged run never spawned "
-                        "it.)")
+                        "arrangement's verdict: the service's data is "
+                        "present / its source csv is not staged yet (its "
+                        "data pre-check), or its freq window holds — the "
+                        "arranged run never spawned it.)")
     tag: str | None = None
     exit_code: int | None = None
     priority: int = Field(default=0, description="The step's give-way "
@@ -181,6 +185,21 @@ class ArrangementTaskRow(BaseModel):
     state: str = Field(description="unknown | due | not_due (from the "
                        "label domain orchestration_plan_state).")
     state_code: int = 0
+    basis: str = Field(default="calendar", description="WHAT the verdict "
+                       "rests on (from the label domain "
+                       "orchestration_plan_basis): calendar (the freq "
+                       "rule — no data pre-check declared) | data_present "
+                       "| db_missing | csv_present | csv_missing | "
+                       "check_failed (the data pre-check's reading).")
+    basis_code: int = 0
+    missing_count: int = Field(default=0, description="Sessions the data "
+                               "pre-check's verdict turns on — to fetch, "
+                               "to load, or absent from the data table "
+                               "(0 = none, or the calendar rule decided).")
+    missing_detail: dict | None = Field(default=None, description=(
+        "The pre-check's session lists — the probed window, the absent "
+        "sessions and which of them have their source csv staged (or "
+        "the error for check_failed); None under the calendar rule."))
     last_success_at: str | None = None
     due_at: str | None = Field(default=None, description=(
         "The Shanghai-calendar boundary the arrangement keys on (NULL = "
@@ -207,6 +226,14 @@ class ArrangementRefreshResponse(BaseModel):
     not_due_services: list[str] = Field(
         default_factory=list, description="The not-due services (the "
         "arranged run's skip set).")
+    by_basis: dict[str, int] = Field(default_factory=dict,
+                                     description="Services per basis label "
+                                     "(calendar included) — how many "
+                                     "verdicts the data pre-check "
+                                     "decided, and what it found.")
+    check_failed_services: list[str] = Field(
+        default_factory=list, description="Services whose pre-check "
+        "probe errored — arranged due fail-open (a caution row each).")
 
 
 class NonDailyTaskRow(BaseModel):

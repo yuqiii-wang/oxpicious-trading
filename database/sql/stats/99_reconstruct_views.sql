@@ -373,6 +373,33 @@ LEFT JOIN stats.futures_basic_stats b ON i.date = b.date AND i.code = b.code;
 
 COMMENT ON VIEW stats.v_futures_daily IS 'Reconstructed futures daily view: JOIN of futures_identity + futures_basic_stats. Includes underlying_code/underlying_name for cross-asset mapping (e.g. IF→000300 for CSI300).';
 
+-- ----------------------------------------------------------------------------
+-- View: v_macro_daily
+--   Reconstructs the macro daily view via JOIN on (date, code)
+--   DROP first (see v_etf_margin note re: column insertion).
+-- ----------------------------------------------------------------------------
+DROP VIEW IF EXISTS stats.v_macro_daily;
+CREATE OR REPLACE VIEW stats.v_macro_daily AS
+SELECT
+    i.date,
+    i.code,
+    i.name,
+    i.metal_type,
+    i.unit,
+    i.source,
+    -- Basic stats
+    b.open,
+    b.high,
+    b.low,
+    b.close,
+    b.change,
+    b.change_pct,
+    b.volume
+FROM stats.macro_identity i
+LEFT JOIN stats.macro_basic_stats b ON i.date = b.date AND i.code = b.code;
+
+COMMENT ON VIEW stats.v_macro_daily IS 'Reconstructed macro daily view: JOIN of macro_identity + macro_basic_stats (precious metal spot/futures series: SGE Au99.99/Ag99.99, COMEX GC/SI).';
+
 
 -- ============================================================================
 --  Sample queries (mirror what data_viz services return)

@@ -108,7 +108,7 @@ class RiskRunner:
             risk_seq_rows: List[Dict[str, Any]] = []
             risk_period_rows: List[Dict[str, Any]] = []
             risk_factor_rows: List[Dict[str, Any]] = []
-            for seq_id, code, seq_strategy_name in pairs:
+            for seq_id, code, _seq_name in pairs:
                 decisions = await fetch_decisions(self.conn, seq_id, columns=decision_cols)
                 if not decisions:
                     continue
@@ -131,7 +131,6 @@ class RiskRunner:
                 rs = compute_risk_seq(
                     seq_id, code, decisions, close_prices, daily_rows,
                     total_buy_cost,
-                    strategy_name=seq_strategy_name,
                 )
                 if rs is None:
                     continue

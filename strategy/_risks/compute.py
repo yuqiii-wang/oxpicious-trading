@@ -25,9 +25,11 @@ Risk philosophy:
     tail loss (any period's loss exceeding 2σ/3σ from the loss mean) — each
     scaled so at-threshold contributes 6.0 (pushes grade to HIGH on its own).
     GRADES: score-based LITTLE-criteria / LOW / MODERATE / ELEVATED / HIGH
-    (``_risk_grade``) — where the ORACLE mode (strategy_name 'oracle*') is
-    a second STRUCTURAL LITTLE route (the perfect-foresight replay is the
-    risk floor; its score + factor rows stay computed as diagnostics).
+    (``_risk_grade``) — the LITTLE criteria are MAGNITUDE-NATIVE (2026-11-21:
+    loss share + worst losing month of the P&L volume — the former
+    per-trade count/CV gates and the ORACLE hard route 'oracle*' are
+    demised; the perfect-foresight replay qualifies through the same
+    criteria as any run).
   - ``compute_risk_periods`` rolls P&L up per year/season/month for the UI
     chart and flags periods that dominate (hotspot) or move against the run
     total (counter-trend).
@@ -50,11 +52,23 @@ from strategy._risks.constants import (
     RISK_GRADE_LOW_BOUND, RISK_GRADE_MODERATE_BOUND, RISK_GRADE_ELEVATED_BOUND,
     LOSS_TAIL_2STD_TRIGGER,
     LOSS_DOMINANCE_RATIO_HIGH, MIN_PERIODS_FOR_STATS,
-    LITTLE_LOSS_RATIO, LITTLE_GAIN_CV_MAX,
+    LITTLE_LOSS_MAG_SHARE, LITTLE_MAX_LOSS_MONTH_SHARE,
     GAIN_DISCOUNT_WEIGHT,
     FT_LOSS_THRESHOLD,
-    ORACLE_STRATEGY_PREFIX,
 )
+
+# The risk compute handles ONE (seq_id, code) at a time — tiny frames built
+# from python-object dict rows (asyncpg DATE / str / Decimal). Under
+# cudf.pandas those frames would ride the proxy fast/slow machinery: the
+# 2026-11-23 nightly full-universe run logged a 15.7M-line [cudf fallback]
+# storm (object-date MixedTypeErrors + "transfer is blocked" under
+# post-backtest RMM pressure) at ~1.7s/pair vs 0.06s on plain host pandas.
+# There is NO GPU-scale work in this module, so every frame and every
+# module-level pandas call goes through the REAL pandas module (the
+# sanctioned small-data host route — the momentum.py emit-boundary
+# precedent): real-frame instances execute plain pandas with zero proxy
+# dispatch, regardless of the process's CUDA/RMM state.
+real_pd = getattr(pd, "_fsproxy_slow", pd)
 
 
 # ---------------------------------------------------------------------------
@@ -72,9 +86,9 @@ def _period_labels(dates: pd.Series, period_type: str) -> pd.Series:
     # Clean-data fast path — to_datetime(errors="coerce") on a Series is a
     # cudf fallback per call (non-scalar arg); DB dates are clean anyway.
     try:
-        ts = pd.to_datetime(dates)
+        ts = real_pd.to_datetime(dates)
     except (ValueError, TypeError):
-        ts = pd.to_datetime(dates, errors="coerce")
+        ts = real_pd.to_datetime(dates, errors="coerce")
     year = ts.dt.year.astype(str)
     if period_type == "year":
         return year
@@ -112,7 +126,7 @@ def _compute_concentration(
     if sells.empty or total_abs_pnl <= 0:
         return 0.0, 0.0, None, None
 
-    ts = pd.to_datetime(sells["exec_date"])
+    ts = real_pd.to_datetime(sells["exec_date"])
     dates_ord = host_array(ts.to_numpy())
     abs_pnl = host_array(sells["abs_pnl"].to_numpy(dtype=np.float64,
                                                    na_value=np.nan))
@@ -253,7 +267,7 @@ def _as_date(v) -> Optional[datetime.date]:
     if isinstance(v, datetime.datetime):
         return v.date()
     # numpy datetime64 -> pandas Timestamp -> date
-    return pd.Timestamp(v).date()
+    return real_pd.Timestamp(v).date()
 
 
 def _compute_price_drawdowns(
@@ -289,7 +303,7 @@ def _compute_price_drawdowns(
     # exec_date with a reset RangeIndex (compute_risk_seq), so "next
     # decision row" is positional.
     pa_arr = (
-        host_array(pd.to_numeric(df["position_after"], errors="coerce").fillna(0.0))
+        host_array(real_pd.to_numeric(df["position_after"], errors="coerce").fillna(0.0))
         if "position_after" in df.columns else None
     )
     exec_dates = host_array(df["exec_date"])
@@ -330,7 +344,7 @@ def _compute_price_drawdowns(
     # seeded with the BUY fill_price so the drop is measured from entry.
     buy_pos = np.flatnonzero(host_array(df["side"] == "BUY"))
     fill_arr = (
-        host_array(pd.to_numeric(df["fill_price"], errors="coerce"))
+        host_array(real_pd.to_numeric(df["fill_price"], errors="coerce"))
         if "fill_price" in df.columns else None
     )
     n_rows = len(df)
@@ -358,17 +372,6 @@ def _compute_price_drawdowns(
 # ---------------------------------------------------------------------------
 #  Risk grade — LITTLE / LOW / MODERATE / ELEVATED / HIGH
 # ---------------------------------------------------------------------------
-def _is_oracle_strategy(strategy_name: Optional[str]) -> bool:
-    """True when the run is the ORACLE mode (the strategy_name carries the
-    'oracle' prefix — 'oracle', 'oracle_ft10'; portfolio names always start
-    with 'portfolio:', so the prefix match is unambiguous). The oracle is
-    the perfect-foresight upper-bound replay — structurally the risk floor
-    (see :func:`_risk_grade`).
-    """
-    return bool(strategy_name) and strategy_name.lower().startswith(
-        ORACLE_STRATEGY_PREFIX)
-
-
 def _is_little_risk(
     sells: pd.DataFrame,
     total_realized: float,
@@ -376,10 +379,20 @@ def _is_little_risk(
     """Check if a strategy qualifies for the LITTLE risk grade.
 
     LITTLE is a STRUCTURAL grade for the safest strategies: almost no
-    losing trades AND stable gains (low gain coefficient of variation) AND
-    net profitable. Checked BEFORE score-based grades — if the criteria
-    are met, the strategy is LITTLE regardless of score (the criteria
-    guarantee safety).
+    losses BY MAGNITUDE AND no material losing month AND net profitable.
+    Checked BEFORE score-based grades — if the criteria are met, the
+    strategy is LITTLE regardless of score (the criteria guarantee
+    safety).
+
+    MAGNITUDE-NATIVE (2026-11-21, user-directed "the calculated result
+    on oracle should be little"): the former per-trade gates (loss
+    COUNT ratio < 10%, per-trade gain CV < 1.5) were the flat ±100
+    replay era's assumptions — a grade-sized replay (the oracle's
+    graded partial exits) makes many dust losing sells and gain sizes
+    that vary with the grade, failing both gates while its loss
+    MAGNITUDE sits at 5-6% of the P&L volume. The criteria now measure
+    what the score itself measures — loss fractions of the P&L volume
+    (temp_scripts/risk_little_calib_study.py, 2026-11-21).
     """
     if total_realized <= 0:
         return False
@@ -389,21 +402,26 @@ def _is_little_risk(
         return False
     losses = pnls[pnls < 0]
     gains = pnls[pnls > 0]
-    n_losses = len(losses)
     n_gains = len(gains)
     if n_gains < MIN_PERIODS_FOR_STATS:
         return False
-    # Criterion 1: almost no losses
-    loss_ratio = n_losses / n_sells
-    if loss_ratio >= LITTLE_LOSS_RATIO:
+    total_abs = float(abs(pnls).sum())
+    if total_abs <= 0:
         return False
-    # Criterion 2: stable gains (low coefficient of variation)
-    gain_mean = float(gains.mean())
-    if gain_mean <= 0:
+    # Criterion 1: almost no losses BY MAGNITUDE (the score's own
+    # loss_fraction basis — dust losing trades don't count)
+    loss_mag_share = float(abs(losses).sum()) / total_abs
+    if loss_mag_share >= LITTLE_LOSS_MAG_SHARE:
         return False
-    gain_std = float(gains.std())  # sample std (ddof=1)
-    gain_cv = gain_std / gain_mean
-    if gain_cv >= LITTLE_GAIN_CV_MAX:
+    # Criterion 2: no material losing month (the worst month's summed
+    # realized_pnl stays a dust share of the P&L volume — same
+    # group-by-month-sum convention as _longest_losing_streak)
+    s = sells[["exec_date", "realized_pnl"]].copy()
+    s["period"] = _period_labels(s["exec_date"], "month")
+    monthly = s.groupby("period")["realized_pnl"].sum()
+    loss_months = monthly[monthly < 0]
+    worst_month = float(loss_months.abs().max()) if len(loss_months) else 0.0
+    if worst_month / total_abs >= LITTLE_MAX_LOSS_MONTH_SHARE:
         return False
     return True
 
@@ -411,32 +429,25 @@ def _is_little_risk(
 def _risk_grade(
     risk_score: float,
     is_little: bool = False,
-    is_oracle: bool = False,
 ) -> str:
     """Map the (absolute) exponential rolling-window risk_score to a grade.
 
-    LITTLE is structural, checked BEFORE score-based grades — two routes:
-        - ``is_little`` criteria-based: almost no losses + stable gains +
-          profitable (the criteria guarantee safety);
-        - ``is_oracle``: the ORACLE mode is the perfect-foresight
-          upper-bound replay and by construction carries no forecasting
-          risk — it is the risk floor. Its residual losses (graded partial
-          exits, the flat-book sell skips before the code's first buy, the
-          full-size frontier replay near the data end) are replay
-          artifacts, not risk signals — the computed score + factor rows stay displayed as the
-          per-component diagnostic of where the residual comes from
-          (2026-11-20: the former MODERATE label was entirely the
-          losing-month streak's +1.0 — two adjacent replay-artifact losing
-          months crossing the LOW bound at 1.0 — with the oracle's
-          gain-dominated asymmetry discounts floored at 0 giving no
-          offsetting credit).
+    LITTLE is structural, checked BEFORE score-based grades — the
+    criteria-based route (``_is_little_risk``): almost no losses by
+    magnitude + no material losing month + profitable (the criteria
+    guarantee safety). The former ORACLE hard route ('oracle*' runs
+    graded LITTLE regardless of computation) is DEMISED (2026-11-21,
+    user-directed "the calculated result on oracle should be little"):
+    the perfect-foresight replay now qualifies through the same
+    magnitude-native criteria as any run — its dust replay losses sit
+    at 5-6% of the P&L volume with no material losing month.
     Otherwise score-based:
         < 1.0  → LOW       (no window reaches its loss threshold)
         < 3.0  → MODERATE  (one window past threshold, or several near it)
         < 6.0  → ELEVATED  (multiple windows past threshold)
         else   → HIGH
     """
-    if is_little or is_oracle:
+    if is_little:
         return "LITTLE"
     if risk_score < RISK_GRADE_LOW_BOUND:
         return "LOW"
@@ -527,7 +538,7 @@ def _rolling_realized_loss(sells: pd.DataFrame, window_days: int) -> float:
     if sells.empty:
         return 0.0
     s = sells[["exec_date", "realized_pnl"]].copy()
-    s["_ts"] = pd.to_datetime(s["exec_date"])
+    s["_ts"] = real_pd.to_datetime(s["exec_date"])
     s = s.set_index("_ts").sort_index()
     roll_sum = s["realized_pnl"].rolling(f"{window_days}D").sum()
     worst = float(roll_sum.min())
@@ -550,7 +561,7 @@ def _rolling_unrealized_loss(
     if daily_df.empty:
         return 0.0, 0.0
     s = daily_df[["trade_date", "unrealized_pnl"]].copy()
-    s["_ts"] = pd.to_datetime(s["trade_date"])
+    s["_ts"] = real_pd.to_datetime(s["trade_date"])
     s = s.set_index("_ts").sort_index()
     roll_min = s["unrealized_pnl"].rolling(f"{window_days}D").min()
     if roll_min.empty:
@@ -826,18 +837,18 @@ def _ft_amplified_pnl_per_sell(sells: pd.DataFrame) -> pd.Series:
     baseline realized_pnl when no FT columns are present (baseline run).
     """
     if sells.empty:
-        return pd.Series(dtype=float)
-    pnl = pd.to_numeric(sells.get("realized_pnl", 0), errors="coerce").fillna(0.0)
+        return real_pd.Series(dtype=float)
+    pnl = real_pd.to_numeric(sells.get("realized_pnl", 0), errors="coerce").fillna(0.0)
     if (
         "ft_stressed_conf_up" not in sells.columns
         and "ft_stressed_conf_down" not in sells.columns
     ):
         return pnl.astype(float)
-    qty = pd.to_numeric(sells.get("qty", 0), errors="coerce").fillna(0.0)
-    total_qty_before = pd.to_numeric(
+    qty = real_pd.to_numeric(sells.get("qty", 0), errors="coerce").fillna(0.0)
+    total_qty_before = real_pd.to_numeric(
         sells.get("total_qty_before", 0), errors="coerce").fillna(0.0)
-    up = pd.to_numeric(sells.get("ft_stressed_conf_up"), errors="coerce")
-    down = pd.to_numeric(sells.get("ft_stressed_conf_down"), errors="coerce")
+    up = real_pd.to_numeric(sells.get("ft_stressed_conf_up"), errors="coerce")
+    down = real_pd.to_numeric(sells.get("ft_stressed_conf_down"), errors="coerce")
     has_ft = up.notna() | down.notna()
     up_c = up.fillna(0.0)
     down_c = down.fillna(0.0)
@@ -848,7 +859,7 @@ def _ft_amplified_pnl_per_sell(sells: pd.DataFrame) -> pd.Series:
     ratio = np.where(baseline_conf > 0, amplified_conf / baseline_conf, 1.0)
     amplified = pnl * ratio
     # Rows without FT data → baseline.
-    return pd.Series(np.where(has_ft, amplified, pnl), index=sells.index)
+    return real_pd.Series(np.where(has_ft, amplified, pnl), index=sells.index)
 
 
 def _compute_ft_factor(
@@ -883,7 +894,7 @@ def _compute_ft_factor(
         return 0.0, None, []
 
     amp_per_sell = _ft_amplified_pnl_per_sell(sells)
-    baseline_total = float(pd.to_numeric(sells["realized_pnl"], errors="coerce").fillna(0.0).sum())
+    baseline_total = float(real_pd.to_numeric(sells["realized_pnl"], errors="coerce").fillna(0.0).sum())
     amplified_total = float(amp_per_sell.sum())
 
     pnl_delta = baseline_total - amplified_total  # positive = amplified worse
@@ -1027,7 +1038,6 @@ def compute_risk_seq(
     close_prices: Optional[List[Dict[str, Any]]] = None,
     daily_rows: Optional[List[Dict[str, Any]]] = None,
     total_buy_cost: float = 0.0,
-    strategy_name: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Compute the strategy_risks row for one (seq_id, code).
 
@@ -1044,15 +1054,11 @@ def compute_risk_seq(
     ``total_buy_cost`` is the peak normalized capital deployed (from
     strategy_results), used as the "% of capital" denominator for
     loss_fraction. Falls back to total_abs_pnl when 0/unavailable.
-    ``strategy_name`` (optional) is the run's identity name — the ORACLE
-    mode ('oracle', 'oracle_ft10') grades structurally LITTLE (the risk
-    floor; see :func:`_risk_grade`). The score + factor rows are computed
-    unchanged either way.
     """
     if not decisions:
         return None
-    df = pd.DataFrame(decisions)
-    df["exec_date"] = pd.to_datetime(df["exec_date"]).dt.date
+    df = real_pd.DataFrame(decisions)
+    df["exec_date"] = real_pd.to_datetime(df["exec_date"]).dt.date
     df = df.sort_values("exec_date").reset_index(drop=True)
 
     sells = df[df["side"] == "SELL"].copy()
@@ -1062,7 +1068,7 @@ def compute_risk_seq(
     if n_sells == 0:
         return None
 
-    sells["realized_pnl"] = pd.to_numeric(sells["realized_pnl"], errors="coerce").fillna(0.0)
+    sells["realized_pnl"] = real_pd.to_numeric(sells["realized_pnl"], errors="coerce").fillna(0.0)
     sells["abs_pnl"] = sells["realized_pnl"].abs()
     total_realized = float(sells["realized_pnl"].sum())
     total_abs = float(sells["abs_pnl"].sum())
@@ -1077,7 +1083,7 @@ def compute_risk_seq(
 
     # Top-3 highest-confidence BUYs (by qty descending; qty = confidence 0-100).
     buys_df = df[df["side"] == "BUY"].copy()
-    buys_df["qty"] = pd.to_numeric(buys_df["qty"], errors="coerce").fillna(0.0)
+    buys_df["qty"] = real_pd.to_numeric(buys_df["qty"], errors="coerce").fillna(0.0)
     top_conf_buys = buys_df.nlargest(3, "qty")
     conf_buy_nos = list(top_conf_buys["decision_no"]) + [None] * 3
 
@@ -1091,19 +1097,19 @@ def compute_risk_seq(
     max_dd, dd_dates, dd_vals = _compute_top_drawdowns(sells)
 
     # Price-based drawdowns (deepest drop since unzero position / last buy)
-    prices_df = pd.DataFrame()
+    prices_df = real_pd.DataFrame()
     if close_prices:
-        prices_df = pd.DataFrame(close_prices)
-        prices_df["date"] = pd.to_datetime(prices_df["date"]).dt.date
+        prices_df = real_pd.DataFrame(close_prices)
+        prices_df["date"] = real_pd.to_datetime(prices_df["date"]).dt.date
         prices_df = prices_df.sort_values("date").reset_index(drop=True)
     (drop_unzero, unzero_peak, unzero_trough,
      drop_since_buy, buy_peak, buy_trough) = _compute_price_drawdowns(df, prices_df)
 
     # Daily unrealized_pnl series for the risk score's unrealized component.
-    daily_df = pd.DataFrame()
+    daily_df = real_pd.DataFrame()
     if daily_rows:
-        daily_df = pd.DataFrame(daily_rows)
-        daily_df["trade_date"] = pd.to_datetime(daily_df["trade_date"]).dt.date
+        daily_df = real_pd.DataFrame(daily_rows)
+        daily_df["trade_date"] = real_pd.to_datetime(daily_df["trade_date"]).dt.date
         daily_df = daily_df.sort_values("trade_date").reset_index(drop=True)
 
     # Exponential rolling-window risk score. Multi-horizon rolling losses
@@ -1119,11 +1125,7 @@ def compute_risk_seq(
     _ft_contrib, ft_amplified_pnl, _ft_fac_list = _compute_ft_factor(
         sells, capital_base)
     is_little = _is_little_risk(sells, total_realized)
-    grade = _risk_grade(
-        risk_score,
-        is_little=is_little,
-        is_oracle=_is_oracle_strategy(strategy_name),
-    )
+    grade = _risk_grade(risk_score, is_little=is_little)
 
     return {
         "seq_id": seq_id,
@@ -1202,14 +1204,14 @@ def compute_risk_periods(
     """
     if not decisions:
         return []
-    df = pd.DataFrame(decisions)
-    df["exec_date"] = pd.to_datetime(df["exec_date"]).dt.date
+    df = real_pd.DataFrame(decisions)
+    df["exec_date"] = real_pd.to_datetime(df["exec_date"]).dt.date
     df = df.sort_values("exec_date").reset_index(drop=True)
     sells = df[df["side"] == "SELL"].copy()
     if sells.empty:
-        sells = pd.DataFrame(columns=df.columns)
+        sells = real_pd.DataFrame(columns=df.columns)
     else:
-        sells["realized_pnl"] = pd.to_numeric(sells["realized_pnl"], errors="coerce").fillna(0.0)
+        sells["realized_pnl"] = real_pd.to_numeric(sells["realized_pnl"], errors="coerce").fillna(0.0)
         sells["abs_pnl"] = sells["realized_pnl"].abs()
         # Per-SELL FT amplified realized P&L (baseline realized_pnl when no
         # FT columns are present). Used to compute ft_amplified_pnl per
@@ -1217,12 +1219,12 @@ def compute_risk_periods(
         # compare against the baseline Accumulated Total P&L curve.
         sells["_ft_amp_pnl"] = _ft_amplified_pnl_per_sell(sells)
 
-    daily_df = pd.DataFrame()
+    daily_df = real_pd.DataFrame()
     if daily_rows:
-        daily_df = pd.DataFrame(daily_rows)
-        daily_df["trade_date"] = pd.to_datetime(daily_df["trade_date"]).dt.date
+        daily_df = real_pd.DataFrame(daily_rows)
+        daily_df["trade_date"] = real_pd.to_datetime(daily_df["trade_date"]).dt.date
         daily_df = daily_df.sort_values("trade_date").reset_index(drop=True)
-        daily_df["unrealized_pnl"] = pd.to_numeric(
+        daily_df["unrealized_pnl"] = real_pd.to_numeric(
             daily_df["unrealized_pnl"], errors="coerce").fillna(0.0)
 
     # Determine the full date range of the strategy's active period.
@@ -1239,14 +1241,14 @@ def compute_risk_periods(
     def _all_period_values(period_type: str) -> List[str]:
         """All period labels in [range_start, range_end], sorted."""
         if period_type == "month":
-            rng = pd.date_range(range_start, range_end, freq="MS")
+            rng = real_pd.date_range(range_start, range_end, freq="MS")
         elif period_type == "season":
-            rng = pd.date_range(range_start, range_end, freq="MS")
+            rng = real_pd.date_range(range_start, range_end, freq="MS")
         elif period_type == "year":
-            rng = pd.date_range(range_start, range_end, freq="YS")
+            rng = real_pd.date_range(range_start, range_end, freq="YS")
         else:
             return []
-        labels = _period_labels(pd.Series(rng), period_type)
+        labels = _period_labels(real_pd.Series(rng), period_type)
         return sorted(set(host_array(labels).tolist()))
 
     def _end_unrealized_by_period(period_type: str) -> Dict[str, float]:
@@ -1282,7 +1284,7 @@ def compute_risk_periods(
             sells_pt["period_value"] = _period_labels(
                 sells_pt["exec_date"], period_type)
         else:
-            sells_pt = pd.DataFrame(columns=["period_value", "realized_pnl", "abs_pnl"])
+            sells_pt = real_pd.DataFrame(columns=["period_value", "realized_pnl", "abs_pnl"])
         end_unrealized = _end_unrealized_by_period(period_type)
         worst_loss_map, peak_gain_map = _extreme_unrealized_by_period(period_type)
         # ALL periods in the date range (not just SELL periods). Periods

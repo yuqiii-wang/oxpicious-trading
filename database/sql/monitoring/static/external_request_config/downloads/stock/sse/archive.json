@@ -39,7 +39,7 @@
       "list_equity": "https://yunhq.sse.com.cn:32042/v1/sh1/list/exchange/equity",
       "referer": "https://www.sse.com.cn/market/price/trends/"
     },
-    "notes": "URL carrier for the module's service_urls(SERVICE) lookups (pacing lives in the dayk row; pacing values mirror it). URLs migrated from code constants 2026-10-17; the trade-stats endpoints + trade_stats pacing row moved to downloads.stock.sse.trend_pe's rows when the PE half migrated (2026-11-20)",
+    "notes": "URL carrier for the module's service_urls(SERVICE) lookups (pacing lives in the dayk row; pacing values mirror it). URLs migrated from code constants 2026-10-17; the trade-stats endpoints + trade_stats pacing row moved to the PE service's rows (downloads.stock.sse.pe, renamed from trend_pe 2026-11-23) when the PE half migrated (2026-11-20)",
     "source_ref": "downloads/stock/sse/archive/__main__.py",
     "updated_at": "2026-11-20T12:00:00.000000+00:00"
   }

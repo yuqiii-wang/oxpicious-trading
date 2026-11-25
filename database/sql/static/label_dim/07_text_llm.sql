@@ -8,9 +8,13 @@
 --  llm.deep_agent_contexts (agent_context_kind — which payload a
 --  context row carries, incl. the graphs' final output nodes),
 --  llm.deep_agent_langgraph_templates (langgraph_type — which of a
---  run's three chained LangGraphs a template drives) and
+--  run's three chained LangGraphs a template drives),
 --  text.news_digestions (news_category — the discourse-category read
---  of the fake-news detector's classification lane). First domain of
+--  of the fake-news detector's classification lane) and
+--  text.news_providers (news_type — the origin's media type: social
+--  media, financial report, news article, …), and the text-analytics
+--  reference vocabulary static.fin_sentiment_dict (fin_dict_polarity —
+--  the CFSD dictionary word polarity). First domain of
 --  the schema's LLM-layer enums converted
 --  to the label-code contract (2026-10-27); further llm.* conversions
 --  register here.
@@ -161,3 +165,56 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     ('news_category',  2, 'opinion',    2),
     ('news_category',  3, 'statement',  3),
     ('news_category', 99, 'other',     99);
+
+INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
+    -- news_type: text.news_providers.news_type — the origin's MEDIA type
+    -- (2026-11-21): what kind of outlet an origin is, read against the
+    -- audit metrics (a fake share concentrated in social_media origins is
+    -- the expected shape; the same share in financial_report is the
+    -- alarm). Derived from text.news.source by the registry sync's
+    -- classify (analysis/news_audit/config.py — curated platform list +
+    -- substring guards; everything unmapped defaults to news_article,
+    -- the scraped-portal norm). 0 news_article = news portals and
+    -- official news items (gov, ndrc, the web-scraped portals);
+    -- 1 financial_report = official monetary-policy / financial data
+    -- releases (pboc_lpr / pboc_omo / pboc_oma); 2 social_media = UGC
+    -- platforms (zhihu, xueqiu, weibo, guba/caifuhao, 淘股吧, 韭研公社,
+    -- bilibili, the broker communities); 3 ai_digest = the repo's own
+    -- AI daily digest (ai_daily); 99 other = unrecognized.
+    ('news_type',  0, 'news_article',     0),
+    ('news_type',  1, 'financial_report', 1),
+    ('news_type',  2, 'social_media',     2),
+    ('news_type',  3, 'ai_digest',        3),
+    ('news_type', 99, 'other',           99);
+
+INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
+    -- fin_dict_polarity: static.fin_sentiment_dict.polarity — the CFSD
+    -- (中文金融情感词典, 姜富伟/孟令超/唐国豪, 8,793 words — LM translate +
+    -- word2vec expand, A-share validated) word's polarity (2026-11-21).
+    -- Code order = sign order. 2 both = the 21 words the source lists in
+    -- BOTH its positive and negative sheets (context-dependent sign,
+    -- e.g. 冷静/大胆/揭示) — the PK(word) table cannot carry two rows for
+    -- one word, so they get their own code instead of a silent
+    -- negative-wins. Tenth vocabulary in this file
+    ('fin_dict_polarity', 0, 'negative', 0),
+    ('fin_dict_polarity', 1, 'positive', 1),
+    ('fin_dict_polarity', 2, 'both',     2);
+
+INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
+    -- news_scope_kind: text.news_text_daily.scope_kind — which scope a
+    -- daily news-text metric row speaks for (2026-11-22). Code order =
+    -- market breadth: 0 market_all = every digested article that day,
+    -- read against the SSE Composite; 1 market_recap = the BROAD_SSE-
+    -- tagged broad-market recap subset (the source-class split the CFSD
+    -- paper keeps — official recaps vs the whole corpus); 2 industry =
+    -- EVENT-DAY rows per industry_id (a row only on days the industry
+    -- has digested articles — the daily-index grain is infeasible at
+    -- ~1-2 articles/industry-day); 3 sector = EVENT-DAY rows per
+    -- sector_id (the industry rows rolled UP the taxonomy to the L1
+    -- parent sector — text.news.sector_id; same event-day framing,
+    -- denser per day because a sector pools its member industries'
+    -- coverage). Eleventh vocabulary in this file
+    ('news_scope_kind', 0, 'market_all',   0),
+    ('news_scope_kind', 1, 'market_recap', 1),
+    ('news_scope_kind', 2, 'industry',     2),
+    ('news_scope_kind', 3, 'sector',       3);

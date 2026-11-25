@@ -5,11 +5,14 @@ _options_wall, _options_vix, _momentum, _rf_break, _rebound,
 _macd (the classic MACD construction computed at the fetch
 boundary), _crowdedness (the nightly market crowdedness
 composite, data-driven universe) and _volatility (the realized-vol
-panel, data-driven universe), plus
-_hedge_pairs (the portfolio family's pair universe + the three-curve
-trio frames), over the cross-family vocabulary in _shared (table
-names, the active-code / first-date lookups, the market-breadth
-states, the shared frame-finalize step).
+panel, data-driven universe), plus _hedge_pairs (the portfolio
+family's pair universe + the three-curve trio frames), over the
+cross-family vocabulary in _shared (table names, the active-code /
+first-date lookups, the market-breadth states, the shared
+frame-finalize step). The daily news-text MARKET state lives in the
+AMPLIFIER tier now (signal_amplification/news_anatomy — the news
+states amplify existing signals, never create them; the news_wash
+family was deleted 2026-11-22).
 
 The signals tier computes its OWN buckets off the raw value data
 since the forecast layer was removed (2026-10-05): per sec_type the

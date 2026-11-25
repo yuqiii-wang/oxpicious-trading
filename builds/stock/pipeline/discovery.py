@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from _common.build_commons import (
+    cap_to_closed_sessions,
     glob_source_files,
     ymd_from_filename,
     ymd_to_date,
@@ -79,6 +80,13 @@ def discover_sources(
         if _file_has_data(path):
             loadable_dates.add(d)
 
+    # Session-close cap: a per-day snapshot fetched before the 15:00
+    # close (midday/manual runs, the streams) holds intraday values
+    # under that day's filename — it must never enter missing-date
+    # detection, let alone the daily tables.
+    available_dates = cap_to_closed_sessions(available_dates)
+    loadable_dates = cap_to_closed_sessions(loadable_dates)
+
     szse_margin_files = glob_source_files(SZSE_MARGIN_DIR, "szse_margin_detail_*.csv")
     sse_margin_files = glob_source_files(SSE_MARGIN_DIR, "sse_margin_detail_*.csv")
 
@@ -92,7 +100,9 @@ def discover_sources(
 
 
 def margin_loadable_dates(margin_files: list[str]) -> set[date]:
-    """Dates of margin CSVs that contain at least one data row."""
+    """Dates of margin CSVs that contain at least one data row (capped at
+    the latest closed session — a pre-close margin file under today's
+    name is a partial/stale publish, never a final one)."""
     out: set[date] = set()
     for f in margin_files:
         if not _file_has_data(f):
@@ -104,4 +114,4 @@ def margin_loadable_dates(margin_files: list[str]) -> set[date]:
                 if d:
                     out.add(d)
                     break
-    return out
+    return cap_to_closed_sessions(out)

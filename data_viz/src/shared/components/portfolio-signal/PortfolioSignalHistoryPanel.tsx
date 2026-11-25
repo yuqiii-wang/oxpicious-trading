@@ -42,6 +42,7 @@ import {
 } from "@/shared/components/signal-code-trend/families";
 import { tickDotItem } from "@/shared/components/signal-code-trend/tickDotItem";
 import { regimeAccentColor } from "@/shared/charts/regimeBands";
+import { fmtDate } from "@/shared/datetime";
 import type {
   PortfolioEventMemberSignal,
   PortfolioHistorySignal,
@@ -147,7 +148,7 @@ export default function PortfolioSignalHistoryPanel({
       {
         key: "date",
         label: "Date",
-        render: (row) => row.event.date,
+        render: (row) => fmtDate(row.event.date),
         filter: { type: "date", value: (row) => row.event.date },
       },
       {
@@ -200,7 +201,7 @@ export default function PortfolioSignalHistoryPanel({
                   >
                     {signalRecordName(m.signal_type, m.signal_sub_type)}
                     {" — "}{m.code}{" · "}{m.action.toUpperCase()}
-                    {" @ "}{m.date}
+                    {" @ "}{fmtDate(m.date)}
                   </Typography>
                 ))}
                 {row.members.length === 0 && (

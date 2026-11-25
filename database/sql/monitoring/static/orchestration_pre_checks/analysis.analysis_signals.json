@@ -1,0 +1,13 @@
+{
+  "service": "analysis.analysis_signals",
+  "kind": "derive",
+  "tables": [
+    {
+      "table": "analysis_signals.history_signals"
+    },
+    {
+      "table": "analysis_signals.signal_amplification_history"
+    }
+  ],
+  "notes": "Presence = the session in history_signals AND signal_amplification_history (both per-session dense over the full index universe; history_signal_performance is snapshot-dated and stays out)."
+}

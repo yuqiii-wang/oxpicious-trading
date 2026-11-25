@@ -106,7 +106,7 @@ export function buildMarketMovementsTopOption(
   const times = FULL_DAY_TICKS;
 
   // Prev-day OHLC bar: when available, PREPEND one extra x category
-  // ("MM-DD" of the prev trading day) BEFORE the 09:30 tick and shift
+  // (the prev trading day's display date) BEFORE the 09:30 tick and shift
   // every intraday series by `offset` slots (null at the prev slot keeps
   // lines/shades starting at 09:30). When no bar is available the axis
   // is exactly the full-day tick range (offset 0, nothing prepended).
@@ -384,13 +384,14 @@ export function buildMarketMovementsTopOption(
         color: c.textColor,
         fontSize: 10,
         // Show a label every 30 min (at :00 and :30 minutes) + ALWAYS the
-        // prepended prev-day tick (idx 0, "MM-DD"). Times from the API are
+        // prepended prev-day tick (idx 0, the prev day's display date).
+        // Times from the API are
         // "HH:MM:SS" — slice the minutes field (chars 3-5) rather than
         // using endsWith, because endsWith(":00") would match the SECONDS
         // field (always "00") and show every 5-min label. When the
         // prev-day category is prepended, the 09:30 label (idx 1) is
-        // SKIPPED — it sits one narrow category away from "MM-DD" and the
-        // two centered labels collide into an unreadable smudge.
+        // SKIPPED — it sits one narrow category away from the prev-day
+        // date and the two centered labels collide into an unreadable smudge.
         interval: (idx: number) => {
           if (offset > 0 && idx === 0) return true;
           if (offset > 0 && idx === 1) return false;

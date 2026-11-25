@@ -274,7 +274,10 @@ def _parse_selection(raw: str) -> dict:
     Mirrors ``strategy.singleton_trading.__main__._parse_algo_arg`` (the
     same tolerant comma list; legacy ":weight" suffixes stripped) — kept
     local because importing another package's ``__main__`` would re-run
-    its bootstrap.
+    its bootstrap. ORACLE is SOLO-ONLY (2026-11-21): a multi-name
+    selection carrying "oracle" is rejected — the existing trainer
+    optimizes the oracle's confidence-scaling knobs on the oracle
+    signals ALONE, never on a blend with other families.
     """
     selection: dict = {}
     for part in raw.split(","):
@@ -283,6 +286,12 @@ def _parse_selection(raw: str) -> dict:
             selection[name] = 1.0
     if not selection:
         raise ValueError(f"--algo '{raw}' parsed to an empty selection")
+    if "oracle" in selection and len(selection) > 1:
+        raise SystemExit(
+            "oracle is solo-only (oracle mode): the trainer optimizes "
+            "the oracle signals alone, never a blend with other "
+            f"families — got '--algo {raw}'"
+        )
     return selection
 
 

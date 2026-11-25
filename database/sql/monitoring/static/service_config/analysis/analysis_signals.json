@@ -1,0 +1,13 @@
+{
+  "service": "analysis.analysis_signals",
+  "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
+  "is_resident": false,
+  "freq": "daily",
+  "priority": 70,
+  "schedule": "every A-share trading date, after builds_daily in the 16:00 nightly chain (analysis_daily step 9 — needs step 2's analysis.mov_ave_rsi, step 7's industry_corr_benchmark_offsets and step 8's analysis.volatility before it)",
+  "notes": "Signal rules + history + performance + the PORTFOLIO tier for the eleven families (mov_rsi, bollinger, ma_cross, momentum, macd, rf_break, rebound, options_wall, options_vix, crowdedness, volatility; hedge_pairs is the portfolio family and also writes portfolio_signal_rules / history_portfolio_signal_performance / portfolio_history_signals in the same run) — for the FULL index universe (no code scoping; the 10-index set is STUDY-ONLY, never orchestrated; the options, hedge_pairs, crowdedness and volatility families resolve their own data-driven universes). Incremental: a family whose rules were last built at its source data horizon SKIPS; a stale family recomputes but writes are date-split — only dates past the history max COPY in (existing dates re-upsert idempotently), signal_rules is the wiped+rewritten current-state tier, the performance snapshots upsert-only and are never purged. A scoped study run left single-code class pools here once (2026-10-13) and the tier went ~all flat.",
+  "source_ref": "scripts/orchestration/analysis_daily.json",
+  "updated_at": "2026-11-21T00:00:00.000000+00:00"
+}

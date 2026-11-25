@@ -5,8 +5,10 @@ import { fetchJson } from "./_cache";
 
 /** Liveness state of one resident process (the Service Monitor page's
  * first table — the always-on services the stream watchdog supervises;
- * the category used to be called "stream services"). */
-export type ResidentProcessState = "live" | "stale" | "stopped" | "down";
+ * the category used to be called "stream services"). "paused" = the
+ * child reports a deliberate pause (2026-11-21 Phase 4 command
+ * channel) — a legal state, not a wedge. */
+export type ResidentProcessState = "live" | "paused" | "stale" | "stopped" | "down";
 
 export interface ResidentProcessStatus {
   service: string;
@@ -25,6 +27,14 @@ export interface ResidentProcessStatus {
    *  the static JSON config (a registration auto-exits past the cap). */
   liveParallel: number | null;
   maxParallel: number | null;
+  /** The child-REPORTED progress at its last safe checkpoint (2026-11-21
+   *  control unification Phase 4; index-decoded labels — null = never
+   *  reported). The DERIVED per-asset progress rides the fleet fold
+   *  (fetchMonitorFleet), not this DB read. */
+  progressPhase?: string | null;
+  progressState?: string | null;
+  progressAt?: string | null;
+  progressAgeS?: number | null;
 }
 
 /** Batch pipeline process — LAST-RUN state from the heartbeat table.
@@ -60,6 +70,13 @@ export interface ProcessStatus {
   schedule: string | null;
   notes: string | null;
   sourceRef: string;
+  /** The child-REPORTED progress at its last safe checkpoint (Phase 4;
+   *  index-decoded labels — null = never reported). A batch step wedged
+   *  in one phase with a stale report is the pre-hung-kill caution. */
+  progressPhase?: string | null;
+  progressState?: string | null;
+  progressAt?: string | null;
+  progressAgeS?: number | null;
 }
 
 /** One watchdog restart, from the trail merged into monitor.service_audit:
@@ -118,6 +135,124 @@ export async function fetchStreamMonitor(): Promise<MonitorStreamResponse> {
     throw new Error(`stream monitor failed: HTTP ${res.status}`);
   }
   return (await res.json()) as MonitorStreamResponse;
+}
+
+// ---------------------------------------------------------------------------
+// The fleet fold (2026-11-21 control unification Phase 3) — the ONE
+// aggregated query face: UI → Express /api/monitor/fleet → monitor
+// /residents → per-area /processes?detail=1 (all server-side). No
+// per-process call is ever made from the browser or the API.
+// ---------------------------------------------------------------------------
+
+/** The derived (missing-set oracle) progress of ONE poller asset —
+ *  computed from the data tables at the owning server. */
+export interface FleetAssetProgress {
+  trade_date?: string | null;
+  n_identity?: number;
+  n_total_codes?: number;
+  max_time?: string | null;
+  n_codes_done?: number;
+  close_reached?: boolean;
+}
+
+export interface FleetDerivedAsset {
+  name?: string;
+  identity_table?: string;
+  intraday_table?: string;
+  code_column?: string;
+  exchange_column?: string | null;
+  exchange?: string | null;
+  progress?: FleetAssetProgress;
+}
+
+/** The unified detail payload ONE resident row carries (merged into the
+ *  Service Monitor's resident rows by service name). */
+export interface FleetProcessDetail {
+  service: string;
+  area?: string;
+  resident?: {
+    service: string;
+    desired: string;
+    state: string;
+    pid: number | null;
+    adopted?: boolean;
+    restarts_recent?: number;
+    backoff_until?: number | null;
+  } | null;
+  heartbeat?: {
+    service: string;
+    pid?: number | null;
+    beat_age_s?: number | null;
+    stop_reason?: string | null;
+    is_normal_exit?: boolean | null;
+    stopped_at?: string | null;
+    live_parallel?: number | null;
+    fingerprint_stale?: boolean | null;
+    progress_phase?: number | null;
+    progress_state?: number | null;
+    progress_payload?: Record<string, unknown> | null;
+    progress_at?: string | null;
+    progress_age_s?: number | null;
+  } | null;
+  derived_progress?: {
+    kind: string;
+    detail: { assets?: FleetDerivedAsset[] } & Record<string, unknown>;
+  } | null;
+  config?: {
+    resource_class?: string;
+    pausable?: boolean;
+    max_pause_s?: number;
+    max_parallel?: number;
+    priority?: number;
+    is_resident?: boolean;
+  };
+  log_tail?: string;
+}
+
+export interface MonitorFleetArea {
+  service: string;
+  area: string;
+  base_url: string;
+  reachable: boolean;
+  error: string | null;
+  residents: Array<
+    {
+      service: string;
+      desired?: string | null;
+      state?: string | null;
+      pid?: number | null;
+      /** The unified detail payload (Phase 3 fold) when the area server
+       *  answers it; absent on a pre-fold area server. */
+      detail?: FleetProcessDetail | Record<string, unknown>;
+    } & Record<string, unknown>
+  >;
+}
+
+export interface MonitorFleetResponse {
+  success: true;
+  generatedAt: string;
+  fleet: {
+    areas: MonitorFleetArea[];
+    always_on: Array<{
+      service: string;
+      pid: number | null;
+      beat_age_s: number | null;
+      stale: boolean;
+    }>;
+  };
+}
+
+/** The fleet fold — the Service Monitor page's SECOND query (beside the
+ *  DB-backed /stream): one aggregated call, refreshed on the same 30s
+ *  cadence. A plain fetch, NOT fetchJson: the fold must track the fleet
+ *  live (the shared cache's 10-min TTL would freeze progress after the
+ *  first load). */
+export async function fetchMonitorFleet(): Promise<MonitorFleetResponse> {
+  const res = await fetch("/api/monitor/fleet");
+  if (!res.ok) {
+    throw new Error(`fleet fold failed: HTTP ${res.status}`);
+  }
+  return (await res.json()) as MonitorFleetResponse;
 }
 
 /** Run audit history of ONE pipeline process — fetched on demand when a
@@ -283,6 +418,56 @@ export async function startStreamAlways(): Promise<StreamAlwaysResponse> {
     throw new Error(`stream-always failed: ${detail}`);
   }
   return (await res.json()) as StreamAlwaysResponse;
+}
+
+// ---------------------------------------------------------------------------
+// The downward command mailbox — POST /api/monitor/fleet/command
+// (2026-11-21 control unification Phase 4)
+// ---------------------------------------------------------------------------
+
+/** The downward signal labels (static.label_dim domain service_command:
+ *  0 flush_now | 1 pause | 2 resume) — the wire contract both the API
+ *  route and the area servers validate. */
+export type ServiceCommandLabel = "flush_now" | "pause" | "resume";
+
+/** The enqueue verdict: `message` names when the child acts (it claims
+ *  the command within ~5s and holds/releases at its next safe
+ *  checkpoint). */
+export interface ServiceCommandResponse {
+  success: true;
+  service: string;
+  command: string;
+  enqueued: boolean;
+  message: string;
+}
+
+/** Send ONE downward signal to ONE running child: the API routes it to
+ *  the OWNING area server's mailbox enqueue face; the child's heartbeat
+ *  thread claims + consumes it atomically (~5s) and acts at its next
+ *  safe checkpoint. A 409 carries the class gate's refusal verbatim
+ *  (a PAUSE for a not-pausable / gpu-class service) — surfaced as the
+ *  thrown Error's message. A raw fetch, NOT fetchJson: a control POST
+ *  must never be served from (or written into) the client cache. */
+export async function sendServiceCommand(
+  service: string,
+  command: ServiceCommandLabel,
+): Promise<ServiceCommandResponse> {
+  const res = await fetch("/api/monitor/fleet/command", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ service, command }),
+  });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = (await res.json()) as { error?: string };
+      if (body?.error) detail = body.error;
+    } catch {
+      // non-JSON error body — the status line is the message
+    }
+    throw new Error(`command ${command} refused for ${service}: ${detail}`);
+  }
+  return (await res.json()) as ServiceCommandResponse;
 }
 
 // ---------------------------------------------------------------------------
@@ -1120,6 +1305,42 @@ export async function fetchDbInstances(
 // vs skip (the Orchestration page's three sections)
 // ---------------------------------------------------------------------------
 
+/** WHAT an arrangement verdict rests on (monitor.orchestration_task_state.
+ *  basis — the label arrives already DECODED): calendar = the freq rule
+ *  (the service declares no data pre-check); the rest are the nightly
+ *  chain's data pre-check over the latest closed sessions. */
+export type OrchestrationBasis =
+  | "calendar"
+  | "data_present"
+  | "db_missing"
+  | "csv_present"
+  | "csv_missing"
+  | "check_failed";
+
+/** The data pre-check's session lists behind a verdict (ISO dates). */
+export interface OrchestrationPreCheckDetail {
+  /** The service's role: fetch (a download), load (a build reading the
+   *  downloaded csv), derive (analysis / strategy / a DB-only build). */
+  kind?: "fetch" | "load" | "derive";
+  /** The data table slices that were probed (a slice = the service's
+   *  universe inside a shared table: an exchange, a code family). */
+  tables?: string[];
+  /** The probed window's first / last expected session. */
+  from?: string;
+  to?: string;
+  /** Expected sessions absent from every probed table slice. */
+  missing?: string[];
+  /** Absent sessions whose source csv is staged (a final file). */
+  csv_present?: string[];
+  /** Absent sessions whose source csv is not staged. */
+  csv_missing?: string[];
+  /** A multi-slice service: the sessions each lacking table slice
+   *  misses (which exchange / family is behind). */
+  slice_missing?: Record<string, string[]>;
+  /** The probe's error (check_failed). */
+  error?: string;
+}
+
 /** One board task — the shared shape of all three sections' rows (each
  *  expands into the per-service run trend off `service`). */
 export interface OrchestrationBoardTask {
@@ -1129,12 +1350,20 @@ export interface OrchestrationBoardTask {
   freq: string;
   priority: number;
   /** The arrangement verdict (monitor.orchestration_task_state — the
-   *  Shanghai-calendar freq rule; the state arrives already DECODED). */
+   *  Shanghai-calendar freq rule, or the data pre-check for a service
+   *  that declares one; the state arrives already DECODED). */
   planState: "unknown" | "due" | "not_due";
   stateCode: number;
+  /** The evidence behind the verdict (see OrchestrationBasis). */
+  basis: OrchestrationBasis;
+  /** Sessions the pre-check found absent (0 under the calendar rule). */
+  missingCount: number;
+  /** The pre-check's session lists (null under the calendar rule). */
+  missingDetail: OrchestrationPreCheckDetail | null;
   lastSuccessAt: string | null;
-  /** The calendar boundary the verdict keys on (NULL = no boundary:
-   *  never succeeded / always / occasionally / on_demand / once). */
+  /** The calendar boundary the freq rule keys on — for a pre-checked
+   *  row a reference only (NULL = no boundary: never succeeded / always
+   *  / occasionally / on_demand / once). */
   dueAt: string | null;
   arrangedAt: string | null;
   successSinceArranged: boolean;
@@ -1149,10 +1378,16 @@ export interface OrchestrationBoardTask {
   ndMissingCount: number | null;
   ndAttempts: number | null;
   ndNextCheckAt: string | null;
+  /** p95 run duration in seconds — the duration 95% of the service's
+   *  last 20 completed normal-exit runs finished within (null = no
+   *  completed run on record). */
+  p95RunS: number | null;
   /** service_config cadence enrichment. */
   schedule: string | null;
   sourceRef: string | null;
-  /** Why the task sits in the no-need section (null elsewhere). */
+  /** Why the task sits in its section: the queue — the pre-check reading
+   *  that made it due (null when the calendar rule decided); no-need —
+   *  what holds it (null in the running section). */
   reason: string | null;
 }
 
@@ -1171,6 +1406,11 @@ export interface OrchestrationArrangeResponse extends OrchestrationBoardResponse
     due: number;
     notDue: number;
     notDueServices: string[];
+    /** Services per basis label (calendar included) — how many verdicts
+     *  the data pre-check decided, and what it found. */
+    byBasis: Record<string, number>;
+    /** Services whose pre-check probe errored — arranged due fail-open. */
+    checkFailedServices: string[];
   };
 }
 
@@ -1188,14 +1428,19 @@ export async function fetchOrchestrationBoard(): Promise<OrchestrationBoardRespo
 }
 
 /** One arrangement pass over every tier file NOW (the page's Arrange now
- *  action — the same freq rule the nightly chain's per-tier arrange side
- *  applies), then the refreshed board. */
+ *  action — the freq rule plus the data pre-check, what the nightly
+ *  chain's per-tier arrange side applies), then the refreshed board. */
 export async function arrangeOrchestration(): Promise<OrchestrationArrangeResponse> {
   const res = await fetch("/api/monitor/orchestration/arrange", {
     method: "POST",
   });
   if (!res.ok) {
-    throw new Error(`orchestration arrange failed (HTTP ${res.status})`);
+    // The server's own message (e.g. a chain pass is running — the
+    // arrange would collide with its per-tier arrange).
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(
+      body?.error ?? `orchestration arrange failed (HTTP ${res.status})`,
+    );
   }
   return (await res.json()) as OrchestrationArrangeResponse;
 }
@@ -1307,14 +1552,16 @@ export interface CautionsResponse {
 
 /** The caution trail, OPEN-first (open before resolved, worst severity
  *  first, most-recent-hit first). Plain no-store fetch (NOT fetchJson):
- *  live working-set state. */
+ *  live working-set state. `date` narrows to one caution day (the GMT
+ *  day of first-seen): "today" (default) | "all" | "YYYY-MM-DD". */
 export async function fetchCautions(
   state: CautionState = "open",
   source: CautionSource | null = null,
   severity: CautionSeverity | null = null,
   limit = 200,
+  date: "today" | "all" | string = "today",
 ): Promise<CautionsResponse> {
-  const qs = new URLSearchParams({ state, limit: String(limit) });
+  const qs = new URLSearchParams({ state, limit: String(limit), date });
   if (source != null) qs.set("source", source);
   if (severity != null) qs.set("severity", severity);
   const res = await fetch(`/api/monitor/cautions?${qs.toString()}`, {

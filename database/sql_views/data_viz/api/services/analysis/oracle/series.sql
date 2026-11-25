@@ -1,8 +1,9 @@
 -- Oracle — one security's full pivot-action history from
 -- analysis.oracle_signals (v4: one row per graded local min/max —
 -- buy at a local minimum, sell at a local maximum, per-side one
--- action per 5-day window, each pivot graded 0-100 by its forward-60d
--- favorable move (confidence; NULL while the window is unrealized);
+-- action per 5-day window, each pivot graded 0-100 by its favorable
+-- move on both 20-row legs (confidence; NULL while the forward
+-- window is unrealized);
 -- pivots below the 2% no-action floor are not in the table at all;
 -- the ext_* legs carry the next OPPOSITE PLACED pivot, the row's
 -- hindsight swing target, NULL at the frontier), joined with the

@@ -24,6 +24,7 @@ import CodeSearchBar, { findCodeInThemes, findCodeInStrategyThemes } from "@/com
 import SecClassificationNav from "@/shared/components/sec-classification/SecClassificationNav";
 import RefreshButton from "@/components/RefreshButton";
 import { DateSelector } from "@/shared/components/date-selector";
+import { fmtDate } from "@/shared/datetime";
 import IntradayPanel from "@/live/features/IntradayPanel";
 import {
   fetchLiveDataCombined,
@@ -240,7 +241,7 @@ export default function IndexPage() {
             Live Data · Index
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            {headerLabel} — 5-min intraday OHLC · {selectedDate || "—"}
+            {headerLabel} — 5-min intraday OHLC · {selectedDate ? fmtDate(selectedDate) : "—"}
           </Typography>
         </Box>
         <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
@@ -300,15 +301,15 @@ export default function IndexPage() {
           {data.codes.length === 0 ? (
             <Alert severity="warning">
               {searchCode
-                ? `No intraday data for index code: ${searchCode} on ${selectedDate}`
-                : `No indices with intraday data on ${selectedDate} for the selected filters.`}
+                ? `No intraday data for index code: ${searchCode} on ${fmtDate(selectedDate)}`
+                : `No indices with intraday data on ${fmtDate(selectedDate)} for the selected filters.`}
             </Alert>
           ) : (
             <>
               <Typography variant="caption" color="text.secondary">
                 {searchCode
-                  ? `Search result for ${searchCode} · ${selectedDate}`
-                  : `${data.codes.length} indices on this page · ${data.total_codes} total · page ${data.page}/${data.total_pages} · ${selectedDate}`}
+                  ? `Search result for ${searchCode} · ${fmtDate(selectedDate)}`
+                  : `${data.codes.length} indices on this page · ${data.total_codes} total · page ${data.page}/${data.total_pages} · ${fmtDate(selectedDate)}`}
               </Typography>
               <Stack spacing={1.5} sx={{ mt: 0.5 }}>
                 {data.codes.map((b) => (

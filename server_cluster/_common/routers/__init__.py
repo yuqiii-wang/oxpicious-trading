@@ -5,6 +5,6 @@ One APIRouter per resource slice (the llm-area host organization);
 surface."""
 from __future__ import annotations
 
-from . import health, jobs, processes
+from . import health, jobs, process_detail, processes
 
-ROUTER_MODULES = (health, jobs, processes)
+ROUTER_MODULES = (health, jobs, processes, process_detail)

@@ -17,6 +17,7 @@ import {
   buildAiUsageTrendOption,
   type UsageSeries,
 } from "./aiUsageTrendOption";
+import { fmtDate } from "@/shared/datetime";
 
 const NO_SERIES: UsageSeries[] = [];
 const NO_COUNTS: number[] = [];
@@ -62,7 +63,7 @@ export default function UsageTrendChart({
       title="LLM request tokens"
       subtitle={`${
         dates.length
-          ? `${dates[0]} → ${dates[dates.length - 1]} (GMT days)`
+          ? `${fmtDate(dates[0])} → ${fmtDate(dates[dates.length - 1])} (GMT days)`
           : "no data"
       } · ${totalRequests.toLocaleString()} requests · ${totalTokens.toLocaleString()} tokens · click a date to drill in`}
       option={option}

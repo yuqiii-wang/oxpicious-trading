@@ -30,7 +30,8 @@ from pydantic import BaseModel, Field
 
 from _common.internal_request import post_json
 from server_cluster._common.config import ClusterConfig
-from server_cluster.maintainer.jobs import MaintenanceJob, PassAudit
+from server_cluster.maintainer.jobs import (MaintenanceJob, MissedFireGuard,
+                                            PassAudit)
 
 CHINA_TZ = ZoneInfo("Asia/Shanghai")
 
@@ -83,6 +84,9 @@ class FleetBringUpJob(MaintenanceJob):
 
     def _run(self) -> tuple[list[str], str]:
         started = datetime.now(timezone.utc)
+        # The missed-fire tripwire first (the previous pass predating the
+        # previous 07:00 fire → caution; best-effort, never fatal).
+        MissedFireGuard(AUDIT_SERVICE, self.fire_at, self.name).check()
         try:
             outcome = self._ensure_up()
         except Exception:

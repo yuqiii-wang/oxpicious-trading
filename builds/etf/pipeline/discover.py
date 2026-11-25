@@ -4,7 +4,12 @@ from __future__ import annotations
 from datetime import date
 from typing import Dict, List, Set
 
-from _common.build_commons import glob_source_files, ymd_from_filename, ymd_to_date
+from _common.build_commons import (
+    cap_to_closed_sessions,
+    glob_source_files,
+    ymd_from_filename,
+    ymd_to_date,
+)
 
 from builds.etf.paths import (
     SZSE_ARCHIVE_DIR, SZSE_TREND_DIR, SSE_TREND_DIR,
@@ -54,6 +59,10 @@ def discover_source_files() -> tuple[Dict[str, List[str]], Set[date]]:
                 d = ymd_to_date(ymd)
                 if d:
                     available_dates.add(d)
+
+    # Session-close cap: pre-close snapshot files carry intraday values
+    # under their day's name and never enter missing-date detection.
+    available_dates = cap_to_closed_sessions(available_dates)
 
     logger.info(f"    → OHLCV: {len(files['szse_archive'])} szse_archive + "
           f"{len(files['szse_trend'])} szse_trend + {len(files['sse_trend'])} sse_trend files")

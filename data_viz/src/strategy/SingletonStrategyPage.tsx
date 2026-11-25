@@ -278,7 +278,11 @@ export default function SingletonStrategyPage() {
     }
   }, [nav.searchCode, nav.secType, running, remoteRunning, effectiveSelection, faultTolerance, refreshStatus]);
 
-  // Pre-check for PK existence
+  // Pre-check for PK existence. A STALE existing run (its rows end
+  // before the code's analysis horizon — check.stale; a rerun extends
+  // it) reruns DIRECTLY with force — no confirmation (user-directed
+  // 2026-11-25); the PK modal only guards the destructive re-run of a
+  // fresh run.
   const handleRunClick = useCallback(async () => {
     if (!nav.searchCode || running) return;
     setCheckingPk(true);
@@ -287,10 +291,11 @@ export default function SingletonStrategyPage() {
       const existing = await checkExistingStrategy(
         nav.searchCode, nav.secType, effectiveSelection, faultTolerance,
       );
-      if (existing.exists) {
+      if (existing.exists && !existing.stale) {
         setExistingRun(existing);
         setPkModalOpen(true);
       } else {
+        // no run yet, or a STALE run (a rerun extends it) — rerun directly
         setExistingRun(null);
         await handleRun(true);
       }

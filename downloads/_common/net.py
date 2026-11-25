@@ -31,11 +31,18 @@ _common/request_config.py) whenever a proxy is built with
 constants below are the last-resort fallback for services with neither
 their own JSON file nor a usable default.json row (mirrored by
 _common.request_config's FALLBACK_* — one numeric source).
+
+Waits are request-gated: a caller-issued ``proxy.sleep()`` /
+``proxy.sleep_range()`` waits only once an actual request has gone
+through the proxy (see AntiBotProxy), so a download loop pays no
+anti-bot cadence for the items it skips — already cached, out of
+range, ...
 """
 from __future__ import annotations
 
 import logging
 import random
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -418,6 +425,14 @@ class AntiBotProxy:
     consider ``antibot_config_for(service)`` + ``dataclasses.replace`` so
     the untouched fields still come from the JSON.
 
+    A wait starts only after an actual request. Every ``get``/``post``
+    taken through the proxy earns one caller-issued wait (``sleep`` /
+    ``sleep_range``); while none is outstanding those are no-ops. A
+    loop can therefore call ``proxy.sleep()`` unconditionally per item:
+    a skipped item (already cached, out of range, ...) never reaches
+    the wire, so it costs no wait. The request's own post-success
+    cooldown is not gated and does not spend the earned wait.
+
     Example usage:
         proxy = AntiBotProxy(service="downloads.etf.sse.composition")
         session = requests.Session()
@@ -428,7 +443,8 @@ class AntiBotProxy:
         # POST with custom sleep (overrides the service row for this call)
         resp = proxy.post(session, url, data=payload, sleep_sec=30.0)
 
-        # Manual sleep after processing
+        # Manual sleep after processing — waits only when a request was
+        # actually made through this proxy since the last such wait
         proxy.sleep()
 
         # Check if host is blocked
@@ -447,6 +463,13 @@ class AntiBotProxy:
             config = antibot_config_for(service, request_type)
         self.config = config or AntiBotConfig()
         self._host_tracker = None
+        # Wait gate: requests taken through this proxy that no
+        # caller-issued sleep() / sleep_range() has paced yet. A wait is
+        # spent against one of these, so nothing waits before the first
+        # actual request and a loop's per-item sleep() costs nothing on
+        # the items it skips.
+        self._unpaced_requests: int = 0
+        self._unpaced_requests_lock = threading.Lock()
         if self.config.enable_host_tracking:
             cooldown = (
                 host_block_cooldown_for(service, request_type)
@@ -538,6 +561,12 @@ class AntiBotProxy:
         log_tag: str = "",
     ) -> Optional[requests.Response]:
         """Internal request handler with anti-bot protection."""
+        # The wait gate: every request taken here — including one the
+        # host tracker holds back below — earns the caller's next
+        # sleep(), so a retry loop still backs off a blocked host.
+        with self._unpaced_requests_lock:
+            self._unpaced_requests += 1
+
         # Check host blocking
         if self._host_tracker and self._host_tracker.is_blocked(url):
             if logger:
@@ -595,9 +624,13 @@ class AntiBotProxy:
                         duration_ms=duration_ms,
                         service=self.audit_service)
 
-            # Sleep after successful request
-            if self.config.enable_sleep:
-                self.sleep(sleep_sec=sleep_sec)
+            # Sleep after successful request — the request's own trailing
+            # cooldown. It follows a real request by construction, so it
+            # is not gated, and it leaves the earned wait to the caller:
+            # a loop's own sleep() after this request still waits.
+            base = self._wait_base(sleep_sec)
+            if base is not None:
+                self._wait_jittered(base)
 
             return resp
 
@@ -625,27 +658,57 @@ class AntiBotProxy:
             return None
 
     def sleep(self, sleep_sec: Optional[float] = None) -> None:
-        """Sleep with jitter based on configured base sleep duration."""
-        if not self.config.enable_sleep:
-            return
+        """Sleep with jitter based on configured base sleep duration.
 
-        base = sleep_sec if sleep_sec is not None else self.config.base_sleep_sec
-        if base <= 0:
-            return
-
-        jitter = base * self.config.sleep_jitter
-        sleep_time = random.uniform(base - jitter, base + jitter)
-        time.sleep(max(0, sleep_time))
+        Waits only while an actual request taken through this proxy is
+        outstanding; returns immediately otherwise (see the class docstring).
+        """
+        base = self._wait_base(sleep_sec)
+        if base is not None and self._claim_request():
+            self._wait_jittered(base)
 
     def sleep_range(self, min_sec: float, max_sec: float) -> None:
-        """Sleep for a random duration between min_sec and max_sec."""
+        """Sleep for a random duration between min_sec and max_sec.
+
+        Request-gated like :meth:`sleep`.
+        """
         if not self.config.enable_sleep:
             return
 
         if min_sec <= 0 and max_sec <= 0:
             return
 
+        if not self._claim_request():
+            return
+
         sleep_time = random.uniform(min(min_sec, max_sec), max(min_sec, max_sec))
+        time.sleep(max(0, sleep_time))
+
+    def _wait_base(self, sleep_sec: Optional[float]) -> Optional[float]:
+        """Base seconds of a jittered wait — the call's override, else the
+        configured base — or None when sleeping is off / the base is not
+        positive."""
+        if not self.config.enable_sleep:
+            return None
+        base = sleep_sec if sleep_sec is not None else self.config.base_sleep_sec
+        return base if base > 0 else None
+
+    def _claim_request(self) -> bool:
+        """Spend one outstanding request on a caller-issued wait.
+
+        False when no actual request is waiting to be paced — the wait
+        is then skipped.
+        """
+        with self._unpaced_requests_lock:
+            if self._unpaced_requests <= 0:
+                return False
+            self._unpaced_requests -= 1
+            return True
+
+    def _wait_jittered(self, base: float) -> None:
+        """The raw jittered wait, neither gated nor spending the gate."""
+        jitter = base * self.config.sleep_jitter
+        sleep_time = random.uniform(base - jitter, base + jitter)
         time.sleep(max(0, sleep_time))
 
     def is_blocked(self, url: str) -> bool:

@@ -71,7 +71,7 @@ from _common.caution_log import record_service_error
 from _common.internal_request import InternalRequestError, request_json
 from server_cluster.maintainer.bring_up import monitor_base_url
 from server_cluster.maintainer.jobs import (JobResult, MaintenanceJob,
-                                            PassAudit)
+                                            MissedFireGuard, PassAudit)
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +92,28 @@ DEFAULT_TIER_TIMEOUT_S = 6 * 3600
 # both.
 TIER_TIMEOUT_S_OVERRIDES: dict[str, float] = {
     "downloads_daily": 11.0 * 3600.0,
+    # downloads_weekly carries BOTH weekly PE sweeps since the
+    # 2026-11-23 price/PE service split — the SSE stock anchor crawl
+    # (~1-2h) plus the CSIndex index-PE sweep (~4-6h at the anti-bot
+    # pacing; different src_hosts so the wave runs them concurrently,
+    # but the wave is as long as its longest member). The 6h default
+    # cap cannot fit a slow week: 9h from the tier's late-night slot
+    # still leaves the chain done before the 09:30 open.
+    "downloads_weekly": 9.0 * 3600.0,
+    # analysis_daily step 1 (analysis.market_beta) carries the industry
+    # attributions rebuild: a big incremental tail is a ~9-11.5h job
+    # (2026-11-21: 40,667s broad-market phase for 1369 dates, 11.7h
+    # wall), and its per-batch commits keep whatever progress a kill
+    # leaves — the cap only decides whether the chain ABORTS at the
+    # tier (skipping steps 2-14 and the strategy tiers) or waits it
+    # out. The 2026-11-24 03:41 FORCE recompute truncated the table
+    # and died at that evening's restart storm, leaving 1092 dates
+    # missing for 2026-11-25 (~9h at the Nov-21 pace; that night's
+    # first batch alone took ~85 min) — far past the 6h default. 12h
+    # from the tier's ~19:30 slot still ends by ~07:30, before the
+    # 09:30 open. No-op on normal days: 14 quick incremental steps
+    # finish well inside the default.
+    "analysis_daily": 12.0 * 3600.0,
 }
 AUDIT_SERVICE = "server_cluster.maintainer.pipeline"
 AUDIT_EXIT_REASON = "nightly pipeline chain"
@@ -106,16 +128,17 @@ _STATE_FILE = _STATE_DIR / "nightly_pipeline.json"
 # in run order (the display mirrors: the Express API's TIER_RUN_ORDER,
 # scripts/orchestration/README.md). The WHOLE pass is trading-day
 # gated; the tiers' own incremental guards make off-cadence runs
-# no-ops (monthly tasks refresh on the 1st, quarterly on the 1st of a
-# quarter-start month), so nothing else needs a per-tier gate.
+# no-ops (monthly tasks refresh on the 1st, quarterly one week after
+# the quarter start — the arrangement's quarterly boundary), so nothing
+# else needs a per-tier gate.
 NIGHTLY_CHAIN: list[str] = [
     # monitoring first — alert-only (replica lag, WAL pinning) and
     # never blocks the scheduled work
     "monitoring_occasionally",
     "downloads_daily",
-    # the weekly SSE stock-PE anchor tier rides every pass; its own
-    # weekly gate (WEEKLY_GATE_DAYS in downloads.stock.sse.trend_pe)
-    # makes off-cadence fires no-ops (the analysis_weekly precedent)
+    # the weekly PE tier rides every pass; the steps' own weekly gates
+    # (WEEKLY_GATE_DAYS in downloads.stock.sse.pe and
+    # downloads.index.csindex.pe) make off-cadence fires no-ops
     "downloads_weekly",
     "downloads_monthly",
     "downloads_quarterly",
@@ -129,11 +152,10 @@ NIGHTLY_CHAIN: list[str] = [
     # non-first runs of the month a no-op)
     "builds_monthly",
     "analysis_daily",
-    # the weekly hindsight-oracle tier rides every pass; its own weekly
-    # gate (config.WEEKLY_GATE_DAYS in analysis.oracle_signals) makes
-    # off-cadence fires no-ops (the builds_monthly month-guard
-    # precedent)
-    "analysis_weekly",
+    # (the former analysis_weekly tier — the hindsight-oracle pipeline
+    # — moved INTO analysis_daily as step 13, 2026-11-21: the daily
+    # incremental diffs the oracle table; its WEEKLY_GATE_DAYS gate
+    # retired with the tier)
     # the nightly singleton strategy (all-families portfolio, comb on)
     # runs AFTER the analysis tiers that produce its signal history
     "strategy_daily",
@@ -268,13 +290,18 @@ class MonitorOrchestrationClient:
 
     def start(self, file: str) -> TierRunAccepted:
         """Start one tier run ARRANGED: the monitor area first upserts
-        the tier's freq-window arrangement
-        (monitor.orchestration_task_state — the Shanghai-calendar rule
-        over each step's service_config ``freq`` vs its last successful
-        exit) and then skips the not-due steps (state skipped_not_due)
-        instead of spawning them to internally no-op off-cadence — the
-        maintainer arranges what to run, the Monitor UI's Orchestration
-        page shows the arrangement."""
+        the tier's arrangement (monitor.orchestration_task_state — each
+        step's DATA pre-check where one is declared: the latest closed
+        sessions absent from its data table and whether their source
+        csv is staged, server_cluster/monitor/pre_check.py; else the
+        Shanghai-calendar rule over its service_config ``freq`` vs its
+        last successful exit) and then skips the not-due steps (state
+        skipped_not_due) instead of spawning them to internally no-op
+        off-cadence — the maintainer arranges what to run, the Monitor
+        UI's Orchestration page shows the arrangement. Each tier is
+        arranged right before it runs, so a tier's pre-check sees the
+        tiers before it: the builds tier reads the downloads tier's
+        freshly staged csv."""
         doc = self._request("POST", "/orchestration/run",
                             {"file": file, "arrange": True})
         return TierRunAccepted.model_validate(doc)
@@ -347,6 +374,10 @@ class NightlyPipelineJob(MaintenanceJob):
 
     def _run(self) -> tuple[list[str], str]:
         started = datetime.now(timezone.utc)
+        # The missed-fire tripwire first, on EVERY pass (a trading-day
+        # skip writes its audit row too, so the next fire's comparison
+        # stays honest — a weekend skip must not read as a missed fire).
+        MissedFireGuard(AUDIT_SERVICE, self.fire_at, self.name).check()
         tiers = self._resolve_tiers()
         if not self._request.force and not self._is_trading_day():
             detail = (f"non-trading day — pass skipped "

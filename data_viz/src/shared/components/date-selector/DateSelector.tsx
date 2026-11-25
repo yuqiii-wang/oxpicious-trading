@@ -24,6 +24,11 @@ import dayjs, { type Dayjs } from "dayjs";
 
 const DATE_FMT = "YYYY-MM-DD";
 const DATE_TIME_FMT = "YYYY-MM-DD HH:mm";
+// Field text renders the UI-wide yyyy-Mmm-dd date display (2026-Nov-21);
+// the VALUE emitted by onChange stays ISO (DATE_FMT / DATE_TIME_FMT) — the
+// display format is never fed back into the data contract.
+const DATE_DISPLAY_FMT = "YYYY-MMM-DD";
+const DATE_TIME_DISPLAY_FMT = "YYYY-MMM-DD HH:mm";
 
 interface Props {
   /** Selected date ("YYYY-MM-DD", or "YYYY-MM-DD HH:mm" with showTime);
@@ -62,6 +67,7 @@ export default function DateSelector({
   sx,
 }: Props) {
   const fmt = showTime ? DATE_TIME_FMT : DATE_FMT;
+  const displayFmt = showTime ? DATE_TIME_DISPLAY_FMT : DATE_DISPLAY_FMT;
   // null = default — display defaultDate until a concrete pick is made.
   const dayValue = value ? dayjs(value) : defaultDate ? dayjs(defaultDate) : null;
   // YYYY-MM-DD compares correctly as strings, so min/max work in any order.
@@ -94,7 +100,7 @@ export default function DateSelector({
       minDate={minDate}
       maxDate={maxDate}
       shouldDisableDate={shouldDisableDate}
-      format={fmt}
+      format={displayFmt}
       disabled={disabled}
       slotProps={{
         textField: { size: "small", sx: { minWidth, ...sx } },
@@ -109,7 +115,7 @@ export default function DateSelector({
       minDate={minDate}
       maxDate={maxDate}
       shouldDisableDate={shouldDisableDate}
-      format={fmt}
+      format={displayFmt}
       disabled={disabled}
       slotProps={{
         textField: { size: "small", sx: { minWidth, ...sx } },

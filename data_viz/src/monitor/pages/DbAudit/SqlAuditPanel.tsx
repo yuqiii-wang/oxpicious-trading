@@ -30,16 +30,18 @@ import {
 import { Search } from "@mui/icons-material";
 import { useChartData } from "@/shared/charts/base-chart";
 import { fetchDbSql } from "@/lib/api-client/monitor";
+import { fmtStamp } from "@/shared/datetime/display";
 import { fmtCount, fmtMs } from "./fmt";
 
 type SqlOrder = "total_ms" | "calls" | "recent" | "avg_ms";
 
 const ORDERS: SqlOrder[] = ["total_ms", "calls", "recent", "avg_ms"];
 
+// UI-wide display stamp — keeps the ISO string's own (UTC) date + time parts,
+// matching the neighboring TableWorkloadTable's UTC-honest treatment.
 function shortTime(iso: string | null): string {
   if (!iso) return "—";
-  const d = new Date(iso);
-  return `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return fmtStamp(iso.slice(0, 19));
 }
 
 export default function SqlAuditPanel() {

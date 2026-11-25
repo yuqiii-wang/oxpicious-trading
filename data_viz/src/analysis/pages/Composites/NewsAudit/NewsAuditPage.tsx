@@ -37,47 +37,57 @@ import {
 import { Refresh } from "@mui/icons-material";
 import { useChartData } from "@/shared/charts/base-chart";
 import { useDocs } from "@/shared/docs";
+import { fmtDate } from "@/shared/datetime";
 import TimeSlider from "@/shared/components/time-slider/TimeSlider";
 import {
   fetchNewsContentAudit,
+  fetchNewsCoverageAudit,
   fetchNewsProviderAudit,
   runNewsAuditRefresh,
 } from "@/lib/api-client";
 import type {
   NewsProviderAuditResponse,
   NewsContentAuditResponse,
+  NewsCoverageAuditResponse,
+  NewsProviderAuditRow,
+  NewsContentAuditRow,
+  NewsCoverageAuditRow,
 } from "@shared/types";
 import ProviderAuditTable from "./ProviderAuditTable";
 import ContentAuditTable from "./ContentAuditTable";
+import CoverageAuditTable from "./CoverageAuditTable";
 import AuditFilterSelect, {
   type AuditFilterOption,
 } from "./AuditFilterSelect";
 import { authorFilterLabel } from "./format";
 
 /** The page's two halves — which audit table feeds the ExpandedTable. */
-type AuditView = "providers" | "content";
+type AuditView = "providers" | "content" | "coverage";
 
-const VIEWS: AuditView[] = ["providers", "content"];
+const VIEWS: AuditView[] = ["providers", "content", "coverage"];
 
 const VIEW_LABELS: Record<AuditView, string> = {
   providers: "Provider audit",
   content: "Content audit",
+  coverage: "Coverage audit (daily)",
 };
 
 /** Recent-window counts (5-day windows ≈ 40d / 130d / 260d). */
 const WINDOW_CHOICES = [8, 26, 52];
 
-/** Rows whose window_start falls inside the slider's [lo, hi] date span —
- * tiny pure helper shared by both views' window filters. */
-function rowsInWindow<T extends { window_start: string }>(
+/** Rows whose date falls inside the slider's [lo, hi] date span — tiny
+ * pure helper shared by the three views' filters (providers/content key
+ * on window_start, the coverage view on its trading date). */
+function rowsInWindow<T>(
   rows: T[],
   dates: string[],
   range: [number, number],
+  getDate: (r: T) => string,
 ): T[] {
   if (dates.length === 0) return [];
   const lo = dates[range[0]] ?? dates[0];
   const hi = dates[range[1]] ?? dates[dates.length - 1];
-  return rows.filter((r) => r.window_start >= lo && r.window_start <= hi);
+  return rows.filter((r) => getDate(r) >= lo && getDate(r) <= hi);
 }
 
 export default function NewsAuditPage() {
@@ -99,40 +109,66 @@ export default function NewsAuditPage() {
   // DbAudit page's mode-toggle pattern); stale rows stay visible while
   // the new mode's rows land.
   const { data, error, loading, refresh } = useChartData<
-    NewsProviderAuditResponse | NewsContentAuditResponse
+    NewsProviderAuditResponse | NewsContentAuditResponse | NewsCoverageAuditResponse
   >(
     () =>
       view === "providers"
         ? fetchNewsProviderAudit(limitWindows)
-        : fetchNewsContentAudit(limitWindows),
+        : view === "content"
+          ? fetchNewsContentAudit(limitWindows)
+          : // the coverage view reads DAYS: 8/26/52 windows ≈ 40/130/260 days
+            fetchNewsCoverageAudit(limitWindows * 5),
     [view, limitWindows],
   );
 
   // Discriminated by the response shape ("source" only exists on the
-  // provider response) — sound because the fetcher switches on the same
-  // `view` dep.
+  // provider response, "n_articles" only on the coverage one) — sound
+  // because the fetcher switches on the same `view` dep.
+  // Discriminated by the response's own echo fields (the provider
+  // response carries `source`, the content one `industry_id`, the
+  // coverage one `limit_days`) — sound because the fetcher switches on
+  // the same `view` dep.
   const providerRows = useMemo(
-    () => (data != null && "source" in data ? data.rows : []),
+    () => (data != null && "source" in data ? (data.rows as NewsProviderAuditRow[]) : []),
     [data],
   );
   const contentRows = useMemo(
-    () => (data != null && "industry_id" in data ? data.rows : []),
+    () => (data != null && "industry_id" in data ? (data.rows as NewsContentAuditRow[]) : []),
     [data],
   );
-  const latestWindow = useMemo(() => {
-    const rows =
-      view === "providers" ? providerRows : contentRows;
-    return rows.length > 0 ? rows[0].window_start : null;
-  }, [view, providerRows, contentRows]);
+  const coverageRows = useMemo(
+    () => (data != null && "limit_days" in data ? (data.rows as NewsCoverageAuditRow[]) : []),
+    [data],
+  );
+  // the active view's date getter (providers/content: window_start;
+  // coverage: the trading date)
+  const rowDate = useMemo<
+    (r: NewsProviderAuditRow | NewsContentAuditRow | NewsCoverageAuditRow) => string
+  >(
+    () => (view === "coverage"
+      ? (r) => (r as NewsCoverageAuditRow).date
+      : (r) => (r as NewsProviderAuditRow | NewsContentAuditRow).window_start),
+    [view],
+  );
+  const viewRows = useMemo(
+    () =>
+      view === "providers" ? providerRows
+        : view === "content" ? contentRows
+          : coverageRows,
+    [view, providerRows, contentRows, coverageRows],
+  );
+  const latestWindow = useMemo(
+    () => (viewRows.length > 0 ? rowDate(viewRows[0]) : null),
+    [viewRows, rowDate],
+  );
 
-  // The slider's date grid — distinct ASCENDING window starts over the
-  // active view's rows. A fresh grid (view / windows selector / refresh)
+  // The slider's date grid — distinct ASCENDING dates over the active
+  // view's rows. A fresh grid (view / windows selector / refresh)
   // re-seeds the slider at the full span, and the selects clear on a view
   // switch (they only exist in the providers view).
   const windowDates = useMemo(
-    () =>
-      [...new Set((view === "providers" ? providerRows : contentRows).map((r) => r.window_start))].sort(),
-    [view, providerRows, contentRows],
+    () => [...new Set(viewRows.map(rowDate))].sort(),
+    [viewRows, rowDate],
   );
   const maxIdx = Math.max(windowDates.length - 1, 0);
   // Clamp against the CURRENT grid so the one render between a grid change
@@ -155,12 +191,16 @@ export default function NewsAuditPage() {
   // derive from the row set ABOVE their own filter (the NewsPage chips
   // pattern — picking a provider narrows the author options, not its own).
   const windowedProviderRows = useMemo(
-    () => rowsInWindow(providerRows, windowDates, range),
+    () => rowsInWindow(providerRows, windowDates, range, (r) => r.window_start),
     [providerRows, windowDates, range],
   );
   const windowedContentRows = useMemo(
-    () => rowsInWindow(contentRows, windowDates, range),
+    () => rowsInWindow(contentRows, windowDates, range, (r) => r.window_start),
     [contentRows, windowDates, range],
+  );
+  const windowedCoverageRows = useMemo(
+    () => rowsInWindow(coverageRows, windowDates, range, (r) => r.date),
+    [coverageRows, windowDates, range],
   );
   const providerOptions: AuditFilterOption[] = useMemo(() => {
     const counts = new Map<string, number>();
@@ -213,9 +253,11 @@ export default function NewsAuditPage() {
   const tableScopeDeps =
     view === "providers" ? [effectiveProvider, effectiveAuthor, windowKey] : [windowKey];
   const visibleCount = (
-    view === "providers" ? viewProviderRows : windowedContentRows
+    view === "providers" ? viewProviderRows
+      : view === "content" ? windowedContentRows
+        : windowedCoverageRows
   ).length;
-  const totalCount = (view === "providers" ? providerRows : contentRows).length;
+  const totalCount = viewRows.length;
 
   const onRefreshRun = async () => {
     if (runBusy) return;
@@ -235,7 +277,7 @@ export default function NewsAuditPage() {
       <Box sx={{ display: "flex", alignItems: "center", gap: 2, flexWrap: "wrap" }}>
         <Typography variant="h6">News Audit (新闻审计)</Typography>
         <Typography variant="caption" color="text.secondary">
-          5-day windows · stride 5d{latestWindow ? ` · latest ${latestWindow}` : ""}
+          5-day windows · stride 5d{latestWindow ? ` · latest ${fmtDate(latestWindow)}` : ""}
         </Typography>
         {/* Refetch feedback for the header controls (view / windows /
             refresh): the spinner runs on every in-flight load or pipeline
@@ -306,8 +348,10 @@ export default function NewsAuditPage() {
         />
         {view === "providers" ? (
           <Chip variant="outlined" label="author “· provider-level ·” = the provider's own rows" />
-        ) : (
+        ) : view === "content" ? (
           <Chip variant="outlined" label="industry “· untagged ·” = broad-market / gov items" />
+        ) : (
+          <Chip variant="outlined" label="(whole market) = the '000001' rollup row — the daily panel's flow basis" />
         )}
       </Box>
 
@@ -345,9 +389,15 @@ export default function NewsAuditPage() {
           enableFilters={data?.enable_filters === true}
           filterScopeDeps={tableScopeDeps}
         />
-      ) : (
+      ) : view === "content" ? (
         <ContentAuditTable
           rows={windowedContentRows}
+          enableFilters={data?.enable_filters === true}
+          filterScopeDeps={tableScopeDeps}
+        />
+      ) : (
+        <CoverageAuditTable
+          rows={windowedCoverageRows}
           enableFilters={data?.enable_filters === true}
           filterScopeDeps={tableScopeDeps}
         />

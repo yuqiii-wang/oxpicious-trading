@@ -1,0 +1,14 @@
+{
+  "service": "downloads.macro.ai_daily",
+  "kind": "fetch",
+  "csv": [
+    {
+      "dir": "temps/ai_daily",
+      "pattern": "ai_daily_{date}.json",
+      "date_format": "%Y-%m-%d",
+      "min_bytes": 500,
+      "after_close": false
+    }
+  ],
+  "notes": "AI daily Q&A artifact (the downloader's own CACHED_MIN_BYTES is 500). Artifact-only (builds.text has no date-keyed gate), produced during the day — so no close rule; the staged artifact is the presence."
+}

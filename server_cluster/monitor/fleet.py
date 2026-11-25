@@ -14,7 +14,12 @@ desired-running-but-down residents back up:
   intent — bypasses the crash-loop backoff, same as the UI button).
   This area's OWN residents (the seven servers, the six infra daemons
   and the stream watchdog itself — the mutual pair) flip through the
-  in-process supervisor.
+  in-process supervisor. An UNREACHABLE jobs area gains the EMERGENCY
+  leg (2026-11-21 executor demotion Phase 2): its desired-running
+  residents are asked of the maintainer's emergency spawn (the ONE
+  direct-control path the maintainer keeps, gated server-side on the
+  scope server being unreachable; adopted by the scope server on its
+  return).
 
 The daily 07:00 scheduler lived here (``scheduler.py``) and moved to
 the maintainer area (``maintainer/bring_up.py``, 2026-11) — its fire
@@ -92,7 +97,12 @@ class FleetOps:
         areas: list[AreaFleet] = []
         for name in _JOBS_AREAS:
             service, base_url = self._area_base_urls()[name]
-            ok, body = _fetch_json(base_url, "/processes")
+            # The detail fold (2026-11-21 Phase 3): one call per area
+            # returns each resident row WITH its unified detail payload
+            # (heartbeat evidence + derived + reported progress + log
+            # tail) — the Monitor UI's fleet views consume the merged
+            # shape without new per-area endpoints.
+            ok, body = _fetch_json(base_url, "/processes?detail=1")
             residents: list[AreaProcess] = []
             error: str | None = None
             if ok:
@@ -101,6 +111,16 @@ class FleetOps:
                              if k in ("service", "desired", "state", "pid")}
                     detail = {k: v for k, v in row.items()
                               if k not in known}
+                    # The area's fold parks the unified payload under
+                    # ``detail`` — promote it to THIS detail bag so the
+                    # fleet consumers read the payload fields (heartbeat
+                    # evidence / derived progress / config) directly
+                    # instead of through a double nest.
+                    inner = detail.get("detail")
+                    if isinstance(inner, dict) and (
+                            "heartbeat" in inner
+                            or "derived_progress" in inner):
+                        detail = inner
                     residents.append(AreaProcess(**known, detail=detail))
             else:
                 error = str(body)
@@ -160,8 +180,14 @@ class FleetOps:
         """Bring the fleet up: start every down/backoff resident (the
         jobs areas' via HTTP, this area's own via the supervisor — the
         seven servers, the six infra daemons AND the stream watchdog,
-        the mutual pair). NEVER raises — one area's failure is that
-        area's error row."""
+        the mutual pair). An UNREACHABLE jobs area adds the EMERGENCY
+        leg (2026-11-21 executor demotion, Phase 2): its residents with
+        config-desired ``running`` are asked of the MAINTAINER's
+        emergency spawn (the maintainer probes the scope server itself,
+        so a race degrades to its idempotent already-running answer) —
+        the residents spawned that way are adopted by their scope
+        server when it returns. NEVER raises — one area's failure is
+        that area's error row."""
         actions: list[EnsureUpAction] = []
 
         for name in _JOBS_AREAS:
@@ -171,6 +197,7 @@ class FleetOps:
                 actions.append(EnsureUpAction(
                     service=service, area=name, action="unreachable",
                     ok=False, detail=str(body)))
+                actions.extend(self._emergency_start(name))
                 continue
             for row in body:
                 state = row.get("state")
@@ -199,7 +226,33 @@ class FleetOps:
         return EnsureUpResponse(
             actions=actions,
             brought_up=sum(1 for a in actions
-                           if a.action in ("started", "spawned") and a.ok))
+                           if a.action in ("started", "spawned",
+                                           "emergency_start") and a.ok))
+
+    def _emergency_start(self, area: str) -> list[EnsureUpAction]:
+        """The ensure-up EMERGENCY leg for one unreachable jobs area:
+        its config residents with desired ``running`` are asked of the
+        maintainer's emergency spawn (``POST /processes/{svc}/start``
+        there — the maintainer gates each request on the scope server
+        being unreachable and answers idempotently for a live
+        instance). One action row per resident; the leg itself never
+        raises."""
+        from server_cluster._common.config import ClusterConfig
+        from server_cluster._common.maintainer_client import (
+            emergency_start_via_maintainer,
+        )
+
+        actions: list[EnsureUpAction] = []
+        for spec in ClusterConfig.load().areas[area].residents:
+            if spec.desired != "running":
+                continue
+            pid = emergency_start_via_maintainer(spec.service)
+            actions.append(EnsureUpAction(
+                service=spec.service, area=area,
+                action="emergency_start", ok=pid is not None,
+                detail=None if pid is not None else
+                "maintainer emergency spawn refused or unreachable"))
+        return actions
 
     async def snapshot_async(self) -> FleetResponse:
         """The event-loop wrapper: the core is blocking (internal

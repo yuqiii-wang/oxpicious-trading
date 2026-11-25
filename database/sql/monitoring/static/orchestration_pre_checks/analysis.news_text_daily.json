@@ -1,0 +1,10 @@
+{
+  "service": "analysis.news_text_daily",
+  "kind": "derive",
+  "tables": [
+    {
+      "table": "text.news_text_daily"
+    }
+  ],
+  "notes": "Presence = the session in text.news_text_daily (pk date, scope_kind, scope_code) — the market scopes carry a row every trading day."
+}

@@ -300,6 +300,10 @@ function baseBarWord(barDef: Record<string, unknown>): string {
     // the rebound family (2026-10-26): the drop→rebound→resolution
     // cells — the drop bar (min_drop_pct below the trailing-Wd high)
     // resolved by capit / fail / reclaim
+    // (the news_wash family's news_state / news_interaction bar
+    // decoders were removed 2026-11-22 — the family was migrated into
+    // the amplifier tier and its bar words render on the Signal
+    // Amplification page)
     case "rebound_resolution": {
       const d = num("min_drop_pct");
       const win = num("window");

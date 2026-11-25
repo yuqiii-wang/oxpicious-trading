@@ -4,6 +4,7 @@
  */
 import React from "react";
 import { fmtCompact, fmtNum } from "@/lib/series";
+import { fmtDate, fmtMonth } from "@/shared/datetime";
 import { DOWN_COLOR, MA20_COLOR, UP_COLOR } from "@/theme/chart-palette";
 import {
   CALL_ZONE_SERIES_NAME,
@@ -103,7 +104,7 @@ function SharedSkewTooltipContent({
 }: SharedSkewTooltipData) {
   const d = points.find((s) => s.date === date);
 
-  const children: React.ReactNode[] = [<b key="date">{date}</b>];
+  const children: React.ReactNode[] = [<b key="date">{fmtDate(date)}</b>];
 
   for (const item of seriesItems) {
     const val = item.value[1];
@@ -221,7 +222,7 @@ function SharedSkewTooltipContent({
       children.push(
         <div key={`pe-${idx}`} style={{ paddingLeft: "8px" }}>
           <ColoredDot color={expiryColorMap.get(pe.expiry) ?? "#888"} />
-          {pe.expiry}: <b>{sign}</b>{" "}
+          {fmtMonth(pe.expiry)}: <b>{sign}</b>{" "}
           ΔSpot=<b>{gapSpotStr}</b>
           {pe.oiTotal != null && (
             <span style={{ opacity: 0.75 }}>

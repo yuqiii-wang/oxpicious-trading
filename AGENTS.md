@@ -24,6 +24,9 @@ the first step of the work:
   `kg-db-semantics`
 - ANY chart component, ECharts option builder, or chart tooltip/colors
   under `data_viz/src` → `ui-charts`
+- ANY stacked multi-chart panel with a shared time window, time slider,
+  or cross-chart hover/tooltip sync under `data_viz/src` →
+  `time-slider-dev`
 - ANY verification of `data_viz/` work → `ui-test`
 - ANY code that runs in the LLM py sandbox (sandbox_* tools,
   deep-agent compute) or any change to the sandbox env/limits/monitoring
@@ -45,10 +48,11 @@ the first step of the work:
   the FastAPI over the repo's local AI models by
   KIND: ``tokenization`` (StructBERT word segmenter), ``jev`` (Jev /
   System One decision models — OneJev; the standard `/v1/systemone`
-  contract: noul/choice/score → calibrated probabilities), plus the
-  OpenAI chat completions surface and the model load/offload
-  management) → keep the serving contracts: the segmenter is
-  host-first with an in-process fallback
+  contract: noul/choice/score → calibrated probabilities), ``ocr``
+  (PaddleOCR-VL image transcription — the `/v1/ocr` contract: image
+  files → the extracted text), plus the OpenAI chat completions
+  surface and the model load/offload management) → keep the serving
+  contracts: the segmenter is host-first with an in-process fallback
   (`_common/tokenization/chinese_word_segmenter.py`), the dummy-1
   simulation preserves the former standalone dummy-llm server
   (`test.dummy_llm.server`, removed 2026-11) semantics verbatim

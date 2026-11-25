@@ -1,0 +1,4 @@
+{
+  "view": "server_cluster/monitor/non_daily/oracle_signals_coverage",
+  "notes": "analysis_daily step 13 (analysis.oracle_signals): per study-10 code the newest pivot action vs the bars frontier with the 20-day tolerance (the trail ends 2 bars before the frontier and the newest bars have no placeable pivots yet) — reuses the non-daily checker's coverage view verbatim (one row per stale code)."
+}

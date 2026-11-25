@@ -27,6 +27,7 @@ import {
   Typography,
 } from "@mui/material";
 import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
+import { fmtDate, fmtMonth } from "@/shared/datetime";
 import { fetchIndustryHypesAndDrains } from "@/lib/api-client";
 import type { IndustryHypesAndDrainsResponse, SeasonalRankingRow } from "@shared/types";
 import type { HypesAndDrainsChartProps, HypesWeighting } from "./types";
@@ -177,7 +178,7 @@ export function HypesAndDrainsChart({
     const wLabel = weighting === "equal" ? "equal-weighted" : "trading-amt-weighted";
     parts.push(`${data.benchmark_name} (${data.benchmark_code}, ${data.period_days}d, ${wLabel})`);
     if (selectedSeason) {
-      parts.push(selectedDate ? `Month: ${selectedSeason}` : `Latest: ${selectedSeason}`);
+      parts.push(selectedDate ? `Month: ${fmtMonth(selectedSeason)}` : `Latest: ${fmtMonth(selectedSeason)}`);
       parts.push(`${data.seasons.length} seasons`);
       parts.push(`${data.industry_series.length} industries tracked`);
     }
@@ -305,7 +306,7 @@ export function HypesAndDrainsChart({
           sx={{ fontSize: "0.68rem", color: "text.secondary", display: "block", mt: -0.5, px: 0.5, fontStyle: "italic" }}
         >
           Click any date on the chart to inspect that month's rankings in the table below
-          {selectedDate ? ` · selected: ${selectedDate}` : ""}
+          {selectedDate ? ` · selected: ${fmtDate(selectedDate)}` : ""}
         </Typography>
       )}
 
@@ -315,7 +316,7 @@ export function HypesAndDrainsChart({
           {/* HYPE */}
           <Box>
             <Typography variant="caption" sx={{ fontSize: "0.72rem", fontWeight: 700, color: "#2e7d32" }}>
-              ▲ HYPE — {selectedSeason} (lifted benchmark)
+              ▲ HYPE — {fmtMonth(selectedSeason)} (lifted benchmark)
             </Typography>
             {selectedHypes.map((h) => (
               <Box
@@ -339,7 +340,7 @@ export function HypesAndDrainsChart({
           {/* DRAIN */}
           <Box>
             <Typography variant="caption" sx={{ fontSize: "0.72rem", fontWeight: 700, color: "#c62828" }}>
-              ▼ DRAIN — {selectedSeason} (dragged benchmark)
+              ▼ DRAIN — {fmtMonth(selectedSeason)} (dragged benchmark)
             </Typography>
             {selectedDrains.map((d) => (
               <Box

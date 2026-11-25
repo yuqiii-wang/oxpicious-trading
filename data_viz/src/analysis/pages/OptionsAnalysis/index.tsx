@@ -46,6 +46,7 @@ import {
   invalidateCacheForPrefix,
   venueToTargetType,
 } from "@/lib/api-client";
+import { fmtDate } from "@/shared/datetime";
 import type { OptionsUnderlying } from "@shared/types";
 import { useStore } from "@/store/filters";
 import { UNDERLYING_LABELS } from "@/theme/chart-palette";
@@ -353,7 +354,7 @@ export default function OptionsAnalysisPage() {
             <>
               <Typography variant="caption" color="text.secondary">
                 {datesInfo.rowCount} option contracts · {datesInfo.dates.length} trading days ·{" "}
-                {datesInfo.dates[0] ?? "—"} → {datesInfo.dates[datesInfo.dates.length - 1] ?? "—"}
+                {fmtDate(datesInfo.dates[0])} → {fmtDate(datesInfo.dates[datesInfo.dates.length - 1])}
               </Typography>
 
               {snapshotLoading && (

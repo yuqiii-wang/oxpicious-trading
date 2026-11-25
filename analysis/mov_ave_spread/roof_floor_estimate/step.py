@@ -72,6 +72,7 @@ class RoofFloorEstimateStep(TableStep):
     description = ESTIMATE_DESCRIPTION
     needed_cols = ("sec_type", "code", "date", "price", "high", "low")
     write_flavor = "frame"
+    key_cols = ("sec_type", "code", "date", "period", "method")
     in_skip_gate = True
 
     def compute(self, df: pd.DataFrame) -> pd.DataFrame:

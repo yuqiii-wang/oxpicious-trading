@@ -14,6 +14,7 @@ import {
   expiryBlueColor,
 } from "@/theme/chart-palette";
 import { fmtNum, fmtPct } from "@/lib/series";
+import { fmtDate, fmtMonth } from "@/shared/datetime";
 import { makeSmileTooltipFormatter } from "./SmileTooltip";
 import { buildSkewLineSeries } from "./skewMarkLine";
 import { expiryToYyyyMm, expiryCompare } from "./expiryUtils";
@@ -30,7 +31,7 @@ export function buildSmileOption(
   const splitColor = c.splitLineColor;
 
   if (snap.length === 0) {
-    return emptyChartOption(mode, `${label}  (${dateStr || "—"})\n[No data]`);
+    return emptyChartOption(mode, `${label}  (${dateStr ? fmtDate(dateStr) : "—"})\n[No data]`);
   }
 
   const valid = snap.filter(
@@ -43,7 +44,7 @@ export function buildSmileOption(
   const S = snap[0].underlying_close / PRICE_SCALE;
 
   if (valid.length === 0) {
-    return emptyChartOption(mode, `${label}  (${dateStr})\n[No valid IV]`);
+    return emptyChartOption(mode, `${label}  (${fmtDate(dateStr)})\n[No valid IV]`);
   }
 
   const expiryMonths = Array.from(
@@ -62,7 +63,7 @@ export function buildSmileOption(
     if (calls.length > 0) {
       series.push({
         type: "scatter",
-        name: `C ${em}`,
+        name: `C ${fmtMonth(em)}`,
         symbolSize: 5,
         itemStyle: { color },
         data: calls.map((r) => ({
@@ -75,7 +76,7 @@ export function buildSmileOption(
       });
       series.push({
         type: "line",
-        name: `C ${em} (line)`,
+        name: `C ${fmtMonth(em)} (line)`,
         showSymbol: false,
         smooth: false,
         lineStyle: { color, width: 1.2, opacity: 0.85 },
@@ -90,7 +91,7 @@ export function buildSmileOption(
     if (puts.length > 0) {
       series.push({
         type: "line",
-        name: `P ${em}`,
+        name: `P ${fmtMonth(em)}`,
         showSymbol: true,
         symbol: "diamond",
         symbolSize: 5,
@@ -149,7 +150,7 @@ export function buildSmileOption(
   return baseChartOption(mode, {
     grid: commonGrid({ left: 50, right: 12, top: 36, bottom: 36 }),
     title: {
-      text: `${label}  (${dateStr})  S=${fmtNum(S)}元`,
+      text: `${label}  (${fmtDate(dateStr)})  S=${fmtNum(S)}元`,
       left: "left",
       textStyle: { color: textColor, fontSize: 11, fontWeight: 600 },
     },

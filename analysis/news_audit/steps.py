@@ -12,22 +12,44 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+import numpy as np
 import pandas as pd
 from pydantic import BaseModel
 
 from _common.build_commons import rec_cols
 from _common.db_commons import bulk_upsert_async
-from _common.df_utils import epoch_col_to_dt64
+from _common.df_utils import epoch_col_to_dt64, host_array
 from _common.sql_views import render_sql_view
 from _common.sql_writes import load_sql_write
 from analysis._common import sanitize_for_db_insert
+from analysis._common.calendar_roll import (
+    SECONDS_PER_DAY,
+    day_numbers,
+    roll_to_calendar,
+)
 from analysis.news_audit.config import (
     CONTENT_AUDIT_TABLE,
+    COVERAGE_TABLE,
+    MARKET_ROLLUP,
     PROVIDER_AUDIT_TABLE,
+    classify_source_type,
 )
 from analysis.news_audit.windows import AuditWindowGrid
 
 _EPOCH = date(1970, 1, 1)
+
+
+async def fetch_calendar_days(conn):
+    """The SSE Composite trading calendar as a sorted HOST int64
+    day-number array (the coverage roll's alignment core)."""
+    view = render_sql_view(
+        "analysis/news_audit/steps/trading_calendar",
+        index_code=MARKET_ROLLUP,
+    )
+    rows = await conn.fetch(view.sql, *view.params)
+    df = pd.DataFrame(rec_cols(rows))
+    days = (df["date_epoch"] // SECONDS_PER_DAY).astype("int64")
+    return np.sort(host_array(days).astype("int64"))
 
 SECONDS_PER_DAY = 86_400.0
 
@@ -103,14 +125,18 @@ class NewsProviderOriginRow(BaseModel):
     author: str
     first_seen_date: date
     last_seen_date: date
+    news_type: int  # label_dim 'news_type' code, classified from source
 
 
 class ProviderRegistryStep:
     """Sync text.news_providers from the distinct origins of text.news.
 
     Upserts every (source, author) origin with its full-history seen-date
-    span. The conflict arm updates ONLY the span + updated_at — the manual
-    is_blocked flag survives every sync (database/sql_writes action
+    span and the origin's media type (news_type, classified from the
+    source via config.classify_source_type — REWRITTEN each sync, unlike
+    the manual is_blocked flag). The conflict arm updates ONLY the derived
+    columns + updated_at — is_blocked survives every sync
+    (database/sql_writes action
     analysis/news_audit/steps/news_providers/upsert_origin.sql). Never
     deletes: origins that stop publishing keep their registry row.
     """
@@ -120,7 +146,12 @@ class ProviderRegistryStep:
     async def run(self, conn) -> tuple[date | None, date | None]:
         view = render_sql_view("analysis/news_audit/steps/provider_origins")
         rows = await conn.fetch(view.sql, *view.params)
-        origins = [NewsProviderOriginRow.model_validate(dict(r)) for r in rows]
+        origins = [
+            NewsProviderOriginRow(
+                news_type=classify_source_type(r["source"]), **dict(r)
+            )
+            for r in rows
+        ]
         if not origins:
             print(f"[{self.title}] text.news is empty — nothing to sync")
             return None, None
@@ -131,7 +162,10 @@ class ProviderRegistryStep:
         await conn.executemany(
             upsert,
             [
-                (o.source, o.author, o.first_seen_date, o.last_seen_date)
+                (
+                    o.source, o.author, o.first_seen_date,
+                    o.last_seen_date, o.news_type,
+                )
                 for o in origins
             ],
         )
@@ -142,6 +176,40 @@ class ProviderRegistryStep:
             f"({first} .. {latest})"
         )
         return first, latest
+
+
+# ---------------------------------------------------------------------------
+#  Step 1b — provider auto-block (audit-driven is_blocked curation)
+# ---------------------------------------------------------------------------
+
+class ProviderAutoBlockStep:
+    """Flag is_blocked = true on origins whose audit history carries MORE
+    THAN ONE fake item (SUM over text.news_provider_audit.num_fake > 1 —
+    the origin's lifetime of digested verdicts). The news API's default
+    filters read the flag to exclude the origin's rows.
+
+    ONE-WAY (database/sql_writes action
+    analysis/news_audit/steps/news_providers/block_fake_origins.sql):
+    the flag is never cleared here — manually unblocking a >1-fake
+    origin re-blocks on the next audit run. The registry sync's upsert
+    still never touches is_blocked; this step is the pipeline's only
+    writer. Runs AFTER the window audits so freshly recomputed windows
+    count (and on the nothing-to-compute path too — the first backfill
+    run has no targets but existing audits to read).
+    """
+
+    title = "text.news_providers auto-block (>1 audited fake)"
+
+    async def run(self, conn) -> int:
+        sql = load_sql_write(
+            "analysis/news_audit/steps/news_providers/block_fake_origins",
+        )
+        status = await conn.execute(sql)
+        # asyncpg command status 'UPDATE <n>' — n = rows actually flipped
+        # (already-blocked origins are excluded by the WHERE arm).
+        n = int(status.split()[-1]) if status.startswith("UPDATE") else 0
+        print(f"[{self.title}] {n} origin(s) flagged is_blocked = true")
+        return n
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +370,109 @@ class ContentAuditStep:
         print(
             f"[{self.title}] {len(rows):,} rows written "
             f"({n_windows} of {len(target_days)} target windows carry rows)"
+        )
+
+
+# ---------------------------------------------------------------------------
+#  Coverage audit (daily grain — text.news_coverage_audit)
+# ---------------------------------------------------------------------------
+
+class CoverageAuditStep:
+    """The DAILY coverage audit — per (trading day, industry_id) article /
+    digested / fake counts, with the '000001' WHOLE-MARKET ROLLUP row.
+
+    Articles roll FORWARD onto the SSE trading calendar (the shared
+    analysis._common.calendar_roll core — the same alignment
+    text.news_text_daily reads): a weekend article counts on the next
+    trading day. The audit is the coverage basis' single owner (the
+    2026-11-22 coverage migration): the daily panel reads this table
+    instead of scanning text.news itself.
+
+    Incremental targeting lives in __main__ (article-bearing trading
+    days missing from the table + the grace tail); recomputed days are
+    purged then re-upserted (the grace days recompute in place).
+    """
+
+    title = "text.news_coverage_audit daily coverage"
+    table = COVERAGE_TABLE
+    key_columns = ["date", "industry_id"]
+
+    def compute(
+        self, articles: pd.DataFrame, cal_days, target_days: list[int],
+    ) -> pd.DataFrame:
+        d = articles.drop(columns=["date_epoch"]).assign(
+            day=day_numbers(articles["date_epoch"]),
+        )
+        d = roll_to_calendar(d, cal_days)
+        if d.empty:
+            return pd.DataFrame()
+
+        # per-(day, industry) counts: ONE grouped pass
+        g = d.groupby(["day", "industry_id"])
+        agg = pd.DataFrame({
+            "n_articles": g.size(),
+            "n_digested": g["digested"].sum(),
+            "n_fake": g["is_fake"].sum(),
+        }).reset_index()
+        agg["n_articles"] = agg["n_articles"].astype("int64")
+        agg["n_digested"] = agg["n_digested"].astype("int64")
+        agg["n_fake"] = agg["n_fake"].astype("int64")
+
+        # the '000001' whole-market rollup row: every article that day
+        # + the coverage breadth (distinct industry buckets incl. '')
+        gm = d.groupby("day")
+        rollup = pd.DataFrame({
+            "n_articles": gm.size(),
+            "n_digested": gm["digested"].sum(),
+            "n_fake": gm["is_fake"].sum(),
+            "n_industries": gm["industry_id"].nunique(),
+        }).reset_index()
+        rollup.insert(1, "industry_id", MARKET_ROLLUP)
+        rollup["n_articles"] = rollup["n_articles"].astype("int64")
+        rollup["n_digested"] = rollup["n_digested"].astype("int64")
+        rollup["n_fake"] = rollup["n_fake"].astype("int64")
+        rollup["n_industries"] = rollup["n_industries"].astype("int64")
+
+        out = pd.concat([rollup, agg])
+        out = out[out["day"].isin(target_days)]
+        out["date"] = epoch_col_to_dt64(
+            out["day"] * SECONDS_PER_DAY, unit="us", index=out.index
+        )
+        return out.drop(columns=["day"])
+
+    async def run(
+        self, conn, articles: pd.DataFrame, cal_days, target_days: list[int],
+    ) -> int:
+        agg = self.compute(articles, cal_days, target_days)
+        if agg.empty:
+            print(f"[{self.title}] no article-bearing target days")
+            return 0
+        rows = sanitize_for_db_insert(
+            agg, date_cols=["date"],
+        )
+        await self._purge_days(conn, target_days)
+        written = await bulk_upsert_async(
+            conn, self.table, rows, key_columns=self.key_columns,
+        )
+        n_days = len({r["date"] for r in rows})
+        print(
+            f"[{self.title}] {written:,} rows written "
+            f"({n_days} of {len(target_days)} target trading days)"
+        )
+        return written
+
+    async def _purge_days(self, conn, target_days: list[int]) -> None:
+        """DELETE the target days' stale rows before the recomputed ones
+        land (the grace-tail days recompute in place)."""
+        purge_sql = load_sql_write(
+            "analysis/news_audit/steps/news_coverage_audit/purge_day",
+        )
+        await conn.executemany(
+            purge_sql,
+            [
+                (_EPOCH + timedelta(days=s),)
+                for s in target_days
+            ],
         )
 
 

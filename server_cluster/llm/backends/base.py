@@ -44,6 +44,17 @@ from ..data_definitions.admin import ModelStatus
 
 logger = logging.getLogger(__name__)
 
+# The spec.dtype string → torch dtype names the transformers-based
+# backends (jev, ocr) resolve at load time; unknown names fall back to
+# bfloat16 (the repo's studied default).
+DTYPE_MAP = {
+    "bfloat16": "torch.bfloat16",
+    "float16": "torch.float16",
+    "fp16": "torch.float16",
+    "float32": "torch.float32",
+    "fp32": "torch.float32",
+}
+
 
 class ModelBackend(ABC):
     """One managed local model (see module docstring)."""

@@ -30,6 +30,7 @@ import * as echarts from "echarts";
 import ChartCard from "@/shared/components/ChartCard";
 import EChart from "@/shared/charts/EChart";
 import { useChartThemeMode } from "@/shared/charts/base-chart";
+import { fmtDate } from "@/shared/datetime";
 import { useAiAskAddon } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import { useDocs } from "@/shared/docs";
@@ -230,7 +231,7 @@ export function PerfAttrPanel({ code, name, secType }: PanelProps) {
   }, [chartGroup]);
 
   const subtitle = data
-    ? `${data.code} · ${data.name || name || "—"} · ${data.latest_date || "—"}`
+    ? `${data.code} · ${data.name || name || "—"} · ${fmtDate(data.latest_date)}`
     : `${code} · ${name || "—"}`;
 
   // AI Ask — authored text: static.docs `ui.perf-attr.panel`; state
@@ -303,7 +304,7 @@ export function PerfAttrPanel({ code, name, secType }: PanelProps) {
               }}
             >
               <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.7rem" }}>
-                Fluctuation Attribution (contribution = return × overlap) · {data.latest_date}
+                Fluctuation Attribution (contribution = return × overlap) · {fmtDate(data.latest_date)}
               </Typography>
               <ToggleButtonGroup
                 size="small"

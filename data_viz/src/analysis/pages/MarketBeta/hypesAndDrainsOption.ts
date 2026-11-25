@@ -53,6 +53,7 @@ import {
 } from "@/theme/chart-palette";
 import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
 import { fmtNum } from "@/lib/series";
+import { fmtDate, fmtMonth } from "@/shared/datetime";
 import { buildBenchmarkCenteredShadeSeries } from "@/lib/benchmark-shade";
 import React from "react";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
@@ -491,7 +492,7 @@ export function buildHypesAndDrainsOption(
     const children: React.ReactNode[] = [];
     children.push(
       React.createElement(tooltipComponents.Header, null, `${data.benchmark_name} (${data.benchmark_code})`),
-      React.createElement("div", { style: { marginTop: 2 } }, dt),
+      React.createElement("div", { style: { marginTop: 2 } }, fmtDate(dt)),
       React.createElement("div", null,
         `${data.period_days}d rebased: `,
         React.createElement(tooltipComponents.Bold, null, bv == null ? "—" : fmtNum(bv, 2))
@@ -564,7 +565,7 @@ export function buildHypesAndDrainsOption(
         fontSize: 9,
         interval: (_idx: number, value: string) =>
           displayMonths.has(value.slice(0, 7)) && firstDateOfMonth.has(value),
-        formatter: (v: string) => v.slice(0, 7),
+        formatter: (v: string) => fmtMonth(v),
       },
       splitLine: { show: false },
     },

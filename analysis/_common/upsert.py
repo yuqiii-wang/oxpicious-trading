@@ -176,8 +176,8 @@ async def batched_upsert_by_date(
             replica (and the slot's retained-WAL bound) advances between
             chunks while the primary keeps receiving data.
         chunk_pause_s: fixed cool-down seconds before every chunk
-            (default 0.1 — a light gap between sustained write bursts;
-            None disables).
+            (default DEFAULT_CHUNK_PAUSE_S, 0.5s — a light gap between
+            sustained write bursts; None disables).
 
     Returns:
         Total rows upserted.
@@ -331,7 +331,7 @@ async def batched_copy_by_date(
             standby's replay lag exceeds this (default 4096 MB; None
             disables the lag wait).
         chunk_pause_s: fixed cool-down seconds before every chunk
-            (default 0.1; None disables).
+            (default DEFAULT_CHUNK_PAUSE_S, 0.5s; None disables).
 
     Returns:
         Total rows COPY-inserted.
@@ -545,7 +545,7 @@ async def build_and_insert_chunked(
             standby's replay lag exceeds this (default 4096 MB; None
             disables the lag wait).
         chunk_pause_s: fixed cool-down seconds before every chunk COPY
-            (default 0.1; None disables).
+            (default DEFAULT_CHUNK_PAUSE_S, 0.5s; None disables).
 
     Returns:
         Total rows inserted.
@@ -778,7 +778,7 @@ async def build_and_insert_chunked_df(
             standby's replay lag exceeds this (default 4096 MB; None
             disables the lag wait).
         chunk_pause_s: fixed cool-down seconds before every chunk COPY
-            (default 0.1; None disables).
+            (default DEFAULT_CHUNK_PAUSE_S, 0.5s; None disables).
 
     Returns:
         Total rows inserted (long rows).

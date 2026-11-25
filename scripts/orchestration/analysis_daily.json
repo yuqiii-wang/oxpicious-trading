@@ -2,7 +2,7 @@
   "1": {
     "script": "analysis.market_beta",
     "can_be_parallel": false,
-    "note": "internal steps: industry_correlations + industry_attributions + industry_etf_contribution; reads stats.industry_basic_stats (builds.industry) + stats.cross_stats (builds.cross_stats); incremental at window-end granularity"
+    "note": "DAILY incremental missing-date fill (correlations OFF by default — python -m analysis.market_beta.corr or --with-corr for those): runs the cross_stats producer pass, then fills every stats.cross_stats date missing from analysis.industry_attributions (attributions.find_missing_attribution_dates) via date-batched INSERT..SELECT with ON CONFLICT DO NOTHING (idempotent vs racing/killed runs — 2026-11-20 incident), then etf_contribution + hypes_and_drains + stock_attribution follow on the same connection; reads stats.industry_basic_stats (builds.industry) + stats.cross_stats (builds.cross_stats)"
   },
   "2": {
     "script": "analysis.mov_ave_spread",
@@ -60,5 +60,29 @@
     "script": "analysis.market_participation",
     "can_be_parallel": false,
     "note": "whole-market participation gauges, one row per trading day (analysis.market_participation): total SS+SZ proxy turnover + MA/vs-MA/252-percentile gauges (stats.exchange_trading_amt proxies), raw daily SSE share + pp gauges + 20d OLS slope, and whole-universe advance/decline breadth (stats.stock_basic_stats sign counts, A/D ratio, median); incremental by missing date, --force truncates + COPY rebuild"
+  },
+  "13": {
+    "script": "analysis.oracle_signals",
+    "args": [
+      "--sec-type",
+      "index"
+    ],
+    "can_be_parallel": false,
+    "note": "Hindsight oracle local-extreme actions (analysis.oracle_signals → analysis.oracle_signals; DECOUPLED from the analysis_signals rule tier): local extremes of the 5-bar window [date-2, date+2] scanned with a 1-day stride, ONE action per 5-consecutive-row window PER SIDE (first candidate claims the unit; a more extreme same-side candidate within it upgrades the placement) — buy at a local min, sell at a local max, each side speaking only at a genuine extreme of its own horizon (v7 grammar 2026-11-20), each kept pivot graded 0-100 by its favorable move on either side (0.3 backward / 0.7 forward). DAILY incremental (user-directed 2026-11-21 'the incremental daily run should be able to update last 20d signals to add/remove signals since local max/min are known' — moved off the former analysis_weekly tier; the pipeline's config.WEEKLY_GATE_DAYS gate retired with it): the engine re-decides the full candidate set and the run DIFFS the target — upserts every missing/changed decision, deletes every row no longer decided — so frontier pivots re-grade as their forward windows realize, the frontier unit's placement can upgrade, and the previous frontier action's swing-target legs close when the opposite pivot is placed (any depth). The trail ends 2 bars before the bars frontier (the coverage check accounts for it). --force deletes the sec_type's rows and COPY-rebuilds; --code recomputes one security."
+  },
+  "16": {
+    "script": "analysis.news_text_daily",
+    "can_be_parallel": false,
+    "note": "Daily news-text metric panel (analysis.news_text_daily → text.news_text_daily): per (date, scope_kind, scope_code) — market_all / market_recap scopes get the lexicon-blended sentiment level, trailing-60d z, ewm halflife-3/10 lines, day change, the abnormal-flow flag (63d median/IQR of daily article counts), sign-split counts, origin dispersion, and the kw_market px-tone cross-check; industry scopes get EVENT-DAY aggregates only (a row on days the industry has digested articles). Weekend articles roll to the next SSE trading day. Validated 2026-11-21: levels are state not direction; ema10 contrarian at the monthly tail; flow_af the consistent negative-forward-IC risk flag. Incremental: missing article-bearing trade days + a 15-day grace tail (late digestions/scores correct the just-closed days); --force truncates + full rebuild; probe loads from the OLDEST existing row so gaps longer than the grace window still heal. Needs step 15's text.news_lexicon_scores and step 14's text.news_coverage_audit (the coverage migration — the panel reads the audit's counts, it never scans text.news) from the same night, and builds_daily's builds.text (digestions + keyword audit)"
+  },
+  "15": {
+    "script": "analysis.news_lexicon",
+    "can_be_parallel": false,
+    "note": "CFSD lexicon scoring over the digested news corpus (analysis.news_lexicon → text.news_lexicon_scores): scores every digested article's text with static.fin_sentiment_dict (the CFSD paper's unit/negation/degree rule over StructBERT segmentation) and flags the disagreement vs the LLM digestion score (sign mismatch AND |llm-lex| >= 2 — the flag halves the article's weight in step 15's daily blend). Incremental: the digested-articles-missing-a-score anti-join; --force truncates + re-scores. MUST run before step 16 (analysis.news_text_daily reads these rows); runs after step 14's audits and builds_daily's builds.text digestions"
+  },
+  "14": {
+    "script": "analysis.news_audit",
+    "can_be_parallel": false,
+    "note": "news audits (analysis.news_audit): the provider registry sync, the 5-day provider/content window audits (text.news_provider_audit / text.news_content_audit) and — the 2026-11-22 coverage migration — the DAILY coverage audit (text.news_coverage_audit): per (trading day, industry_id) article/digested/fake counts with the '000001' whole-market rollup row, weekend articles rolled forward to the next SSE trading day (the shared calendar-roll core). This is the coverage basis analysis.news_text_daily reads — MUST run before steps 15/16. --coverage {all|providers|content|coverage} selects which audits run (default all). Window audits incremental: complete windows frozen, trailing + 15d grace recompute; coverage incremental: article-bearing trading days missing + 15d grace tail, probe loads from the oldest existing day (gaps self-heal); --force truncates + rebuilds"
   }
 }

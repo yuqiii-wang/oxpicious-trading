@@ -5,6 +5,13 @@
  *     Sector → industry tree (SectorNode[]) with news counts per industry.
  *     Industry level only — items[] is always empty (no L3 security level).
  *
+ *   GET /api/news/providers?sector_id=&industry_id=&industry_ids=&search=&search_mode=&author=
+ *     Every DISTINCT text.news.source with its article count, ordered by
+ *     the curated static.news_prestige rank (provider-level rows) then
+ *     count — the News page's Provider chip row. prestige rides along
+ *     for the chip tooltip. Scoped by everything EXCEPT the source
+ *     itself.
+ *
  *   GET /api/news/calendar?sector_id=&industry_id=&industry_ids=&search=&start=&end=
  *     Per-day news counts for the date bar's dots; co-filtered by the
  *     classification scope + keyword search so the bar reacts to the nav.
@@ -27,6 +34,13 @@
  *     threaded comment tree for one article — the shared NewsFeedPage's
  *     click-to-expand card lazily fetches these.
  *
+ *   DEFAULT EXCLUSIONS — every list endpoint (themes, providers, authors,
+ *   calendar, items) drops articles whose digestion flagged is_fake_news
+ *   and rows whose ORIGIN (source, author-coalesced) is blocklisted in
+ *   text.news_providers (the news_audit >1-fake auto-block). Pass
+ *   include_fake=true / include_blocked=true to opt back in (the News
+ *   Audit page's item drill-down does).
+ *
  *   POST /api/news/search  body: { question, source, author }
  *     Interactive ONLINE question search (the News page's question bar):
  *     spawns the source's downloader in one-off question mode via the shared
@@ -42,6 +56,7 @@ import {
   listNewsCalendar,
   listNewsComments,
   listNewsItems,
+  listNewsProviders,
   listNewsStrategyThemes,
   listNewsThemes,
 } from "../services/market/news.service.js";
@@ -59,6 +74,14 @@ function str(v: unknown): string | undefined {
   return typeof v === "string" && v.trim() !== "" ? v.trim() : undefined;
 }
 
+/** Like str(), but the EMPTY STRING survives (trimmed) — the author
+ *  param's provider-level sentinel: text.news origins carry author = ''
+ *  for "the source's own rows", so author= filters to exactly that
+ *  origin grain (null/absent still = no author filter). */
+function strKeepEmpty(v: unknown): string | undefined {
+  return typeof v === "string" ? v.trim() : undefined;
+}
+
 /** industry_ids list — comma-joined. PRESENT (even empty) scopes to exactly
  *  that set (empty → no rows); ABSENT leaves the scope to the other params.
  *  Same semantics as the AI routes' industry_ids. */
@@ -73,6 +96,17 @@ function searchMode(v: unknown): "any" | "all" {
   return str(v) === "any" ? "any" : "all";
 }
 
+/** Opt-outs from the API's DEFAULT exclusions (fake verdicts + blocked
+ *  origins — see news.service defaultExclusionSql). Absent/false = the
+ *  default filter stays on; the News page never sends these (the audit
+ *  page's item drill-down sends both to see what it audits). */
+function exclusions(req: Request): { includeFake: boolean; includeBlocked: boolean } {
+  return {
+    includeFake: boolParam(req, "include_fake") ?? false,
+    includeBlocked: boolParam(req, "include_blocked") ?? false,
+  };
+}
+
 /** Sources that support the interactive question search — the News page
  *  disables every other source chip while the question bar has input.
  *  Mirrored UI-side (NewsPage QUESTION_SEARCH_ENABLED_SOURCES). */
@@ -83,11 +117,19 @@ const NEWS_SEARCH_ENABLED_SOURCES = new Set<string>(["zhihu"]);
 const SEARCH_RESULT_MARKER = "@@NEWS_SEARCH_JSON@@";
 
 router.get("/themes", wrapAsync(async (req: Request, res: Response) => {
-  res.json(await listNewsThemes(str(req.query.source) ?? null, str(req.query.author) ?? null));
+  res.json(await listNewsThemes(
+    str(req.query.source) ?? null,
+    str(req.query.author) ?? null,
+    exclusions(req),
+  ));
 }));
 
 router.get("/strategy-themes", wrapAsync(async (req: Request, res: Response) => {
-  res.json(await listNewsStrategyThemes(str(req.query.source) ?? null, str(req.query.author) ?? null));
+  res.json(await listNewsStrategyThemes(
+    str(req.query.source) ?? null,
+    str(req.query.author) ?? null,
+    exclusions(req),
+  ));
 }));
 
 router.get("/authors", wrapAsync(async (req: Request, res: Response) => {
@@ -98,6 +140,25 @@ router.get("/authors", wrapAsync(async (req: Request, res: Response) => {
       search: str(req.query.search) ?? null,
       searchAny: searchMode(req.query.search_mode) === "any",
       source: str(req.query.source) ?? null,
+      ...exclusions(req),
+    }),
+  );
+}));
+
+// GET /api/news/providers — every DISTINCT text.news.source with its
+// article count, ordered by the curated static.news_prestige rank then
+// count (the News page's Provider chips; scoped by everything EXCEPT the
+// source itself). prestige rides along for the chip tooltip.
+router.get("/providers", wrapAsync(async (req: Request, res: Response) => {
+  res.json(
+    await listNewsProviders({
+      sectorId: str(req.query.sector_id) ?? null,
+      industryId: str(req.query.industry_id) ?? null,
+      industryIds: industryIds(req.query.industry_ids),
+      search: str(req.query.search) ?? null,
+      searchAny: searchMode(req.query.search_mode) === "any",
+      author: strKeepEmpty(req.query.author) ?? null,
+      ...exclusions(req),
     }),
   );
 }));
@@ -115,6 +176,7 @@ router.get("/calendar", wrapAsync(async (req: Request, res: Response) => {
       bigFluctuationOnly: boolParam(req, "is_big_fluctuation") ?? false,
       start: str(req.query.start) ?? null,
       end: str(req.query.end) ?? null,
+      ...exclusions(req),
     }),
   );
 }));
@@ -128,13 +190,16 @@ router.get("/items", wrapAsync(async (req: Request, res: Response) => {
       search: str(req.query.search) ?? null,
       searchAny: searchMode(req.query.search_mode) === "any",
       source: str(req.query.source) ?? null,
-      author: str(req.query.author) ?? null,
+      // strKeepEmpty: author='' (the provider-level sentinel) is a REAL
+      // filter, not a missing param (the News Audit origin expansion).
+      author: strKeepEmpty(req.query.author) ?? null,
       bigFluctuationOnly: boolParam(req, "is_big_fluctuation") ?? false,
       date: str(req.query.date) ?? null,
       dateFrom: str(req.query.date_from) ?? null,
       dateTo: str(req.query.date_to) ?? null,
       limit: intParam(req, "limit") ?? null,
       offset: intParam(req, "offset") ?? null,
+      ...exclusions(req),
     }),
   );
 }));
@@ -166,12 +231,25 @@ router.get("/comments", wrapAsync(async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 const TOKENIZE_RESULT_MARKER = "@@NEWS_TOKENIZE_JSON@@";
 
+/**
+ * Standard base64 → URL-safe alphabet for PYTHON ARGV. The cluster's arg
+ * charset (server_cluster/_common/catalog.SEGMENT_RE) allows `+` but NOT
+ * `/`, so a standard-alphabet payload carrying a `/` (~every 64 chars)
+ * gets the submit rejected as UPSTREAM_FAILED. Translating to the
+ * URL-safe alphabet (`+`→`-`, `/`→`_`, padding `=` stays) fits the
+ * charset; the Python decoders read BOTH alphabets via
+ * `base64.b64decode(v, altchars=b"-_")`.
+ */
+function clusterSafeB64(b64: string): string {
+  return b64.replace(/\+/g, "-").replace(/\//g, "_");
+}
+
 router.get("/tokenize", wrapAsync(async (req: Request, res: Response) => {
   const textB64 = str(req.query.text_b64);
   if (!textB64) throw HttpError.missingParam("text_b64");
   const result = await runPythonModule(
     "builds.text.tokenize",
-    ["--text-b64", textB64],
+    ["--text-b64", clusterSafeB64(textB64)],
     { processIdTag: "news-tokenize" },
   );
   let tokens: string[] | null = null;
@@ -251,11 +329,11 @@ router.post("/search", wrapAsync(async (req: Request, res: Response) => {
 
   const tag = `news-search:${source}`;
   const args = [
-    "--question-b64", Buffer.from(question, "utf8").toString("base64"),
+    "--question-b64", clusterSafeB64(Buffer.from(question, "utf8").toString("base64")),
     "--count", "10",
   ];
   if (author) {
-    args.push("--author-b64", Buffer.from(author, "utf8").toString("base64"));
+    args.push("--author-b64", clusterSafeB64(Buffer.from(author, "utf8").toString("base64")));
   }
   console.log(
     `[news/search] python -m downloads.macro.zhihu.news --question "${question}" source=${source} author=${author || "-"}`,

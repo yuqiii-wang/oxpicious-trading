@@ -48,7 +48,17 @@ CREATE TABLE IF NOT EXISTS monitor.service_heartbeat (
     is_normal_exit boolean,
     stopped_at     timestamptz,
     live_parallel  smallint    NOT NULL DEFAULT 0,
-    code_fingerprint text
+    code_fingerprint text,
+    -- Phase 4 (2026-11-21 control unification): the child-REPORTED
+    -- progress (the DB frontier answers "how far" server-side; these
+    -- columns add what the DB cannot see — phase, pause state, the
+    -- free-form payload). Written by the process at safe checkpoints
+    -- (_common/service_heartbeat.py report_progress), NOT by every
+    -- beat; NULL = the service never reported (the default).
+    progress_phase   smallint,
+    progress_state   smallint,
+    progress_payload jsonb,
+    progress_at      timestamptz
 );
 
 COMMENT ON TABLE monitor.service_heartbeat IS
@@ -104,3 +114,32 @@ COMMENT ON COLUMN monitor.service_heartbeat.live_parallel IS
     'a recorded exit, RESET from host pid+cmdline liveness by the '
     'heartbeat watchdog when a process is detected down without an exit '
     'record. Migrated 2026-10-10 from monitor.service_config.';
+
+COMMENT ON COLUMN monitor.service_heartbeat.progress_phase IS
+    'The child-reported work phase at its last safe checkpoint '
+    '(_common/service_heartbeat.py report_progress; control unification '
+    'plan Phase 4, 2026-11-21): smallint label code, domain '
+    'progress_phase in static.label_dim (0 downloading | 1 reading | '
+    '2 writing) — the three-phase machine per run. NULL = never '
+    'reported (the default; derived progress lives in the data tables '
+    'and is computed server-side by the process-detail endpoint).';
+
+COMMENT ON COLUMN monitor.service_heartbeat.progress_state IS
+    'The child-reported run state at its last safe checkpoint: smallint '
+    'label code, domain progress_state in static.label_dim (0 running | '
+    '1 pausing | 2 paused | 3 done). A FRESH beat with paused proves a '
+    'DELIBERATE pause, not a wedged runtime — the hung detector reads '
+    'it as the legal state it is (gap 8 of the plan''s register). NULL '
+    '= never reported.';
+
+COMMENT ON COLUMN monitor.service_heartbeat.progress_payload IS
+    'The child-reported free-form progress payload at its last safe '
+    'checkpoint (rows/pages fetched, frontier, chunks_done/chunks_total, '
+    'missing-set size — what the DB cannot see about the in-flight '
+    'buffers). jsonb; NULL = never reported.';
+
+COMMENT ON COLUMN monitor.service_heartbeat.progress_at IS
+    'When the progress columns were last written (throttled at the '
+    'checkpoint sites; phase changes post immediately). A running child '
+    'whose progress_at goes stale while beats stay fresh trips the '
+    'progress-staleness caution BEFORE the 30-min hung kill (gap 5).';

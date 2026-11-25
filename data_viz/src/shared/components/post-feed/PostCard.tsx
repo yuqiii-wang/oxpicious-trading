@@ -27,6 +27,7 @@ import {
   ExpandLess as ExpandLessIcon,
   ExpandMore as ExpandMoreIcon,
 } from "@mui/icons-material";
+import { fmtDate } from "@/shared/datetime";
 
 /** Structured header row pieces (all optional except icon + title). */
 export interface PostCardHeader {
@@ -34,8 +35,9 @@ export interface PostCardHeader {
   icon: ReactNode;
   /** Bold name — author, "AI Q&A #id", "Ask #id". */
   title: ReactNode;
-  /** Muted date text right of the title. */
-  date?: ReactNode;
+  /** Muted date text right of the title (a raw ISO date — rendered
+   *  through the shared yyyy-Mmm-dd display formatter). */
+  date?: string;
   /** Inline status chips right of the date (failed · online search). */
   afterDate?: ReactNode;
   /** ml:auto right side (votes · 原文 link · sentiment chip). */
@@ -132,7 +134,7 @@ export default function PostCard<T>({
         </Typography>
         {header.date && (
           <Typography variant="subtitle2" color="text.secondary" sx={{ fontSize: "0.7rem" }}>
-            {header.date}
+            {fmtDate(header.date)}
           </Typography>
         )}
         {header.afterDate}

@@ -3,13 +3,18 @@
 Run via ``python -m analysis.analysis_signals.signal_amplification``.
 
 The SIGNAL AMPLIFICATION tier (2026-11-18): the close-only signal
-families' OHLCV-anatomy strengthener. Builds analysis.ohlcv_ext (the
-extended per-day tech stats from stats.*_basic_stats), detects the
-amplifier days (flush_washout / gap_reclaim / breakout_confirm /
-spike_blowoff / exhaustion_gap / dry_rebound — the config AMP_BINDINGS
-matrix binds them to the signal families they strengthen/discount),
-measures the per-binding evidence against the bound families' own
-history_signals, and writes
+families' day-anatomy strengthener — the amplifiers AMPLIFY the
+existing families' signals, never create signals of their own. Builds
+analysis.ohlcv_ext (the extended per-day tech stats from
+stats.*_basic_stats) + attaches the margin anatomy (融资余额 quantile
+bars) and the news anatomy (the daily news-text MARKET state, the
+2026-11-22 migrated news_wash rules), detects the amplifier days (the
+ohlcv sub types flush_washout / gap_reclaim / breakout_confirm /
+spike_blowoff / exhaustion_gap / dry_rebound + the margin sub types
+margin_washout / margin_crowding + the news sub types — the config
+AMP_BINDINGS matrix binds them to the signal families they
+strengthen/discount), measures the per-binding evidence against the
+bound families' own history_signals, and writes
 
   analysis_signals.signal_amplification_rules    the per-(code,
                                                  signal_type) binding

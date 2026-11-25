@@ -60,7 +60,10 @@ WHERE NOT EXISTS (
 --  anatomy builds). 2026-11-20: the two-level amplifier axis (parent
 --  type ohlcv / margin + sub types) — the history rows' margin
 --  amplifiers compute from the 融资余额 margin series (for_margin —
---  etf/stock rz_balance + the index weighted aggregate).
+--  etf/stock rz_balance + the index weighted aggregate). 2026-11-22:
+--  the 'news' parent type (the migrated news_wash rules) — the
+--  history rows' news amplifiers compute from the daily news-text
+--  MARKET state panel (for_news).
 INSERT INTO llm.kg_edges (namespace, relation, sub_relation, entity_ids)
 SELECT 0, e.relation, e.sub_relation, ARRAY[a.entity_id, b.entity_id]::BIGINT[]
 FROM (VALUES
@@ -74,7 +77,8 @@ FROM (VALUES
     ('analysis.ohlcv_ext', 'analysis.mov_ave_spreads_detail_ohlc_gaps', 'similar_to', 'about_ohlcv_anatomy'),
     ('analysis_signals.signal_amplification_history', 'stats.etf_liquidity_margin', 'computed_from', 'for_margin'),
     ('analysis_signals.signal_amplification_history', 'stats.stock_liquidity_margin', 'computed_from', 'for_margin'),
-    ('analysis_signals.signal_amplification_history', 'analysis.margin_index_series', 'computed_from', 'for_margin')
+    ('analysis_signals.signal_amplification_history', 'analysis.margin_index_series', 'computed_from', 'for_margin'),
+    ('analysis_signals.signal_amplification_history', 'text.news_text_daily', 'computed_from', 'for_news')
 ) AS e(subject, object, relation, sub_relation)
 JOIN llm.kg_entities a ON a.namespace = 0 AND a.name = e.subject
 JOIN llm.kg_entities b ON b.namespace = 0 AND b.name = e.object

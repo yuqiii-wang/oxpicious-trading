@@ -1,0 +1,10 @@
+{
+  "service": "analysis.volatility",
+  "kind": "derive",
+  "tables": [
+    {
+      "table": "analysis.volatility"
+    }
+  ],
+  "notes": "Presence = the session in analysis.volatility — index scope, the 10 study indices (the run's own scope)."
+}

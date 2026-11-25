@@ -1,0 +1,13 @@
+{
+  "service": "downloads.index.csindex.price",
+  "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
+  "is_resident": false,
+  "freq": "daily",
+  "priority": 170,
+  "schedule": "every A-share trading date, in the 16:00 nightly chain after downloads_daily, before builds_daily — the daily price sweep (from2020 cached-skip + 1m window + intraday). Service split 2026-11-23: the PE fetch is the WEEKLY downloads.index.csindex.pe step in downloads_weekly",
+  "notes": null,
+  "source_ref": "scripts/orchestration/downloads_daily.json",
+  "updated_at": "2026-11-23T00:00:00.000000+00:00"
+}

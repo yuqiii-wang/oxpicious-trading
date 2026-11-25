@@ -7,7 +7,30 @@
   "freq": null,
   "priority": 180,
   "schedule": "always-on while the host is up; the stream watchdog restarts it when the beat goes stale",
-  "notes": null,
+  "notes": "2026-11-21 control unification: resource_class sampler — a PAUSE command is accepted only outside a trading session (mid-session pause = silent data loss; the child refuses it with that reason). The progress block names the per-asset table pairs the process-detail endpoint renders through the shared intraday_progress sql_view template (BSE bars carry the literal 'BJ' exchange).",
   "source_ref": "server_cluster/_common/resident_supervisor.py;scripts/stream_watchdog.sh",
-  "updated_at": "2026-11-20T15:25:15.716730+00:00"
+  "updated_at": "2026-11-21T00:00:00+00:00",
+  "resource_class": "sampler",
+  "pausable": true,
+  "progress": {
+    "kind": "intraday",
+    "assets": [
+      {
+        "name": "stock",
+        "identity_table": "stats.stock_identity",
+        "intraday_table": "stats.stock_intraday_5min",
+        "code_column": "code",
+        "exchange_column": "exchange",
+        "exchange": "BJ"
+      },
+      {
+        "name": "index",
+        "identity_table": "stats.index_identity",
+        "intraday_table": "stats.index_intraday_5min",
+        "code_column": "code",
+        "exchange_column": null,
+        "exchange": null
+      }
+    ]
+  }
 }

@@ -310,12 +310,18 @@ class AiDailyQaSync:
             })
         if not news_rows:
             return []
-        await bulk_upsert_async(self.conn, "text.news", news_rows,
-                                ["title", "source", "date"])
+        # Same writer shape as the main news upsert: build_news_rows adds
+        # title_hash (md5(title)), the PK's title member since the raw-title
+        # PK broke at the btree index-entry cap (2026-11-20) — the conflict
+        # key and the search_tsv PK columns both ride on it.
+        from builds.text.upsert import build_news_rows
+        write_rows = build_news_rows(news_rows)
+        await bulk_upsert_async(self.conn, "text.news", write_rows,
+                                ["title_hash", "source", "date"])
         # search_tsv (TSV_SPECS): index the just-written refs.
         from _common.tokenization import SearchIndexer
         await SearchIndexer.get().set_search_tsv_async(
-            self.conn, "text.news", news_rows, only_missing=True)
+            self.conn, "text.news", write_rows, only_missing=True)
         rows = await self.conn.fetch(
             'SELECT news_id, title, source, date FROM text.news '
             'WHERE (title, source, date) IN ('

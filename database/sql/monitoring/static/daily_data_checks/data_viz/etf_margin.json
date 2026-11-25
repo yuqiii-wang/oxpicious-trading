@@ -1,0 +1,4 @@
+{
+  "view": "server_cluster/maintainer/daily_check/data_viz/etf_margin",
+  "notes": "data_viz UI source etf_margin (stats.etf_identity, the UI latest-dates probe) vs the index bars frontier: the ETF bars family shares the A-share trading calendar and is loaded by the nightly chain — a table-wide max(date) behind the frontier (1-day slack for publish-order noise) means the ETF downloads or the identity build stopped."
+}

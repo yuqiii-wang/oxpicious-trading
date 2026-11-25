@@ -40,7 +40,13 @@ import { loadSqlWrite } from "./sql-writes.service.js";
 
 /** The closed secret_type vocabulary (mirror of
  *  static.label_dim 'secret_type'). */
-export const SECRET_TYPES = ["llm", "web_search", "jev", "tokenization"] as const;
+export const SECRET_TYPES = [
+  "llm",
+  "web_search",
+  "jev",
+  "tokenization",
+  "ocr",
+] as const;
 export type SecretType = (typeof SECRET_TYPES)[number];
 
 /** The closed sub_type vocabulary (mirror of
@@ -48,9 +54,17 @@ export type SecretType = (typeof SECRET_TYPES)[number];
 export const SECRET_SUB_TYPES = ["general", "pro"] as const;
 export type SecretSubType = (typeof SECRET_SUB_TYPES)[number];
 
+/** The closed modality vocabulary (mirror of
+ *  static.label_dim 'llm_modality'): the modality PROFILE a
+ *  credential's model accepts (input_modality) / produces
+ *  (output_modality) — one shared domain across both columns. */
+export const LLM_MODALITIES = ["text", "text+vision", "text+image-gen", "audio", "other"] as const;
+export type LlmModality = (typeof LLM_MODALITIES)[number];
+
 /** The provider domain SELECTED BY secret_type (the audit pattern):
- *  the LLM-host families (chat / decision / segmentation) draw from
- *  ext_llm_provider, the search families from ext_http_source. */
+ *  the LLM-host families (chat / decision / segmentation / OCR)
+ *  draw from ext_llm_provider, the search families from
+ *  ext_http_source. */
 function providerDomain(secretType: SecretType): "ext_llm_provider" | "ext_http_source" {
   return secretType === "web_search" ? "ext_http_source" : "ext_llm_provider";
 }
@@ -64,6 +78,8 @@ export interface SecretConfigRow extends QueryResultRow {
   sub_type: number;
   model_name: string | null;
   context_length: number | null;
+  input_modality: number;
+  output_modality: number;
   api_url: string | null;
   api_key_hint: string | null;
   is_active: boolean;
@@ -86,6 +102,12 @@ export interface SecretConfigPayload {
   subTypeCode: number;
   modelName: string | null;
   contextLength: number | null;
+  /** Decoded modality labels (llm_modality) — what the model
+   *  accepts / produces. */
+  inputModality: LlmModality;
+  inputModalityCode: number;
+  outputModality: LlmModality;
+  outputModalityCode: number;
   apiUrl: string | null;
   apiKeyHint: string | null;
   hasApiKey: boolean;
@@ -103,6 +125,8 @@ export interface SecretConfigSave {
   subType: SecretSubType;
   modelName: string | null;
   contextLength: number | null;
+  inputModality: LlmModality;
+  outputModality: LlmModality;
   apiUrl: string | null;
   apiKey?: string | null;
   isActive: boolean;
@@ -122,6 +146,10 @@ function toSecretConfigPayload(r: SecretConfigRow): SecretConfigPayload {
     subTypeCode: r.sub_type,
     modelName: r.model_name,
     contextLength: r.context_length,
+    inputModality: (decodeLabel("llm_modality", r.input_modality) ?? String(r.input_modality)) as LlmModality,
+    inputModalityCode: r.input_modality,
+    outputModality: (decodeLabel("llm_modality", r.output_modality) ?? String(r.output_modality)) as LlmModality,
+    outputModalityCode: r.output_modality,
     apiUrl: r.api_url,
     apiKeyHint: r.api_key_hint,
     hasApiKey: r.api_key_hint != null,
@@ -172,6 +200,8 @@ export async function createSecret(
       encodeLabelParam("secret_sub_type", input.subType),
       input.modelName,
       input.contextLength,
+      encodeLabelParam("llm_modality", input.inputModality),
+      encodeLabelParam("llm_modality", input.outputModality),
       input.apiUrl,
       enc,
       hint,
@@ -213,6 +243,8 @@ export async function updateSecret(
       encodeLabelParam("secret_sub_type", input.subType),
       input.modelName,
       input.contextLength,
+      encodeLabelParam("llm_modality", input.inputModality),
+      encodeLabelParam("llm_modality", input.outputModality),
       input.apiUrl,
       keyMode,
       enc,
@@ -245,6 +277,13 @@ interface SecretConfigRowWithKey extends SecretConfigRow {
   api_key_enc: string | null;
 }
 
+/** The vision probe's tiny image (64×64 light-gray PNG, 244 b64
+ *  chars): the connection test's image part when a row DECLARES
+ *  text+vision input — the declaration is verified live, not trusted
+ *  (the account's history has vision-declared models that error). */
+const VISION_PROBE_IMAGE_DATA_URL =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAfklEQVR4nNXOQREAIADDsFL/YicBETy4RkHONsokTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuL8HXh1Afc9A1BynfrHAAAAAElFTkSuQmCC";
+
 /** Default endpoint per (secret_type, provider) — the mirror of the
  *  Python providers' class constants (ZhipuChatProvider.CHAT_URL,
  *  ZhipuSearchProvider.SEARCH_URL, zhihu.py's ZHIHU_SEARCH_URL). A
@@ -260,6 +299,7 @@ const PROVIDER_DEFAULT_URLS: Record<string, string> = {
   "tokenization/local": "http://127.0.0.1:8767/v1/tokenization/segment",
   "web_search/zhipu": "https://open.bigmodel.cn/api/paas/v4/web_search",
   "web_search/zhihu": "https://developer.zhihu.com/api/v1/content/zhihu_search",
+  "ocr/local": "http://127.0.0.1:8767/v1/ocr",
 };
 
 /** The env fallback chain, mirroring BaseLlmProvider.API_KEY_ENV_VARS:
@@ -397,7 +437,9 @@ export async function testSecret(
     });
   }
 
-  // Key resolution: typed plaintext > stored ciphertext > env fallback.
+  // Key resolution: typed plaintext > stored ciphertext > env fallback
+  // — uniform across types now that the ocr row stores the dummy
+  // credential and the host's ocr route enforces the Bearer.
   const typed = input.apiKey?.trim() ?? "";
   let key: string | null = null;
   let keySource: SecretTestResult["keySource"] = "none";
@@ -441,7 +483,12 @@ export async function testSecret(
   if (input.secretType === "tokenization") {
     return testTokenizationSegment(url, key, keySource, modelName);
   }
-  return testLlmChat(url, key, keySource, modelName ?? "");
+  if (input.secretType === "ocr") {
+    return testOcrTranscribe(url, key, keySource, modelName);
+  }
+  return testLlmChat(
+    url, key, keySource, modelName ?? "",
+    stored?.input_modality === 1);
 }
 
 /** The local-model host's Jev / System One decision surface —
@@ -523,6 +570,7 @@ async function testTokenizationSegment(
 async function testLlmChat(
   url: string, key: string, keySource: SecretTestResult["keySource"],
   model: string,
+  visionDeclared = false,
 ): Promise<SecretTestResult> {
   if (model === "") {
     return testFailure({
@@ -541,7 +589,18 @@ async function testLlmChat(
       body: JSON.stringify({
         model,
         messages: [
-          { role: "user", content: "Connection test — reply with the single word: pong" },
+          {
+            role: "user",
+            content: visionDeclared
+              ? [
+                  {
+                    type: "text",
+                    text: "Connection test — this image is a plain square. Reply with the single word: pong",
+                  },
+                  { type: "image_url", image_url: { url: VISION_PROBE_IMAGE_DATA_URL } },
+                ]
+              : "Connection test — reply with the single word: pong",
+          },
         ],
         max_tokens: 512,
         stream: false,
@@ -559,6 +618,54 @@ async function testLlmChat(
     });
   } catch (err) {
     return requestFailed(err, { url, keySource, model, started });
+  }
+}
+
+/** The local-model host's OCR surface — POST /v1/ocr
+ *  {images:[{data}], prompt} → {texts:[{text,...}]} (the OcrRequest/
+ *  OcrResponse contract, server_cluster/llm data_definitions/ocr_api).
+ *  ONE tiny probe image in (the vision-probe constant — also proves
+ *  the image path), the transcribed text is the snippet. The endpoint
+ *  carries no auth gate (loopback-only host) — no key involved. */
+async function testOcrTranscribe(
+  url: string, key: string, keySource: SecretTestResult["keySource"],
+  model: string | null,
+): Promise<SecretTestResult> {
+  const started = Date.now();
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${key}`,
+      },
+      body: JSON.stringify({
+        images: [{ data: VISION_PROBE_IMAGE_DATA_URL }],
+        prompt: "OCR:",
+        ...(model ? { model } : {}),
+      }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    const latencyMs = Date.now() - started;
+    const body = (await res.json().catch(() => null)) as
+      | { texts?: Array<{ text?: string; finish_reason?: string }>; error?: { message?: string } | string; message?: string }
+      | null;
+    // Success = the endpoint served a well-formed per-image result —
+    // the probe image is a BLANK square, so an empty transcription is
+    // a correct answer, not a failure (finish_reason is the serving
+    // signal: "length" would mean the read hit the token ceiling).
+    const result = body?.texts?.[0];
+    const served = res.ok && result != null && typeof result.text === "string";
+    return judged(res, served, {
+      latencyMs, url, keySource: "none", model, body,
+      snippet: served
+        ? result.finish_reason === "length"
+          ? "(blank probe image — served, finish=length)"
+          : "(blank probe image — served, finish=stop)"
+        : null,
+    });
+  } catch (err) {
+    return requestFailed(err, { url, keySource: "none", model, started });
   }
 }
 

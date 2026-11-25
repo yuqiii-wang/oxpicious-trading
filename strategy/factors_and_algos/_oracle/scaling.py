@@ -7,12 +7,16 @@ The scaling is the replay's mapping from the oracle's STORED grade
 favorable-move grade, grammar v5+: 0.3 * backward leg + 0.7 * forward
 leg, each ramped 2% floor / 10% full) to the replayed
 ``signal_confidence`` the engine sizes from (BUY qty = confidence,
-SELL exits conf/100 of the book). It is the oracle mode's OWN tunable
-surface — owned by this package's optimizer
-(:mod:`strategy.factors_and_algos._oracle.optimizer`), NEVER by the
-NestedTrainer: the scaling group does not join ``TUNABLE_SPACE``, so
-the Omega/Calmar regime losses can never tune it (the isolation the
-2026-11-20 user directive fixed).
+SELL exits conf/100 of the book). Its four shared knobs
+(``grade_power`` / ``grade_floor`` / ``null_conf`` / ``exit_mode``)
+are the replay's TUNABLE surface — declared FLAT on
+``OracleSignalAlgo.TUNABLE_SPACE`` and optimized by the EXISTING
+trainer (``_optm_engine`` — the Omega/Calmar NestedTrainer every
+regular signal family uses) since the 2026-11-21 demise of the
+dedicated oracle optimizer. The nested ``conf_scale`` group survives
+only as a LEGACY row shape (stale ``algo_configs`` rows /
+``--params-json``) that this module still parses, with group
+precedence over the flat keys.
 
 FIDELITY INVARIANT: scaling changes a pivot's MAGNITUDE, never its
 existence or date — every graded pivot still fires at its own bar
@@ -57,11 +61,13 @@ PARAMS_KEY = "conf_scale"
 
 
 class ConfidenceScaleCfg(BaseModel):
-    """The scaling group — interpretable knobs, no search spaces.
+    """The scaling knobs — interpretable, no search spaces in the group.
 
-    Ranges bound what the optimizer's grid may legally carry (a stale
-    or hand-edited row outside them fails validation and falls back to
-    identity — the ``snap_categorical_params`` tolerance convention).
+    Ranges bound what a params dict may legally carry (the trainer's
+    ``TUNABLE_SPACE`` mirrors them exactly, so a tuned value always
+    validates; a stale or hand-edited row outside them fails validation
+    and falls back to identity — the ``snap_categorical_params``
+    tolerance convention).
 
     SIDE OVERRIDES (2026-11-20, user-directed "be creative, push
     realized pnl"): ``buy_power`` / ``sell_power`` / ``buy_floor`` /
@@ -147,20 +153,23 @@ class ConfidenceScale:
     def from_params(cls, params: dict) -> "ConfidenceScale":
         """Tolerant load from a params dict (stale rows never crash).
 
-        Precedence for the exit mode (2026-11-20, the isolation
-        directive made structural):
+        Precedence (2026-11-21, the dedicated-optimizer demise):
 
-            params["conf_scale"].exit_mode (the group — the oracle
-                optimizer's surface; ``DEFAULT_PARAMS`` always carries
-                it, so runs always take the optimizer's value)
-            > params["exit_mode"] (LEGACY top level — the retired
-                trainer axis / the 2026-11-19/20 trained rows; applies
-                only to params dicts that carry no group, e.g. old
-                study replays)
-            > "swing"
+            params["conf_scale"] (the LEGACY nested group — stale
+                ``algo_configs`` rows / old ``--params-json`` payloads;
+                nothing writes it anymore — the trainer upserts the
+                flat keys)
+            > the FLAT top-level knobs (the current surface:
+                ``grade_power`` / ``grade_floor`` / ``null_conf`` /
+                ``exit_mode`` — ``DEFAULT_PARAMS`` carries them and
+                ``TUNABLE_SPACE`` tunes them)
+            > the cfg defaults (= identity)
 
-        A malformed group falls back to identity (a bad row must
-        never kill a run).
+        The flat keys merge over the parsed cfg per key; a value
+        outside the ``ConfidenceScaleCfg`` bounds fails the merged
+        validation and the whole load falls back to the defaults (a
+        bad row must never kill a run — the
+        ``snap_categorical_params`` tolerance convention).
         """
         raw = (params or {}).get(PARAMS_KEY)
         has_group = isinstance(raw, dict)
@@ -178,9 +187,20 @@ class ConfidenceScale:
             cfg = ConfidenceScaleCfg()
             has_group = False
         if not has_group:
-            legacy_exit = (params or {}).get("exit_mode")
-            if legacy_exit in ("swing", "full"):
-                cfg = cfg.model_copy(update={"exit_mode": legacy_exit})
+            src = params or {}
+            updates: dict = {}
+            for key in ("grade_power", "grade_floor", "null_conf"):
+                if src.get(key) is not None:
+                    updates[key] = src[key]
+            if src.get("exit_mode") in ("swing", "full"):
+                updates["exit_mode"] = src["exit_mode"]
+            if updates:
+                try:
+                    cfg = ConfidenceScaleCfg.model_validate(
+                        {**cfg.model_dump(), **updates}
+                    )
+                except Exception:
+                    pass  # stale out-of-bounds row -> the defaults
         return cls(cfg)
 
     def apply(

@@ -32,19 +32,21 @@ under the central watchdog, a deliberately stopped resident stays
 stopped across restarts. ``start``/``restart`` flip it back and act
 immediately (explicit operator intent bypasses the backoff).
 
-2026-11-13 — DETECTION / EXECUTION SPLIT: this class is the DETECTOR
-only. When a ``restart_delegate`` is wired (the monitor + downloader,
-``AreaConfig.restart_via_maintainer``), a start/restart rides
-``POST /processes/{service}/restart`` on the MAINTAINER server (the
-cluster's ONE resident-process executor,
-``server_cluster/maintainer/processes.py``) and the returned pid is
-tracked like an own spawn; ``None`` (maintainer down / refused) falls
-back to the in-process spawn — the bootstrap path (at monitor boot the
-maintainer is down) AND the outage path (a maintainer death must never
-leave residents unsupervised). A STALE resident — its heartbeat
+2026-11-13 — DETECTION / EXECUTION SPLIT, then 2026-11-21 — EXECUTOR
+DEMOTION (control unification plan Phase 2): the split made this class
+the DETECTOR only, delegating every start/restart to the maintainer
+server (the then-ONE executor). The demotion returned execution HERE:
+whoever configures a child also spawns it, so the supervisor spawns
+in process again (``ProcessManager.spawn`` — the bootstrap path, now
+the only routine path) and the maintainer keeps ONE direct-control
+path — the EMERGENCY spawn of a resident whose scope server is
+unreachable (``server_cluster/maintainer/processes.py``). The
+``restart_delegate`` parameter stays wired to the deprecated
+``restart_via_maintainer`` config flag (false everywhere; removed
+after the observation window). A STALE resident — its heartbeat
 ``code_fingerprint`` no longer matches the on-disk sources — is
 detected here too (slow sub-pass, the stream watchdog's debounced
-rule) and restarted through the same delegate.
+rule) and restarted through the same path.
 """
 from __future__ import annotations
 
@@ -81,15 +83,41 @@ FROM monitor.service_heartbeat
 WHERE service = ANY(%s)
 """
 
+# The child-REPORTED progress states (Phase 4, 2026-11-21 control
+# unification): a FRESH beat with a paused report is a DELIBERATE
+# pause, not a wedged runtime — the hung pass reads it (gap 8) and the
+# fleet views show it distinctly. The query carries the report's AGE
+# too (a stale report of ``paused`` proves nothing about NOW) and NO
+# beat filter — the hung pass reads it precisely in the STALE-beat
+# band. Best effort end to end: a pre-Phase-4 schema (no columns yet)
+# or a DB outage yields {} and the pass runs exactly as before.
+_PROGRESS_STATES_SQL = """
+SELECT service, progress_state,
+       EXTRACT(EPOCH FROM (now() - progress_at))::bigint
+FROM monitor.service_heartbeat
+WHERE service = ANY(%s)
+  AND progress_state IS NOT NULL
+"""
+
+# The progress-staleness caution (the plan's gap 5): a resident whose
+# BEAT is fresh but whose last progress report is older than this has
+# a live heartbeat thread over a WORK LOOP that stopped posting — the
+# wedged-but-beating class — ALERT only (the hung kill stays the
+# beat-age rule's). A resident that never reported progress is absent
+# from the query and can never trip it.
+_PROGRESS_STALENESS_ALERT_S = 1800.0
+
 
 class ResidentStatus(BaseModel):
     """One resident's row — the /processes and /stats payload."""
 
     service: str
     desired: str
-    state: str = Field(description="running | down (the supervisor will "
-                       "start it) | backoff (crash-looped, waiting) | "
-                       "stopped (desired stopped, not running)")
+    state: str = Field(description="running | paused (the child reports "
+                       "a deliberate pause — Phase 4) | down (the "
+                       "supervisor will start it) | backoff (crash-"
+                       "looped, waiting) | stopped (desired stopped, "
+                       "not running)")
     pid: int | None = None
     adopted: bool = Field(default=False, description="Running under an "
                           "externally-started pid this server adopted.")
@@ -324,6 +352,34 @@ class ResidentSupervisor:
         finally:
             conn.close()
 
+    def _heartbeat_progress_states(self) -> dict[str, tuple[str, float]]:
+        """The residents' child-reported progress states → (label, age
+        in seconds) — smallint label codes decoded host-side via the
+        label index; the planned ``paused`` legal state. The LAST
+        reported state per service, whatever its age (the consumers
+        apply the freshness rule that fits them). Best effort: a
+        pre-Phase-4 schema or a DB outage yields {} — the hung pass and
+        the snapshot then run exactly as before."""
+        try:
+            from _common.db_commons import get_db_connection
+            from _common.labels import CODE_MAPS
+
+            state_labels = CODE_MAPS["progress_state"]
+            conn = get_db_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(_PROGRESS_STATES_SQL, (list(self._specs),))
+                    return {r[0]: (state_labels.get(r[1], "unknown"),
+                                   float(r[2]) if r[2] is not None
+                                   else float("inf"))
+                            for r in cur.fetchall()}
+            finally:
+                conn.close()
+        except Exception as exc:  # noqa: BLE001 — teaching, never fatal
+            logger.debug("%s: progress-state read failed (%r)",
+                         self._config.service, exc)
+            return {}
+
     def _check_hung(self) -> None:
         """One hung pass over the RUNNING residents (the stream
         watchdog's wedged-runtime rule, resident-tier): the heartbeat
@@ -333,12 +389,17 @@ class ResidentSupervisor:
         D-state, a dead work loop) — not trustworthy: terminated +
         restarted through the delegate. A beat between ``STALE_AFTER_S``
         and ``hung_after_s`` alerts only (a slow startup or a brief DB
-        outage gets time to recover). Fail-soft end to end: a DB outage
-        raises out of the beat-age read and the caller's guard skips
-        the pass."""
+        outage gets time to recover). Phase 4 teaching: a resident
+        REPORTING ``paused``/``pausing`` at a fresh-ish beat is a
+        DELIBERATE pause — the alert names it as the legal state it is
+        (the kill at ``hung_after_s`` still applies: a pause whose
+        heartbeat THREAD died is a wedged runtime like any other). Fail-
+        soft end to end: a DB outage raises out of the beat-age read
+        and the caller's guard skips the pass."""
         from _common.service_heartbeat import STALE_AFTER_S
 
         ages = self._heartbeat_beat_ages()
+        states = self._heartbeat_progress_states()
         for service, pid in list(self._pids.items()):
             if service not in self._specs or pid is None:
                 continue
@@ -348,12 +409,36 @@ class ResidentSupervisor:
                 continue  # desired stopped — its life is Ending anyway
             beat_age_s = ages.get(service)
             if beat_age_s is None or beat_age_s <= STALE_AFTER_S:
-                continue  # fresh beat (or no row yet) — healthy
+                # Fresh beat (or no row yet) — the runtime is alive.
+                # The progress-staleness caution rides here (gap 5): a
+                # live heartbeat thread over a work loop that STOPPED
+                # posting progress is the wedged-but-beating class —
+                # alert only, the kill stays the beat-age rule's.
+                reported_state, reported_age = states.get(
+                    service, (None, float("inf")))
+                if reported_state is not None \
+                        and reported_age > _PROGRESS_STALENESS_ALERT_S:
+                    logger.warning(
+                        "[ALERT] %s (pid %d): beat fresh but no progress "
+                        "report for %.0fs (last state %r) — the work "
+                        "loop looks wedged while the runtime beats",
+                        service, pid, reported_age, reported_state)
+                continue
+            reported_state, reported_age = states.get(service, (None, 0.0))
             if beat_age_s <= self._config.hung_after_s:
-                logger.warning(
-                    "[ALERT] %s (pid %d): beat stale %.0fs with a live "
-                    "pid — wedged unless it recovers by %.0fs",
-                    service, pid, beat_age_s, self._config.hung_after_s)
+                if reported_state in ("paused", "pausing") \
+                        and reported_age <= self._config.hung_after_s:
+                    logger.warning(
+                        "[ALERT] %s (pid %d): beat stale %.0fs but the "
+                        "child reports a DELIBERATE PAUSE (%.0fs old — "
+                        "legal state, auto-resume bound caps it)",
+                        service, pid, beat_age_s, reported_age)
+                else:
+                    logger.warning(
+                        "[ALERT] %s (pid %d): beat stale %.0fs with a "
+                        "live pid — wedged unless it recovers by %.0fs",
+                        service, pid, beat_age_s,
+                        self._config.hung_after_s)
                 continue
             logger.warning(
                 "[ALERT] %s (pid %d): WEDGED — beat stale %.0fs with a "
@@ -373,15 +458,30 @@ class ResidentSupervisor:
     # ------------------------------------------------------------------
 
     def snapshot(self) -> list[ResidentStatus]:
-        """The residents' current rows (a liveness probe per resident)."""
+        """The residents' current rows (a liveness probe per resident;
+        a resident whose child REPORTS ``paused`` at a live pid shows
+        the distinct ``paused`` state — the fleet views' Phase 4
+        teaching, gap 8; the progress-state read is best effort and a
+        failure just leaves ``running``)."""
         now = time.time()
+        from _common.service_heartbeat import STALE_AFTER_S
+
+        reported = self._heartbeat_progress_states()
         rows: list[ResidentStatus] = []
         for service, spec in self._specs.items():
             pid = self._pids.get(service)
             alive = pid is not None and self._processes.alive(pid, service)
             desired = self._desired.get(service, spec.desired)
             if alive:
-                state = "running"
+                # The distinct paused view (Phase 4): a RECENT reported
+                # pause over a live pid (an ancient report proves
+                # nothing about now — the STALE_AFTER_S bound matches
+                # the beat the view sits beside).
+                reported_state, reported_age = reported.get(
+                    service, (None, 0.0))
+                paused_now = (reported_state == "paused"
+                              and reported_age <= STALE_AFTER_S)
+                state = "paused" if paused_now else "running"
             elif desired == "stopped":
                 state = "stopped"
             elif now < self._backoff_until.get(service, 0.0):

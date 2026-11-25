@@ -1,0 +1,13 @@
+{
+  "service": "analysis.news_audit",
+  "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
+  "is_resident": false,
+  "freq": "daily",
+  "priority": 70,
+  "schedule": "every A-share trading date, after builds_daily (builds.text digestions) and BEFORE analysis.news_lexicon / analysis.news_text_daily in the 16:00 nightly chain (analysis_daily loop order, step 14)",
+  "notes": "News audits: (1) the provider registry sync (text.news_providers, news_type classify + manual is_blocked preserved); (2) the 5-day window audits — provider (text.news_provider_audit per origin) and content (text.news_content_audit per industry, incl. the keyword rollup); (3) the DAILY coverage audit (text.news_coverage_audit, the 2026-11-22 coverage migration) — per (trading day, industry_id) article/digested/fake counts with the '000001' whole-market rollup row, weekend articles rolled forward to the next SSE trading day via the shared analysis._common.calendar_roll core; the coverage basis analysis.news_text_daily reads (the panel never scans text.news). --coverage {all|providers|content|coverage} selects which audits run (default all). Window audits incremental: complete windows frozen, trailing partial + 15d grace recompute; coverage incremental: article-bearing trading days missing + 15d grace tail, probe loads from the oldest existing day so gaps self-heal; --force truncates + rebuilds.",
+  "source_ref": "scripts/orchestration/analysis_daily.json",
+  "updated_at": "2026-11-22T11:30:00+00:00"
+}

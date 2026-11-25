@@ -39,11 +39,13 @@ export type LabelDomain =
   | 'option_type'
   | 'skew_type'
   | 'contract_type'
+  | 'macro_metal'
   | 'sec_type'
   | 'no_action_reason'
   | 'signal_amplifier'
   | 'signal_amplifier_type'
   | 'signal_amplifier_margin'
+  | 'signal_amplifier_news'
   | 'attribution_type'
   | 'trade_side'
   | 'forecast_direction'
@@ -52,6 +54,7 @@ export type LabelDomain =
   | 'ext_llm_provider'
   | 'secret_type'
   | 'secret_sub_type'
+  | 'llm_modality'
   | 'db_instance'
   | 'db_replication_state'
   | 'db_write_flag'
@@ -59,8 +62,12 @@ export type LabelDomain =
   | 'backup_status'
   | 'non_daily_state'
   | 'orchestration_plan_state'
+  | 'orchestration_plan_basis'
   | 'caution_source'
   | 'caution_severity'
+  | 'service_command'
+  | 'progress_phase'
+  | 'progress_state'
   | 'analysis_cache_kind'
   | 'portfolio_type'
   | 'portfolio_sub_type'
@@ -74,6 +81,9 @@ export type LabelDomain =
   | 'agent_child_kind'
   | 'search_table'
   | 'news_category'
+  | 'news_type'
+  | 'fin_dict_polarity'
+  | 'news_scope_kind'
   | 'kw_category_type'
   | 'kw_market'
   | 'kw_pos'
@@ -123,10 +133,12 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
   // amplifier's day-level anatomy comes from —
   // signal_amplification_history.amplifier_type; the specific pattern
   // is the sub_type column (signal_amplifier when ohlcv,
-  // signal_amplifier_margin when margin)
+  // signal_amplifier_margin when margin, signal_amplifier_news when
+  // news)
   signal_amplifier_type: {
     ohlcv: 0,   // the K-line day anatomy amplifiers (gap / wick / volume shapes)
     margin: 1,  // the 融资融券 margin-balance level amplifiers (rz_balance vs its own trailing quantile bars)
+    news: 2,    // the daily news-text MARKET-state amplifiers (the 2026-11-22 migrated news_wash rules)
   },
   // the MARGIN sub-type vocabulary (the parent 'margin' branch): the
   // 融资余额 (rz_balance) LEVEL vs its own trailing-window quantile
@@ -135,6 +147,30 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
   signal_amplifier_margin: {
     margin_washout: 0,  // 融资余额低位: rz_balance <= its trailing-252d q10 bar — BUY reversion amplification
     margin_crowding: 1, // 融资余额高位: rz_balance >= its trailing-252d q90 bar — SELL exit amplification
+  },
+  // the NEWS sub-type vocabulary (the parent 'news' branch,
+  // 2026-11-22 — migrated from the deleted news_wash detection
+  // family): the daily news-text MARKET state AMPLIFIES the existing
+  // families' signals — the deep-negative states on the code's own
+  // drop leg mark the capitulation washout (BUY reversion), the
+  // weekly aggregates persist ~a quarter (un-gated), the euphoric
+  // states on the drop leg are the "good news can't lift it"
+  // divergence (BUY), and the weekly tone recovery is the one SELL
+  // exit
+  signal_amplifier_news: {
+    sent_shock: 0,          // 情绪冲击: sent_z <= -2.0 on the drop leg — BUY reversion
+    tone_panic: 1,          // 关键词情绪恐慌: lex_tone_z <= -1.5 on the drop leg — BUY reversion
+    neg_wave: 2,            // 负面报道浪潮: flow_neg >= 5 on the drop leg — BUY reversion
+    quiet_cov: 3,           // 报道异常冷清: flow_af <= -1.0 on the drop leg — BUY reversion (marginal)
+    sent_euphoria: 4,       // 情绪亢奋背离: sent_z >= +1.5 on the drop leg — the divergence, BUY
+    tone_euphoria: 5,       // 关键词亢奋背离: lex_tone_z >= +1.5 on the drop leg — the divergence, BUY
+    week_neg_wave: 6,       // 周度负面浪潮: sum(flow_neg,5) >= 10 — BUY reversion
+    week_tone: 7,           // 周度情绪恐慌: mean(lex_tone_z,5) <= -1.0 — BUY reversion (the strongest)
+    week_shock: 8,          // 周度情绪冲击: mean(sent_z,5) <= -1.0 — BUY reversion
+    shock_wave: 9,          // 情绪冲击浪潮: sent_z <= -1.5 & flow_neg >= 3 on the drop leg — BUY
+    wave_disagree: 10,      // 情绪冲击分歧: the shock + wave + disp_z >= 1.0 — BUY (interaction)
+    tone_disagree: 11,      // 负面声浪分歧: lex_tone_z <= -1.5 & disp_z >= 1.0 — BUY (interaction, strongest)
+    week_tone_recovery: 12, // 周度情绪修复: wt crosses up through 0 after a deep episode — SELL exit
   },
   // the code's own trend classification in force for a signal_rules
   // cell (the PK member that makes rule_params per-PK; 2026-10-14;
@@ -167,7 +203,12 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
     // with price below its 5-rows-ago close (vol peaks cluster at
     // price troughs); crush SELL below its bottom tail at the
     // trailing-high stretch (complacency at the top, exit timing)
-    volatility: 12 },
+    volatility: 12,
+    // news_wash (13) RETIRED 2026-11-22: migrated into the amplifier
+    // tier (signal_amplifier_type 'news' — the news states AMPLIFY
+    // existing signals, never create their own); code 13 stays
+    // reserved
+  },
   // the family config grid (converted 2026-10-11): SERIES codes
   // (curves) 0.., THRESHOLD codes (thresholds/history)
   // (series + 1) * 100 + width ordinal; the SINGLE-WIDTH retest
@@ -597,6 +638,10 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
     ewma_10pct: 6215,
     ewma_15pct: 6216,
     ewma_20pct: 6217,
+    // the nw_* block 6220-6235 RETIRED 2026-11-22: the news_wash
+    // family was migrated into the amplifier tier
+    // (signal_amplifier_type 'news' + the signal_amplifier_news
+    // vocabulary); the block stays reserved
   },
   weighting: { equal: 0, amt: 1 },
   rank_side: { HYPE: 0, DRAIN: 1 },
@@ -644,6 +689,8 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
     greek_vega: 4,
   },
   contract_type: { index: 0, bond: 1 },
+  // stats.macro_identity.metal_type — macro daily family's metal class
+  macro_metal: { gold: 0, silver: 1 },
   sec_type: { etf: 0, index: 1, stock: 2, industry: 3 },
   pair_grain: { index: 0, industry: 1 },
   attribution_type: { equal: 0, trading_amt: 1 },
@@ -677,6 +724,9 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
     // E Fund fund-site family (downloads.etf.efunds.*): the efundcf.com.cn
     // detail pages and the www/api.efunds.com.cn fundlist/assetinfo backends.
     efunds: 16,
+    // SGE 上海黄金交易所 (downloads.macro.gold_silver): the sge.com.cn
+    // daily spot bars backend.
+    sge: 17,
     other: 99,
   },
   // dummy = the offline test double (test/dummy_langgraph at the
@@ -691,12 +741,17 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
   // local-model host's Jev / System One decision model,
   // tokenization = its StructBERT word segmenter — both retyped out of
   // llm 2026-11-11)
-  secret_type: { llm: 0, web_search: 1, jev: 2, tokenization: 3 },
+  secret_type: { llm: 0, web_search: 1, jev: 2, tokenization: 3, ocr: 4 },
   // static.secret_config.sub_type — the credential SERVICE TIER, one
   // shared domain across both secret_types (general = the standard
   // tier — glm flash chat, the offline dummy, generic content search;
   // pro = the paid-pro tier — the zhipu search_pro web-search engine)
   secret_sub_type: { general: 0, pro: 1 },
+  // static.secret_config.input_modality / output_modality — the MODALITY
+  // PROFILE a credential's model accepts / produces, one shared domain
+  // across both columns (text+vision = the VLM case, glm-5.3-flash;
+  // text+image-gen = image output; default 0 = plain text)
+  llm_modality: { text: 0, "text+vision": 1, "text+image-gen": 2, audio: 3, other: 99 },
   // monitor.db_health (replication_state is the WAL shipping state as seen
   // from the SAMPLED instance; none = no standby attached / receiver absent)
   db_instance: { primary: 0, replica: 1 },
@@ -728,11 +783,30 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
   // monitor.orchestration_task_state.state — the ARRANGEMENT verdict of
   // one orchestration-tier service (the monitor area's OrchestrationArranger
   // computing the service_config freq window vs the last successful exit,
-  // the same rule as the UI run guard's freq auto-skip): due = run it in
-  // the arranged pass; not_due = the freq window holds (or once + a
-  // success ever) — the nightly chain skips the step instead of spawning
-  // a no-op. Code order is semantic: unknown -> due -> not_due.
+  // the same rule as the UI run guard's freq auto-skip, or — for a service
+  // with a declared data pre-check — from what that pre-check found): due =
+  // run it in the arranged pass; not_due = the freq window holds (or once +
+  // a success ever) or the pre-check found no work — the nightly chain
+  // skips the step instead of spawning a no-op. Code order is semantic:
+  // unknown -> due -> not_due.
   orchestration_plan_state: { unknown: 0, due: 1, not_due: 2 },
+  // monitor.orchestration_task_state.basis — the EVIDENCE behind the
+  // arrangement verdict: calendar = no data pre-check declared, the
+  // freq-calendar rule decided; the rest are the nightly chain's data
+  // pre-check over the latest closed sessions (data_present = every
+  // expected session is in the service's data table;
+  // db_missing = a session is absent and no source-csv stage applies;
+  // csv_present = absent from the table but its source csv is downloaded;
+  // csv_missing = absent and not downloaded either; check_failed = the
+  // pre-check errored — the service runs fail-open).
+  orchestration_plan_basis: {
+    calendar: 0,
+    data_present: 1,
+    db_missing: 2,
+    csv_present: 3,
+    csv_missing: 4,
+    check_failed: 5,
+  },
   // monitor.caution_log — the cross-service caution trail. source: where
   // the row came from (a running service error, an AI-found suspicion, a
   // manually-noted pending bug); severity_level: how bad it is (code
@@ -740,6 +814,18 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
   // AI suspicions to 'warning', AI [CRITICAL] findings are 'critical').
   caution_source: { service: 0, ai: 1, manual: 2 },
   caution_severity: { info: 0, warning: 1, error: 2, critical: 3 },
+  // monitor.service_command.command — the downward command mailbox for
+  // running children (Phase 4 of the 2026-11-21 control unification
+  // plan): the cooperative commands a child claims+consumes from its
+  // heartbeat-thread poll; SIGTERM stays the backstop.
+  service_command: { flush_now: 0, pause: 1, resume: 2 },
+  // monitor.service_heartbeat.progress_phase / progress_state — the
+  // child-REPORTED progress at its safe checkpoints (the three-phase
+  // machine per run; the run state — a FRESH beat with 'paused' is a
+  // deliberate pause, not a wedged runtime). NULL columns = never
+  // reported.
+  progress_phase: { downloading: 0, reading: 1, writing: 2 },
+  progress_state: { running: 0, pausing: 1, paused: 2, done: 3 },
   // analysis_signals.analysis_cache.kind — the generic
   // intermediate-result cache's tenant (which analysis owns the row)
   analysis_cache_kind: { boost_derivation: 0 },
@@ -884,6 +970,46 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
     opinion: 2,
     statement: 3,
     other: 99,
+  },
+  // text.news_providers.news_type — the origin's MEDIA type (2026-11-21):
+  // what kind of outlet an origin is, read against the audit metrics (a
+  // fake share concentrated in social_media origins is the expected
+  // shape; the same share in financial_report is the alarm). Derived
+  // from source by the registry sync's classify; everything unmapped
+  // defaults to news_article (the scraped-portal norm).
+  news_type: {
+    news_article: 0,
+    financial_report: 1,
+    social_media: 2,
+    ai_digest: 3,
+    other: 99,
+  },
+  // static.fin_sentiment_dict.polarity — the CFSD 中文金融情感词典
+  // (姜富伟/孟令超/唐国豪, 8,793 words — LM translate + word2vec expand,
+  // A-share validated) word's polarity (2026-11-21). 2 both = the 21
+  // words the source lists in BOTH sheets (context-dependent sign —
+  // 冷静/大胆/揭示); the PK(word) table stores one row per word, so they
+  // carry their own code. Source of record: the seeds under
+  // database/sql/static/fin_sentiment_dict/.
+  fin_dict_polarity: {
+    negative: 0,
+    positive: 1,
+    both: 2,
+  },
+  // text.news_text_daily.scope_kind — which scope a daily news-text
+  // metric row speaks for (2026-11-22). Code order = market breadth:
+  // 0 market_all = every digested article that day (vs the SSE
+  // Composite), 1 market_recap = the BROAD_SSE-tagged recap subset
+  // (the CFSD source-class split), 2 industry = EVENT-DAY rows per
+  // industry_id (a row only on article-days — the daily-index grain is
+  // infeasible at ~1-2 articles/industry-day), 3 sector = EVENT-DAY
+  // rows per sector_id (the industry rows rolled UP the taxonomy to
+  // the L1 parent sector — text.news.sector_id).
+  news_scope_kind: {
+    market_all: 0,
+    market_recap: 1,
+    industry: 2,
+    sector: 3,
   },
   // static.keyword_maps — the seeded keyword → category map for news-text
   // auditing (2026-11-01). category_type picks the family; category_code

@@ -49,6 +49,7 @@ import {
   type TrainRunRow,
   type TrainTrialRow,
 } from "@/lib/api-client";
+import { fmtStamp } from "@/shared/datetime";
 import type { MaSpreadSecType } from "@shared/types";
 
 export interface TrainLogsDialogProps {
@@ -76,7 +77,9 @@ function statusColor(status: string): "success" | "error" | "warning" {
 }
 
 function fmtTime(iso: string | null): string {
-  return iso ? iso.slice(0, 19).replace("T", " ") : "–";
+  // Display-only remap — the date part renders as yyyy-Mmm-dd via the
+  // shared helper, the time-of-day remainder is kept verbatim.
+  return iso ? fmtStamp(iso.slice(0, 19)) : "–";
 }
 
 /** Omega display — the all-wins degenerate case is capped at 1e6; show

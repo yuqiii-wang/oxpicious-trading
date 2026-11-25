@@ -26,10 +26,11 @@ import {
 } from "@mui/material";
 import { ExpandLess, ExpandMore, PlayArrow } from "@mui/icons-material";
 import { fmtDateTimeShanghai, fmtTimeShanghai } from "@/shared/datetime";
-import type { ProcessStatus, ServiceAuditEntry } from "@/lib/api-client/monitor";
+import type { ProcessStatus, ServiceAuditEntry, ServiceCommandLabel } from "@/lib/api-client/monitor";
 import { PROCESS_CHIP, type ProcessRunsState } from "./constants";
 import { fmtAge, fmtPeriod, liveAge } from "@/monitor/fmt";
 import ServiceRunTrend from "@/monitor/components/service-run-trend";
+import ServiceCommandMenu from "./ServiceCommandMenu";
 
 export default function ProcessRow({
   proc,
@@ -40,6 +41,8 @@ export default function ProcessRow({
   spawning,
   onOpenLog,
   runs,
+  cmdBusy,
+  onCommand,
 }: {
   proc: ProcessStatus;
   nowMs: number;
@@ -51,6 +54,10 @@ export default function ProcessRow({
   /** Open one history run's component log (row click). */
   onOpenLog: (run: ServiceAuditEntry) => void;
   runs: ProcessRunsState;
+  /** True while this service's command POST is in flight. */
+  cmdBusy: boolean;
+  /** Fire one downward signal (the page owns the POST + verdict). */
+  onCommand: (command: ServiceCommandLabel) => void;
 }) {
   const chip = PROCESS_CHIP[proc.status];
   const age = liveAge(proc.beatAt, nowMs) ?? proc.beatAgeS;
@@ -82,12 +89,44 @@ export default function ProcessRow({
   const statusChip = (
     <Chip size="small" color={chip.color} label={chip.label} />
   );
+  // The child-REPORTED progress (2026-11-21 Phase 4): the phase/state
+  // the run last posted at a safe checkpoint (index-decoded labels from
+  // /stream). Null = the service never reported (the default). A run
+  // beating fresh while its report ages is the pre-hung-kill caution —
+  // the age is on the tooltip.
+  const progressTip = [
+    proc.progressPhase != null ? `phase: ${proc.progressPhase}` : null,
+    proc.progressState != null ? `state: ${proc.progressState}` : null,
+    proc.progressAt != null
+      ? `reported ${fmtTimeShanghai(proc.progressAt)}` +
+        (proc.progressAgeS != null ? ` (${fmtAge(proc.progressAgeS)} ago)` : "")
+      : null,
+    "child-reported at safe checkpoints — derived completeness lives on the resident rows (fleet fold)",
+  ]
+    .filter((s): s is string => s != null)
+    .join(" · ");
+  const progressChip =
+    proc.progressPhase == null && proc.progressState == null ? null : (
+      <Tooltip title={progressTip} arrow>
+        <Chip
+          size="small"
+          variant="outlined"
+          color={proc.progressState === "paused" ? "warning" : "info"}
+          label={
+            [proc.progressPhase, proc.progressState]
+              .filter((s) => s != null)
+              .join(" / ")
+          }
+        />
+      </Tooltip>
+    );
   return (
     <>
       <TableRow hover onClick={onToggle} sx={{ cursor: "pointer" }}>
         {/* Run cell first — clicks must not toggle the row's expand. */}
         <TableCell onClick={(e) => e.stopPropagation()}>
-          {spawning ? (
+          <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+            {spawning ? (
             <Tooltip title="run in flight — spawned from this page, waiting for it to exit">
               <span>
                 <CircularProgress size={16} thickness={5} sx={{ mx: 0.5 }} />
@@ -128,6 +167,17 @@ export default function ProcessRow({
               </IconButton>
             </Tooltip>
           )}
+          {/* The downward signals (Phase 4 mailbox): only meaningful for
+              a LIVE run — the class gate lives at the owning server and
+              its refusal surfaces in the page's verdict alert. */}
+          <ServiceCommandMenu
+            service={proc.service}
+            alive={proc.status === "running"}
+            gate={null}
+            busy={cmdBusy}
+            onCommand={onCommand}
+          />
+          </Box>
         </TableCell>
         <TableCell sx={{ fontFamily: "monospace" }}>
           <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
@@ -142,7 +192,16 @@ export default function ProcessRow({
         <TableCell>{proc.scope}</TableCell>
         <TableCell>{proc.subScope ?? "—"}</TableCell>
         <TableCell>
-          {statusTip != null ? <Tooltip title={statusTip}>{statusChip}</Tooltip> : statusChip}
+          <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+            {statusTip != null ? (
+              <Tooltip title={statusTip}>
+                {statusChip}
+              </Tooltip>
+            ) : (
+              statusChip
+            )}
+            {progressChip}
+          </Box>
         </TableCell>
         <TableCell>
           {freqTip !== "" ? (

@@ -28,6 +28,7 @@ rows created for earlier ones):
 from __future__ import annotations
 
 import datetime
+import hashlib
 import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
@@ -260,6 +261,10 @@ class RefResolver:
             _, industry_id = self._taxonomy.match(text)
         row = {
             "title": hit.title,
+            # title_hash (md5(title)): the PK's title member since the
+            # raw-title PK broke at the btree cap (2026-11-20) — the same
+            # writer-computed contract as store.build_news_rows.
+            "title_hash": hashlib.md5(hit.title.encode("utf-8")).hexdigest(),
             "content": content,
             "date": news_row_date(hit, fallback_date),
             "source": source,
@@ -271,7 +276,7 @@ class RefResolver:
             "votes": None,
         }
         await bulk_upsert_async(self._conn, NEWS_TABLE, [row],
-                                ["title", "source", "date"])
+                                ["title_hash", "source", "date"])
         news_id = await self._conn.fetchval(
             f'SELECT news_id FROM {NEWS_TABLE} '
             f'WHERE title = $1 AND source = $2 AND date = $3',

@@ -129,6 +129,7 @@ import {
 } from "@mui/material";
 import { SecNavShell, useSecNav } from "@/shared/components/sec-nav";
 import SecClassificationNavMulti from "@/shared/components/sec-classification/SecClassificationNavMulti";
+import { fmtDate } from "@/shared/datetime";
 import type { InsightPageIdentity } from "@/shared/ai-ask";
 import { BenchmarkPriceChart } from "@/analysis/pages/MarketBeta/BenchmarkPriceChart";
 import { MarketTrendChart } from "@/analysis/pages/MarketBeta/MarketTrendChart";
@@ -278,7 +279,7 @@ export default function SentimentsPage({
       title={title}
       backPath="/analysis/composites"
       backLabel="back to composites"
-      subtitle={`${scopeLabel}${feedState.selectedDate ? ` · ${feedState.selectedDate} ±${DATE_WINDOW_DAYS}天` : " · 全部日期"} — the ${feedName}
+      subtitle={`${scopeLabel}${feedState.selectedDate ? ` · ${fmtDate(feedState.selectedDate)} ±${DATE_WINDOW_DAYS}天` : " · 全部日期"} — the ${feedName}
             feed. Market / Industry toggle. Industry (default): the
             classification pick scopes BOTH the benchmark price chart's
             industry shades AND the sentiment feed below — tick multiple

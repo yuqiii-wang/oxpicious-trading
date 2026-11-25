@@ -7,7 +7,7 @@
   "freq": "once",
   "priority": 120,
   "schedule": "one-time setup/backfill; no recurring schedule (re-run on demand)",
-  "notes": "OHLCV/dayk backfill only since 2026-11-20 — the module's former PE half (quarterly-snapshot + big-jump anchors) is the weekly downloads.stock.sse.trend_pe service; the nightly latest-tail sweep is downloads.stock.sse.pe_latest (both append to the temps/sse_archive/{code}_pe.csv files this backfill seeded).",
+  "notes": "OHLCV/dayk backfill only since 2026-11-20 — the module's former PE half (quarterly-snapshot + big-jump anchors) is the weekly downloads.stock.sse.pe service (renamed from trend_pe, 2026-11-23); the nightly latest-tail sweep is downloads.stock.sse.pe_latest (both append to the temps/sse_archive/{code}_pe.csv files this backfill seeded).",
   "source_ref": "scripts/orchestration/downloads_once.json",
   "updated_at": "2026-11-20T15:25:15.716730+00:00"
 }

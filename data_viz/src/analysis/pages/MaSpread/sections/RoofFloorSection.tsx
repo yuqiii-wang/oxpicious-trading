@@ -13,6 +13,7 @@
  */
 import { Box, Chip, Typography } from "@mui/material";
 import { fmtNum } from "@/lib/series";
+import { fmtDate } from "@/shared/datetime";
 import {
   ROOF_FLOOR_ESTIMATE_METHODS,
   type MovAveSpreadPairRow,
@@ -115,7 +116,7 @@ function RoofFloorActiveTail({
         right axis: Δ since last anchor (Δ Low above the zero line ·
         Δ High below) replaces the amt bars
         {anchorIdx != null && firstPairRows[anchorIdx]
-          ? ` · anchor ${firstPairRows[anchorIdx].date}`
+          ? ` · anchor ${fmtDate(firstPairRows[anchorIdx].date)}`
           : ""}
       </Typography>
       {/* Rebound audit captions (the "rfaudit" extras group, loaded
@@ -215,7 +216,7 @@ function RoofFloorActiveTail({
               color="text.secondary"
               sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
             >
-              est levels @ {date} · {roofFloorWindow}d ·{" "}
+              est levels @ {fmtDate(date)} · {roofFloorWindow}d ·{" "}
               {RF_ESTIMATE_METHOD_LABELS[rfEstMethod] ?? rfEstMethod}:
               {roof != null && floor != null ? (
                 <>

@@ -40,6 +40,21 @@ def clean_author(v: Optional[str]) -> Optional[str]:
     return v or None
 
 
+# Platform content id inside a Zhihu item URL — the answer/article id is the
+# stable identity of a post (AuthorName / question title / EditTime all
+# drift between captures; see builds.text.loaders.zhihu).
+_ANSWER_ID_RE = re.compile(r"/answer/(\d+)")
+_ARTICLE_ID_RE = re.compile(r"/p/(\d+)")
+
+
+def url_answer_id(url: Optional[str]) -> Optional[str]:
+    """The /answer/<id> (or /p/<id>) tail of a Zhihu item URL, or None."""
+    if not url:
+        return None
+    m = _ANSWER_ID_RE.search(url) or _ARTICLE_ID_RE.search(url)
+    return m.group(1) if m else None
+
+
 def author_from_date_raw(v: Optional[str]) -> Optional[str]:
     """Extract the 来源 (origin) from a gov article's repr-quoted date_raw
     frontmatter value (e.g. '2020-01-01 14:52\\n来源： \\n 新华社\\n字号：…').

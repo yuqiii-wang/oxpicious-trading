@@ -2,7 +2,7 @@
 dataclasses): one entity node, one hyperedge, and the result carriers
 of the rungs — the lexical seeds (SeedHit), the propagation trace
 (WalkHit), the blended rank line (ScoredNode), the packed subgraph
-(SearchResult)."""
+(SearchResult) with its rung counters (SearchTrace)."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -13,6 +13,7 @@ from llm_agents.kg.graph.data_definitions import (
     KgEntity,
     ScoredNode,
     SearchResult,
+    SearchTrace,
     SeedHit,
     WalkHit,
 )

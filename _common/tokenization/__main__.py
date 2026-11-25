@@ -60,7 +60,9 @@ def main() -> None:
 
     text = args.text
     if not text and args.text_b64:
-        text = base64.b64decode(args.text_b64).decode("utf-8")
+        # altchars: the API route sends the URL-SAFE alphabet (the cluster
+        # arg charset forbids '/') — decode both alphabets.
+        text = base64.b64decode(args.text_b64, altchars=b"-_").decode("utf-8")
     text = (text or "").strip()
 
     terms = text.split()[:MAX_TERMS]

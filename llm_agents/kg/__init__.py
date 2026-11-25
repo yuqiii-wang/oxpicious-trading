@@ -44,6 +44,16 @@ agent-flow hints stay there; everything domain lives here).
               entities carry their exact column names + comments —
               columns.py) + ``NS_SCOPES`` (the namespace vocabulary)
               and ``KgUnavailableError``;
+  search_stats.py — ``SearchStatsLog`` / ``KgSearchStatRow``, the
+              llm.kg_search_stats PER-CALL search ledger (2026-11-23):
+              one fail-soft row per ANSWERED kg_search call on every
+              return path — a replay, a live match, a no-match, a
+              gate-rejected result (the chain tables only ever saw
+              successful non-empty traversals) — carrying the ranked
+              node names + scores, the rung counters
+              (``graph.SearchTrace``), the replay / gate facts and the
+              latency. A pure side ledger: nothing reads it in the
+              search path;
   columns.py — ``TableColumnCatalog``, the pg_catalog column-metadata
               layer behind the auto-load (one batched
               ``col_description`` query per result, TTL-cached per
@@ -66,12 +76,14 @@ from llm_agents.kg.columns import (
     COLUMN_CACHE_TTL_SEC, TABLE_COLUMNS, TableColumnCatalog,
 )
 from llm_agents.kg.graph import (
-    KgEdge, KgEntity, KnowledgeGraph, SeedHit, SearchResult, WalkHit,
+    KgEdge, KgEntity, KnowledgeGraph, SearchTrace, SeedHit, SearchResult,
+    WalkHit,
 )
 from llm_agents.kg.hotpaths import (
     PROMOTION_HIT_COUNT, HotpathCache, HotpathChain,
 )
 from llm_agents.kg.query_log import CachedChain, QueryLog
+from llm_agents.kg.search_stats import KgSearchStatRow, SearchStatsLog
 from llm_agents.kg.service import (
     KG_CACHE_TTL_SEC, NS_SCOPES, KgGateCandidate, KgGateVerdict,
     KgUnavailableError, KnowledgeGraphService,
@@ -85,9 +97,10 @@ KNOWLEDGE_GRAPHS = KnowledgeGraphService()
 __all__ = [
     "CachedChain", "COLUMN_CACHE_TTL_SEC", "HotpathCache", "HotpathChain",
     "KG_CACHE_TTL_SEC", "KNOWLEDGE_GRAPHS", "KgEdge", "KgEntity",
-    "KgGateCandidate", "KgGateVerdict",
+    "KgGateCandidate", "KgGateVerdict", "KgSearchStatRow",
     "KgUnavailableError", "KnowledgeGraph", "KnowledgeGraphService",
-    "NS_SCOPES", "PROMOTION_HIT_COUNT", "SeedHit", "SearchResult",
-    "QueryLog", "TABLE_COLUMNS", "TableColumnCatalog", "WalkHit",
+    "NS_SCOPES", "PROMOTION_HIT_COUNT", "SearchStatsLog", "SearchResult",
+    "SearchTrace", "SeedHit", "QueryLog", "TABLE_COLUMNS",
+    "TableColumnCatalog", "WalkHit",
     "normalize_schema_scope", "normalize_table_scope",
 ]

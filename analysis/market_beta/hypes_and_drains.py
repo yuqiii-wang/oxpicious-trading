@@ -73,29 +73,61 @@ PERIODS: {5, 20, 60, 120, 252, 504}. 120d is the UI default. The 120d
 column on industry_attributions is added by 08_industry_hypes_and_drains.sql
 and populated by the attributions step (ROLLING_WINDOWS includes 120).
 
+INCREMENTAL MODE (2026-11-25 — the daily run's dominant cost)
+  The step used to truncate-then-recompute on EVERY run (~18 min: the
+  full-history frames + 8.3M-row ranking rebuild) even though a daily
+  run only adds one trading date. Rankings are deterministic per-date
+  functions of source rows at or before that date (trailing windows),
+  so the mode is now the repo default:
+    - missing-date detection: guard-scope source dates not covered by a
+      per-date ranking in the table, floored at the table's own
+      MIN(date) (pre-first-window dates legitimately emit nothing; an
+      empty table falls back to a full build);
+    - warm-up-scoped fetch: the frames are fetched from the
+      LOOKBACK_TRADING_DAYS (510td, covering the 504-day window) +
+      45d-margin date before the earliest missing date — reuses the
+      attributions step's fetch_incremental_lookback_date;
+    - write boundary: the computed frame is filtered to the missing
+      dates, those dates' rows (if any) are purged (racing-writer
+      insurance), and the slice is COPY-inserted;
+    - seasonal: only the affected 'YYYY-MM' months are purged +
+      re-fetched from the stored per-date rows + re-ranked (a month's
+      peak depends on ALL its dates, never just the new ones).
+  force=True keeps the full truncate-then-recompute (called after an
+  attributions force rebuild changed historical values).
+
 PIPELINE (pandas vectorized — migrated 2026-09-25 from the former
 per-(benchmark, period, weighting) server-side INSERT...SELECT, whose
 CASE WHEN guards + window arithmetic now live here):
   1. Guard: bail out if industry_attributions has no broad-market rows
      with daily non-industry price data.
-  2. Fetch three RAW frames (no SQL-side computation):
+  2. Mode: incremental (default) detects the missing dates first and
+     skips everything when there are none — the steady-state daily run
+     costs seconds. force skips detection.
+  3. Fetch three RAW frames (no SQL-side computation), scoped to the
+     510td+45d warm-up floor in incremental mode, full history in force:
        bench_daily  — (benchmark, date) close + trading_amount;
        attr_daily   — (benchmark, date, industry) daily decomposition
                       columns;
        label pairs  — industry_id -> industry_label.
-  3. Vectorized compute (cudf.pandas-accelerated under the __main__
+  4. Vectorized compute (cudf.pandas-accelerated under the __main__
      bootstrap): LAG returns via groupby shift, the daily identity
      inversion, per-period exp/ln rolling compounding via
      grouped_rolling_agg (FULL-window gate = rolling count == N),
      hype / metric_value per weighting, and the HYPE/DRAIN top-5 via
-     stable sort + groupby cumcount.
-  4. Truncate + ONE chunked CSV COPY into industry_hypes_and_drains
-     (rank on UNROUNDED metric_value, store ROUNDed to 6 — the former
-     SQL ranked pre-ROUND and rounded in the final SELECT, identical).
-  5. Upsert analysis.analysis_identity + sanity summary.
-  6. Seasonal (monthly) aggregation — same compute from the stored
+     stable sort + groupby cumcount. Incremental: filter the frame to
+     the missing dates.
+  5. Write: force truncates + ONE chunked CSV COPY into
+     industry_hypes_and_drains; incremental purges the missing dates'
+     rows (idempotence insurance) + COPY-inserts the slice (rank on
+     UNROUNDED metric_value, store ROUNDed to 6 — the former SQL ranked
+     pre-ROUND and rounded in the final SELECT, identical).
+  6. Upsert analysis.analysis_identity + sanity summary.
+  7. Seasonal (monthly) aggregation — same compute from the stored
      (rounded) per-date rows: per (month, benchmark, period, weighting,
      side, industry) peak = MAX (HYPE) / MIN (DRAIN), rank top-5.
+     force: truncate + rebuild all months; incremental: purge + rebuild
+     only the affected months.
 
 Tie note: the former ROW_NUMBER() ORDER BY metric_value DESC/ASC had no
 deterministic tiebreak (Postgres leaves equal-key order unspecified); the
@@ -108,6 +140,7 @@ connection. It is NOT a standalone runnable.
 """
 from __future__ import annotations
 
+import datetime
 import gc
 import time
 
@@ -120,6 +153,7 @@ from _common.build_commons import (
 )
 from _common.sql_views import render_sql_view
 from _common.db_commons import (
+    chunked_purge_async,
     copy_frame_chunked_async,
 )
 from _common.df_utils import (
@@ -133,6 +167,9 @@ from _common.labels import (
     WEIGHTING_LABEL,
 )
 from analysis._common import upsert_analysis_identity
+from analysis.market_beta.attributions.queries import (
+    fetch_incremental_lookback_date,
+)
 
 import logging
 logger = logging.getLogger(__name__)
@@ -160,8 +197,9 @@ ANALYSIS_DESCRIPTION = (
     "window — never by inverting the materialized rolling column, whose "
     "construction artifacts the 1/swf inversion would amplify into noise. "
     "period_days in {5, 20, 60, 120, 252, 504} (120 default). Built by "
-    "analysis.market_beta.hypes_and_drains (internal step, "
-    "truncate-then-recompute, pandas-vectorized). Depends on "
+    "analysis.market_beta.hypes_and_drains (internal step: incremental "
+    "missing-date recompute with a 510td-scoped warm-up fetch; force "
+    "truncates and rebuilds from full history). Depends on "
     "analysis.industry_attributions (incl. the daily "
     "benchmark_non_this_industry_price column) being populated first."
 )
@@ -243,13 +281,18 @@ _GROUP_KEYS = ["benchmark_code", "industry_id"]
 #  Fetch
 # ---------------------------------------------------------------------------
 
-async def _fetch_frames(conn, benchmark_codes: list[str]) -> tuple[
+async def _fetch_frames(conn, benchmark_codes: list[str], *,
+                        min_date: datetime.date) -> tuple[
         pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Fetch the three raw frames (epoch-transport + float casts).
 
     Dates arrive as native float8 (extract(epoch)::float8 — the DB-read
     convention) and are materialized to datetime64[us] in ONE host pass;
     NUMERIC legs arrive as Decimal and are cast to float64 vectorized.
+
+    ``min_date`` is the inclusive fetch floor: the 510td+45d warm-up
+    start of the earliest missing target date (incremental) or
+    1900-01-01 (force — whole history, predicate matches every row).
     """
     # bench_daily view: analysis/market_beta/hypes_and_drains/bench_daily;
     # attr_daily view: analysis/market_beta/hypes_and_drains/attr_daily;
@@ -257,12 +300,14 @@ async def _fetch_frames(conn, benchmark_codes: list[str]) -> tuple[
     view_bench = render_sql_view(
         "analysis/market_beta/hypes_and_drains/bench_daily",
         benchmark_codes=benchmark_codes,
+        min_date=min_date,
     )
     bench_rows = await conn.fetch(view_bench.sql, *view_bench.params)
     view_attr = render_sql_view(
         "analysis/market_beta/hypes_and_drains/attr_daily",
+        min_date=min_date,
     )
-    attr_rows = await conn.fetch(view_attr.sql)
+    attr_rows = await conn.fetch(view_attr.sql, *view_attr.params)
     view_labels = render_sql_view(
         "analysis/market_beta/hypes_and_drains/industry_labels",
     )
@@ -569,26 +614,35 @@ def _compute_seasonal(hd_df: pd.DataFrame) -> pd.DataFrame:
 async def run_hypes_and_drains(
     conn,
     *,
-    force: bool = True,
+    force: bool = False,
 ) -> None:
     """Run the industry hypes & drains ranking pipeline.
 
-    Reuses the caller's DB connection. Fetches the raw frames, computes
-    the full ranking vectorized, then truncates + COPY-writes (force is
-    the default — the table is small and cheap to fully recompute).
+    Reuses the caller's DB connection. Incremental (default) detects the
+    missing target dates first, fetches only their 510td warm-up window,
+    computes, and COPY-inserts the slice — the steady-state daily run
+    (one new trading date) costs seconds instead of the former ~18-min
+    full rebuild. force=True keeps the truncate-then-recompute full
+    rebuild (required after an attributions FORCE run changed historical
+    values, or on an empty table).
 
     Pipeline
       1. Guard: bail out if industry_attributions has no broad-market rows
          with daily non-industry price data.
       2. Fetch all broad-market benchmark codes.
-      3. Fetch + compute the per-date HYPE/DRAIN rankings (pandas).
-      4. Truncate analysis.industry_hypes_and_drains, CSV-COPY the frame.
-      5. Upsert analysis.analysis_identity.
-      6. Sanity summary by (benchmark_code, period, weighting).
-      7. Seasonal (monthly) aggregation.
+      3. Mode: incremental detects missing dates (empty result + populated
+         table = up to date, early exit; empty table = full build).
+      4. Fetch + compute the per-date HYPE/DRAIN rankings (pandas);
+         incremental filters the frame to the missing dates.
+      5. Write: force truncates + CSV-COPY; incremental purges the target
+         dates' rows + CSV-COPY.
+      6. Upsert analysis.analysis_identity.
+      7. Sanity summary by (benchmark_code, period, weighting).
+      8. Seasonal (monthly) aggregation — all months (force) or the
+         affected months only (incremental).
 
     Args:
-      force: when True (default), truncate + recompute.
+      force: when True, truncate + full recompute. Default incremental.
     """
     t0 = time.time()
     logger.info("\n" + "=" * 78)
@@ -621,20 +675,92 @@ async def run_hypes_and_drains(
     logger.info(f"\n[hd2/6] Found {len(benchmark_codes)} broad-market benchmarks: "
           f"{', '.join(benchmark_codes)}")
 
-    # ---- Step 3: fetch raw frames + vectorized compute --------------
-    bench_df, attr_df, label_df = await _fetch_frames(conn, benchmark_codes)
-    logger.info(f"[hd3/6] Fetched bench={len(bench_df):,} rows, "
+    # ---- Step 3: mode + missing-date detection -----------------------
+    # table_coverage view: analysis/market_beta/hypes_and_drains/
+    # table_coverage; find_missing_dates view: .../find_missing_dates.
+    # An empty table forces the full build (the detection floors at the
+    # table's own MIN(date), which is NULL when empty). An empty missing
+    # set on a populated table is the steady-state early exit — the
+    # former always-full recompute was the daily run's dominant cost.
+    target_dates: list[datetime.date] = []
+    if force:
+        logger.info("\n[hd3/6] FORCE mode — full recompute (truncate + "
+              "rebuild from full history).")
+    else:
+        view_cov = render_sql_view(
+            "analysis/market_beta/hypes_and_drains/table_coverage",
+        )
+        cov = await conn.fetchrow(view_cov.sql)
+        if not cov or not cov["n_rows"]:
+            logger.info("\n[hd3/6] Table empty — full build (force).")
+            force = True
+        else:
+            view_missing = render_sql_view(
+                "analysis/market_beta/hypes_and_drains/find_missing_dates",
+            )
+            target_dates = [r["date"] for r in await conn.fetch(
+                view_missing.sql)]
+            if not target_dates:
+                logger.info(f"\n[hd3/6] Per-date rankings cover all "
+                      f"{cov['n_rows']:,} rows' source dates "
+                      f"({cov['min_date']} .. {cov['max_date']}) — "
+                      f"up to date; nothing to do.")
+                logger.info(f"\n  hypes_and_drains wall time: "
+                            f"{time.time() - t0:.1f}s")
+                return
+            logger.info(f"\n[hd3/6] Incremental mode — {len(target_dates)} "
+                  f"missing date(s) "
+                  f"({target_dates[0]} .. {target_dates[-1]})")
+
+    # ---- Step 4: fetch raw frames + vectorized compute --------------
+    if force:
+        fetch_floor = datetime.date(1900, 1, 1)
+    else:
+        # Warm-up floor: the 510td (max PERIODS 504 + margin) + 45d
+        # suspension slack before the earliest missing date — reuses the
+        # attributions step's incremental lookback resolution.
+        fetch_floor = await fetch_incremental_lookback_date(
+            conn, target_dates[0])
+        logger.info(f"        -> fetching source frames from {fetch_floor} "
+              f"(510td warm-up + suspension margin)")
+    bench_df, attr_df, label_df = await _fetch_frames(
+        conn, benchmark_codes, min_date=fetch_floor)
+    logger.info(f"[hd4/6] Fetched bench={len(bench_df):,} rows, "
           f"attr={len(attr_df):,} rows, labels={len(label_df):,} — "
           f"computing rankings (periods={list(PERIODS)})...")
     hd_df = _compute_hypes_and_drains(bench_df, attr_df, label_df)
     del bench_df, attr_df
     gc.collect()
+    if not force:
+        # Write boundary filter: the frames carry the 510td warm-up dates
+        # too; only the missing dates' rows are new (deterministic
+        # per-date compute — the warm-up dates' stored rows are already
+        # identical to what this pass would emit for them).
+        keep = np.array(sorted(target_dates),
+                        dtype="datetime64[s]").astype("datetime64[us]")
+        hd_df = hd_df[hd_df["date"].isin(keep)]
     logger.info(f"        -> {len(hd_df):,} ranked rows "
           f"({time.time() - t0:.1f}s)")
 
-    # ---- Step 4: truncate + COPY ------------------------------------
-    logger.info(f"\n[hd4/6] Truncating {TABLE} (full recompute)...")
-    await truncate_table_async(conn, TABLE)
+    # ---- Step 5: write (force: truncate+COPY / incr: purge+COPY) ----
+    if force:
+        logger.info(f"\n[hd5/6] Truncating {TABLE} (full recompute)...")
+        await truncate_table_async(conn, TABLE)
+    else:
+        # Purge-then-COPY on the target dates: idempotence insurance for
+        # a racing writer (a stopped-but-still-committing previous run
+        # could hold target-date rows; the COPY has no ON CONFLICT).
+        # The dates were pruned to genuinely missing ones, so the purge
+        # normally deletes 0 rows.
+        logger.info(f"\n[hd5/6] Incremental write — purging target "
+                    f"dates' rows in {TABLE}, then COPY-inserting the "
+                    f"slice...")
+        await chunked_purge_async(
+            conn, TABLE,
+            where_sql="date = ANY($1::date[])",
+            params=(sorted(target_dates),),
+            key_column="benchmark_code",
+        )
     if not hd_df.empty:
         n_inserted = await copy_frame_chunked_async(
             conn, TABLE, hd_df,
@@ -642,13 +768,13 @@ async def run_hypes_and_drains(
             numeric_cols=HD_FLOAT_COLUMNS + ["period_days", "rank"],
             round_to=None,  # pre-rounded per column in _compute_*
             date_cols=["date"],
-            label="[hd4/6]",
+            label="[hd5/6]",
         )
         logger.info(f"        inserted {n_inserted:,} rows")
     else:
         logger.info("        no rows to insert.")
 
-    # ---- Step 5: upsert analysis_identity ---------------------------
+    # ---- Step 6: upsert analysis_identity ---------------------------
     await upsert_analysis_identity(
         conn,
         name=ANALYSIS_NAME,
@@ -656,7 +782,7 @@ async def run_hypes_and_drains(
         description=ANALYSIS_DESCRIPTION,
     )
 
-    # ---- Step 6: sanity summary -------------------------------------
+    # ---- Step 7: sanity summary -------------------------------------
     # The SELECT lives in the sql view
     # analysis/market_beta/hypes_and_drains/summary_by_benchmark.
     view = render_sql_view(
@@ -675,7 +801,15 @@ async def run_hypes_and_drains(
     logger.info(f"\n  hypes_and_drains wall time: {time.time() - t0:.1f}s")
 
     # ---- Seasonal (monthly) aggregation -----------------------------
-    await run_hypes_and_drains_seasonal(conn, hd_df)
+    # force: full truncate + rebuild from the computed frame; incremental:
+    # month-scoped purge + re-aggregation of only the affected months
+    # (a month's peak depends on ALL its stored per-date rows, so the
+    # slice-only hd_df must never feed a whole-table seasonal rebuild).
+    if force:
+        await run_hypes_and_drains_seasonal(conn, hd_df)
+    else:
+        months = sorted({d.strftime("%Y-%m") for d in target_dates})
+        await run_hypes_and_drains_seasonal(conn, months=months)
 
 
 # ---------------------------------------------------------------------------
@@ -685,12 +819,15 @@ async def run_hypes_and_drains(
 async def run_hypes_and_drains_seasonal(
     conn,
     hd_df: pd.DataFrame | None = None,
+    *,
+    months: list[str] | None = None,
 ) -> None:
     """Aggregate per-date rankings into per-month (seasonal) rankings.
 
-    Truncates analysis.industry_hypes_seasonal, then inserts one row per
-    (season_qkey, benchmark_code, period_days, rank_side, rank) — 10 rows
-    per (month, benchmark, period): 5 HYPE + 5 DRAIN.
+    Full mode (default) truncates analysis.industry_hypes_seasonal and
+    inserts one row per (season_qkey, benchmark_code, period_days,
+    rank_side, rank) — 10 rows per (month, benchmark, period): 5 HYPE +
+    5 DRAIN.
 
     Ranking method:
       HYPE:  peak_metric_value = MAX(metric_value) in the month.
@@ -702,14 +839,46 @@ async def run_hypes_and_drains_seasonal(
     table. ``hd_df`` (the computed per-date frame) is passed by the
     pipeline to avoid re-reading the table; when omitted the stored rows
     are fetched instead (standalone re-runs).
+
+    Month-scoped incremental mode (``months``): re-aggregates ONLY the
+    listed 'YYYY-MM' season_qkeys — purges their seasonal rows, fetches
+    their stored per-date rows (ALL dates of each month: a month's peak
+    depends on all of them, never just the new dates), re-ranks and
+    re-inserts without truncating the table. ``hd_df`` is ignored in
+    this mode (the caller's slice holds only the new dates' rows).
     """
     t0 = time.time()
     logger.info("\n" + "=" * 78)
     logger.info("  INDUSTRY HYPES & DRAINS — SEASONAL (monthly) aggregation")
     logger.info("=" * 78)
 
-    # ---- Source rows (the pipeline frame, or the stored table) -------
-    if hd_df is None:
+    # ---- Source rows (pipeline frame / stored table / month slice) ----
+    truncate = True
+    if months is not None:
+        logger.info(f"\n[hd-s0/3] Incremental month-scoped "
+                    f"re-aggregation: {', '.join(months)}")
+        await chunked_purge_async(
+            conn, SEASONAL_TABLE,
+            where_sql="season_qkey = ANY($1::text[])",
+            params=(list(months),),
+            key_column="benchmark_code",
+        )
+        # seasonal_source_rows_months view:
+        # analysis/market_beta/hypes_and_drains/seasonal_source_rows_months.
+        view = render_sql_view(
+            "analysis/market_beta/hypes_and_drains/"
+            "seasonal_source_rows_months",
+            season_qkeys=list(months),
+        )
+        rows = await conn.fetch(view.sql, *view.params)
+        hd_df = pd.DataFrame(rec_cols(rows), columns=[
+            "date", "benchmark_code", "period_days", "weighting",
+            "rank_side", "industry_id", "industry_label", "metric_value",
+        ])
+        hd_df["date"] = epoch_col_to_dt64(hd_df["date"], index=hd_df.index)
+        hd_df["metric_value"] = hd_df["metric_value"].astype(float)
+        truncate = False
+    elif hd_df is None:
         # The SELECT lives in the sql view
         # analysis/market_beta/hypes_and_drains/seasonal_source_rows.
         view = render_sql_view(
@@ -728,9 +897,13 @@ async def run_hypes_and_drains_seasonal(
     del hd_df
     gc.collect()
 
-    # ---- Truncate + COPY ---------------------------------------------
-    logger.info(f"\n[hd-s1/3] Truncating {SEASONAL_TABLE}...")
-    await truncate_table_async(conn, SEASONAL_TABLE)
+    # ---- Truncate (full mode only) + COPY -----------------------------
+    if truncate:
+        logger.info(f"\n[hd-s1/3] Truncating {SEASONAL_TABLE}...")
+        await truncate_table_async(conn, SEASONAL_TABLE)
+    else:
+        logger.info(f"\n[hd-s1/3] Incremental — months purged; inserting "
+                    f"re-ranked rows...")
     if not seasonal_df.empty:
         logger.info("[hd-s2/3] Copying monthly rankings...")
         n_inserted = await copy_frame_chunked_async(

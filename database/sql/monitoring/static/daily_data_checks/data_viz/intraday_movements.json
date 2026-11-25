@@ -1,0 +1,4 @@
+{
+  "view": "server_cluster/maintainer/daily_check/data_viz/intraday_movements",
+  "notes": "data_viz UI source intraday_movements (stats.index_intraday_5min close IS NOT NULL, the UI latest-dates probe) vs the index bars frontier: the 5-minute bars stream in from the always-on exchange streams during the session — a table-wide max(date) behind the frontier (1-day slack) means the stream pollers died and the UI's intraday pages went stale."
+}

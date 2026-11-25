@@ -21,6 +21,7 @@ import {
   windowBlueColor,
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
+import { fmtDate, fmtMonth } from "@/shared/datetime";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import type { PairPctRatioRow } from "@shared/types";
 
@@ -140,7 +141,7 @@ export function buildPairRatioChartOption(
         const row = rows[idx0];
         if (!row) return "";
         const children: React.ReactNode[] = [
-          React.createElement(tooltipComponents.Header, null, row.date),
+          React.createElement(tooltipComponents.Header, null, fmtDate(row.date)),
           React.createElement(
             "div",
             { style: { marginTop: 2, opacity: 0.7 } },
@@ -189,7 +190,7 @@ export function buildPairRatioChartOption(
       axisLabel: {
         color: c.textColor,
         fontSize: 9,
-        formatter: (v: string) => v.slice(0, 7),
+        formatter: (v: string) => fmtMonth(v),
       },
       splitLine: { show: false },
     },

@@ -1,0 +1,13 @@
+{
+  "service": "downloads.futures.hkex.msci_a50",
+  "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
+  "is_resident": false,
+  "freq": "daily",
+  "priority": 170,
+  "schedule": "every A-share trading date, in the 16:00 nightly chain (downloads_daily step 27, late wave; the run refreshes the latest stored date after the HKEX report lands)",
+  "notes": "HKEX MSCI China A 50 Connect daily bars per contract month (Daily Market Report zips mcaf/mcafa) — writes the shared futures tables directly (family MCA%); the same-day report publishes ~21:18 HKT and the AH file ~03:15, so the run refreshes the latest stored date to complete its volume.",
+  "source_ref": "scripts/orchestration/downloads_daily.json",
+  "updated_at": "2026-11-24T00:00:00.000000+00:00"
+}

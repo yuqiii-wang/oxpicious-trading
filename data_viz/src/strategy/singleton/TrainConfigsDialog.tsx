@@ -35,6 +35,7 @@ import {
   type TrainInfoResponse,
   type TrainRunRow,
 } from "@/lib/api-client";
+import { fmtDate, fmtStamp } from "@/shared/datetime";
 import type { MaSpreadSecType } from "@shared/types";
 
 /** Shape of the 2026-11-19 train-gate block inside the run's report
@@ -187,8 +188,8 @@ function ConfigCard({
         </Typography>
         {chip && <Chip size="small" color={chipColor} label={chip} />}
         <Typography variant="caption" color="text.secondary" sx={{ fontFamily: "monospace" }}>
-          {config.start_date ?? "?"} → {config.end_date ?? "?"}
-          {config.updated_at ? ` · upd ${config.updated_at.slice(0, 16).replace("T", " ")}` : ""}
+          {config.start_date ? fmtDate(config.start_date) : "?"} → {config.end_date ? fmtDate(config.end_date) : "?"}
+          {config.updated_at ? ` · upd ${fmtStamp(config.updated_at.slice(0, 16))}` : ""}
         </Typography>
         <Typography variant="body2">{expanded ? "▾" : "▸"}</Typography>
       </Box>
@@ -286,7 +287,7 @@ export function TrainConfigsDialog(props: TrainConfigsDialogProps) {
             {data.trained.map((t, i) => (
               <ConfigCard
                 key={`${t.start_date}-${i}`}
-                label={`Trained ${t.start_date ?? ""}`}
+                label={`Trained ${t.start_date ? fmtDate(t.start_date) : ""}`}
                 chip={i === 0 ? "ACTIVE" : undefined}
                 chipColor="primary"
                 config={t}

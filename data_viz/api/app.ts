@@ -20,6 +20,7 @@ import compression from "compression";
 import { sendError, sendThrowable } from "./lib/http.js";
 import { recordCaution } from "./services/caution-log.service.js";
 import debtRoutes from "./routes/debt.js";
+import macroRoutes from "./routes/macro.js";
 import optionsRoutes from "./routes/options.js";
 import etfMarginRoutes from "./routes/etf-margin.js";
 import indexRoutes from "./routes/index.js";
@@ -52,6 +53,7 @@ app.use(express.urlencoded({ extended: true, limit: "10mb" }));
  * API Routes
  */
 app.use("/api/debt", debtRoutes);
+app.use("/api/macro", macroRoutes);
 app.use("/api/szse-options", optionsRoutes);
 app.use("/api/etf-margin", etfMarginRoutes);
 app.use("/api/index", indexRoutes);

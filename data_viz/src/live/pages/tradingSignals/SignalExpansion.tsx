@@ -38,6 +38,7 @@ import {
 } from "@/shared/components/signal-code-trend";
 import type { CodeTrendSecType } from "@/ui/OhlcChart";
 import { regimeAccentColor } from "@/shared/charts/regimeBands";
+import { fmtDate } from "@/shared/datetime";
 import { rowKey, TREND_SEC_TYPES } from "./signalsShared";
 
 export function SignalExpansion({
@@ -115,7 +116,7 @@ export function SignalExpansion({
     <Stack spacing={2} sx={{ p: 1.5 }}>
       {group.length > 1 && (
         <SignalRecordsTable
-          caption={`All signals at this tick · ${group[0].date} ${group[0].time} · ${group.length} config${group.length === 1 ? "" : "s"}`}
+          caption={`All signals at this tick · ${fmtDate(group[0].date)} ${group[0].time} · ${group.length} config${group.length === 1 ? "" : "s"}`}
           rows={group}
         />
       )}
@@ -202,7 +203,7 @@ function HistorySignalsTable({
               {rows.map((s) => (
                 <TableRow key={rowKey(s)}>
                   <TableCell sx={{ whiteSpace: "nowrap" }}>
-                    {s.date}
+                    {fmtDate(s.date)}
                     {s.is_day_close_trigger && (
                       <Tooltip
                         title="Day-close trigger — analysis run (15:00 close)"

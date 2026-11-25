@@ -21,6 +21,7 @@ import {
   Typography,
 } from "@mui/material";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
+import { fmtDate } from "@/shared/datetime";
 import type { RunHistoryItem } from "@shared/types";
 
 /** Compact config signature from a run's stored params (different
@@ -37,7 +38,7 @@ function configLabel(params: Record<string, unknown>): string {
   if (source && typeof source === "object") {
     parts.push(source.is_default
       ? "src default"
-      : `src trained ${String(source.start_date ?? "?").slice(0, 10)}`);
+      : `src trained ${fmtDate(source.start_date ?? "?")}`);
   }
   const comb = params.comb as Record<string, unknown> | undefined;
   if (comb && typeof comb === "object") {
@@ -103,7 +104,7 @@ export function RunHistorySelect(
         <MenuItem value="">
           <ListItemText
             primary={latest
-              ? `Latest — #${latest.seq_no} · ${latest.start_date ?? "?"} → ${latest.end_date ?? "∞"}`
+              ? `Latest — #${latest.seq_no} · ${latest.start_date ? fmtDate(latest.start_date) : "?"} → ${latest.end_date ? fmtDate(latest.end_date) : "∞"}`
               : "Latest run"}
             secondary={latest ? configLabel(latest.params) || "current run" : null}
           />
@@ -113,7 +114,7 @@ export function RunHistorySelect(
             <ListItemText
               primary={
                 <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                  <span>{`#${r.seq_no} · ${r.start_date ?? "?"} → ${r.end_date ?? "∞"}`}</span>
+                  <span>{`#${r.seq_no} · ${r.start_date ? fmtDate(r.start_date) : "?"} → ${r.end_date ? fmtDate(r.end_date) : "∞"}`}</span>
                   {r.is_active && <Chip size="small" color="primary" label="ACTIVE" />}
                   {r.status && r.status !== "completed"
                     && <Chip size="small" color="warning" label={r.status} />}

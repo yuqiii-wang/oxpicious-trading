@@ -783,8 +783,10 @@ class SzseEtfCompositionDownload(DownloadJob):
         _start = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else datetime.strptime(DEFAULT_START_DATE, "%Y-%m-%d").date()
         _end = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else date.today()
 
-        # Quarter-start trigger: on the 1st of a quarter-start month (Jan/Apr/Jul/Oct,
-        # or when forced), bypass the cache for the most recent trading day and stamp
+        # Quarter-start trigger: inside the quarter-start refresh window
+        # (Jan/Apr/Jul/Oct up to QUARTER_REFRESH_LAST_DAY — the tier fires one
+        # week after the quarter start; see downloads._common.monthly, or when
+        # forced), bypass the cache for the most recent trading day and stamp
         # files with today's date so a fresh quarterly snapshot flows to prod even if
         # the actual data is from the previous business day.
         today = date.today()

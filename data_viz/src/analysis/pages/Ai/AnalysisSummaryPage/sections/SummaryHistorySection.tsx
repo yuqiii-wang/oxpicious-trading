@@ -6,6 +6,7 @@ import DateEventStrip, {
   type DateEvent,
 } from "@/shared/components/date-events/DateEventStrip";
 import { MUTED_PALETTE } from "@/theme/chart-palette";
+import { fmtDate } from "@/shared/datetime";
 import { runLabel } from "../../ThreadGraph/runLabel";
 import type { AiSummaryRun } from "@/lib/api-client/aiSummary";
 import type { ScopeSubjectEntry } from "../../AnalysisItemsTree";
@@ -105,7 +106,7 @@ export default function SummaryHistorySection({
         <TextField
           select
           size="small"
-          label={`Runs on ${selectedRunDate}`}
+          label={`Runs on ${fmtDate(selectedRunDate)}`}
           value={selectedThreadId ?? ""}
           onChange={(e) => onThreadPick(e.target.value)}
           SelectProps={{

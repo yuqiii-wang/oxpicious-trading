@@ -38,7 +38,9 @@ min/max rises and falls" + "rises/drops before action date weighted
 2020-11-09 / 2024-02-23 / 2025-05-14 top examples): each surviving
 pivot is validated by its favorable excursion on EITHER side — a buy
 by the biggest rise within the next 20 traded rows or the biggest
-drop within the 60 rows before it, a sell by the biggest drop after /
+drop within the 20 rows before it (2026-11-21 user-directed "also
+only look back 20d not 60d" — every window in the grammar is 20,
+both directions), a sell by the biggest drop after /
 biggest rise before — each leg graded 0-100 on the linear ramp from
 CONF_NO_ACTION_MOVE (2%) to CONF_FULL_MOVE (10%) and combined as the
 WEIGHTED SUM 0.3 * back + 0.7 * fwd, with a zero weighted grade
@@ -66,33 +68,34 @@ SCOPE is index-only for now (config.ENABLED_SEC_TYPES; index = the 10
 study indices). --sec-type selects one enabled sec_type.
 
 Modes:
-  incremental (default): the engine detects the FULL confirmed
-    candidate set (extremes whose 2 right-side bars exist) and the run
-    writes only what changed — newly kept pivots plus each code's
-    REVISING TAIL: every decision at/after the engine's per-code tail
-    cutoff (~25 traded rows back — the future-reading horizons are
-    ALL 20 (user-directed "only 20d future look forward"), + the
-    action span)
-    is
-    deleted + rewritten, because a pivot emitted with an unrealized
-    forward window (confidence NULL) can re-grade — or drop out
-    entirely once its realized move misses the floor — as bars
-    arrive; earlier rows are immutable (first-run gap fill still
-    upserts any missing earlier decision). A WEEKLY GATE no-ops the
-    scheduled incremental run until the last build is
-    config.WEEKLY_GATE_DAYS calendar days old (the nightly chain
-    fires every trading day; the weekly tier's own guard makes
-    off-cadence fires no-ops — the builds_monthly month-guard
-    precedent).
-  --force: purge the sec_type's rows + full recompute (bypasses the
-    weekly gate).
-  --code CODE: recompute ALL rows for one security (bypasses the
-    weekly gate; the UI per-security rebuild path).
+  incremental (default): the engine re-decides each code's FULL
+    evaluable grid (every extreme whose 2 right-side bars exist) from
+    the full close history and the run writes only the DIFF against
+    the target — every decided row that is missing or CHANGED is
+    upserted, every row the engine no longer decides is deleted. The
+    daily bars keep the recent window alive: a pivot emitted with an
+    unrealized forward window (confidence NULL) re-grades — or drops
+    out entirely once its realized move misses the floor — as bars
+    arrive (the future-reading horizons are ALL 20, user-directed
+    "only 20d future look forward"), a frontier unit's placement can
+    UPGRADE, and the previous frontier action's swing-target legs
+    (ext_*, NULL until the opposite pivot is placed) close the moment
+    that pivot forms — at ANY depth of history. The scheduled run
+    updates DAILY (user-directed 2026-11-21 "the incremental daily
+    run should be able to update last 20d signals to add/remove
+    signals since local max/min are known" — the former
+    WEEKLY_GATE_DAYS gate + the analysis_weekly tier are retired;
+    with hindsight the local max/min are known once a bar has its 2
+    right-side confirmation bars, so there is nothing to wait for).
+  --force: purge the sec_type's rows + full recompute.
+  --code CODE: recompute ALL rows for one security (the UI
+    per-security rebuild path).
 """
 from _common.data_pipeline import bootstrap_runtime
 
 bootstrap_runtime()
 
+import datetime
 import time
 
 from _common.labels import SEC_TYPE_CODE
@@ -104,6 +107,8 @@ from _common.db_commons import (
     bulk_upsert_async,
     copy_frame_chunked_async,
 )
+from _common.sql_views import render_sql_view
+from _common.sql_writes import render_sql_write
 from analysis._common import sanitize_for_db_insert
 from analysis.oracle_signals import config
 from analysis.oracle_signals.data_definitions import (
@@ -139,7 +144,8 @@ ANALYSIS_DESCRIPTION = (
     "biggest drop before, sell: biggest drop after / biggest rise "
     "before — the forward window LOOKFORWARD_DAYS (20) traded rows "
     "(user-directed 2026-11-20 \"let future look only be 20d not "
-    "60d\"; the backward LOOKBACK_DAYS stays 60); each leg ramped "
+    "60d\"; the backward LOOKBACK_DAYS unified at 20, 2026-11-21 "
+    "user-directed \"also only look back 20d not 60d\"); each leg ramped "
     "linearly 2% floor / 10% full and combined as the weighted sum "
     "0.3 * pre-action leg + 0.7 * forward leg), with a zero weighted "
     "grade (both legs below the floor) the pivot emits nothing and a "
@@ -149,6 +155,30 @@ ANALYSIS_DESCRIPTION = (
     "the genuine-extreme gate on both sides, graded by the "
     "favorable-move validation)."
 )
+
+
+def _decision_tuple(
+    action: int, window_days: int | None, confidence: float | None,
+    ext_date: datetime.date | None, ext_offset: int | None,
+    ext_price: float | None,
+) -> tuple[int, int | None, float | None, datetime.date | None,
+           int | None, float | None]:
+    """One decision row's comparable value tuple — the DB-read shape
+    (asyncpg: SMALLINT → python int, DOUBLE PRECISION → python float,
+    DATE → datetime.date) and the sanitized-row shape normalized into
+    one form, so the incremental diff compares VALUES and not their
+    containers. Floats round to the write boundary's round_to=6
+    first: any real change moves a value by >= 1e-6, so the comparison
+    never misses one (a hairline rounding flap would only re-upsert
+    identical values — idempotent)."""
+    return (
+        int(action),
+        None if window_days is None else int(window_days),
+        None if confidence is None else round(float(confidence), 6),
+        ext_date,
+        None if ext_offset is None else int(ext_offset),
+        None if ext_price is None else round(float(ext_price), 6),
+    )
 
 
 class OracleAnalysis(DataAnalysis):
@@ -174,7 +204,8 @@ class OracleAnalysis(DataAnalysis):
             "mode": ("FORCE (scoped delete + full recompute)"
                      if self.args.force
                      else ("single-code recompute" if self.args.code
-                           else "incremental (missing decisions only)")),
+                           else "incremental (daily diff — add/remove/"
+                                "re-grade)")),
         }
 
     async def run(self) -> None:
@@ -211,16 +242,6 @@ class OracleAnalysis(DataAnalysis):
                         sec_type)
             return 0
         tag = f"oracle:{sec_type}"
-
-        # ---- weekly gate (the scheduled incremental path only) --------
-        if not self.args.force and not self.args.code:
-            days_idle = await self._days_since_last_build()
-            if days_idle is not None and days_idle < config.WEEKLY_GATE_DAYS:
-                logger.info(
-                    "[%s] weekly gate: last build %.1f day(s) ago "
-                    "(< %d) — nothing to do.", tag, days_idle,
-                    config.WEEKLY_GATE_DAYS)
-                return 0
 
         # ---- fetch + decide --------------------------------------------
         closes = await sources.fetch_daily_closes()
@@ -268,15 +289,13 @@ class OracleAnalysis(DataAnalysis):
                     self.conn, TABLE, rows,
                     key_columns=["sec_type", "code", "date"])
         else:
-            # incremental: each code's REVISING TAIL is date-based —
-            # every decision at/after the engine's tail cutoff (the
-            # pivots whose forward-60d window is still unrealized can
-            # re-grade or drop out entirely as bars arrive, and a
-            # frontier unit's placement can UPGRADE) is deleted +
-            # rewritten; earlier rows are immutable (first-run gap
-            # fill still upserts any missing earlier decision)
-            n = await self._write_incremental(sec_code, rows,
-                                              engine.tail_cutoffs)
+            # incremental: DIFF the target against the engine's full
+            # re-decision — the daily bars keep the recent window
+            # alive (frontier pivots re-grade as their forward windows
+            # realize, a frontier unit's placement can UPGRADE) and
+            # the diff carries each add/remove/re-grade at ANY depth
+            # of history
+            n = await self._write_incremental(sec_code, rows)
         logger.info("[%s] wrote %s row(s).", tag, f"{n:,}")
 
         # ---- sanity ------------------------------------------------------
@@ -293,16 +312,6 @@ class OracleAnalysis(DataAnalysis):
                 summary["last_date"])
         return n
 
-    async def _days_since_last_build(self) -> float | None:
-        """Calendar days since the target table's last build (max
-        created_at) — the weekly gate's clock. None = empty table."""
-        row = await self.conn.fetchrow(
-            f"SELECT EXTRACT(epoch FROM now() - MAX(created_at)) / 86400.0 "
-            f"AS days FROM {TABLE}")
-        if row is None or row["days"] is None:
-            return None
-        return float(row["days"])
-
     async def _delete_code_rows(self, sec_code: int, code: str) -> None:
         """Purge one code's rows (the single-code recompute's clear)."""
         from _common.db_commons import chunked_purge_async
@@ -315,48 +324,65 @@ class OracleAnalysis(DataAnalysis):
         logger.info("[oracle] purged %s row(s) for code %s.", f"{n:,}",
                     code)
 
-    async def _write_incremental(
-        self, sec_code: int, rows: list[dict],
-        tail_cutoffs: dict[str, object],
-    ) -> int:
-        """The incremental write: per code, DELETE + rewrite the
-        revisable TAIL — every decision at/after the engine's per-code
-        tail cutoff date (the pivots whose forward-60d window is still
-        unrealized can re-grade, or drop out entirely once the realized
-        move misses the no-action floor, and a frontier unit's
-        placement can UPGRADE) — and upsert the earlier decisions the
-        target still lacks (first-run gap fill). Everything before the
-        cutoff is immutable — the weekly write stays small without ever
-        leaving a stale or wrongly-graded action row. Codes with no
-        kept rows this run still get their tail delete (a fully-omitted
-        tail must not linger)."""
-        have = await self.conn.fetch(
-            f"SELECT code, date FROM {TABLE} WHERE sec_type = $1",
-            sec_code)
-        existing = {(r["code"], r["date"]) for r in have}
+    async def _write_incremental(self, sec_code: int,
+                                 rows: list[dict]) -> int:
+        """The incremental write: DIFF the target against the engine's
+        full re-decision. The engine re-decides every code's whole
+        evaluable grid from the full close history each run, so the
+        table mirrors that decision set exactly: every decided row
+        that is missing or CHANGED is upserted, every row the engine
+        no longer decides is deleted. The daily bars keep the recent
+        window alive — a frontier pivot re-grades (confidence NULL →
+        graded, or omitted once its realized move misses the floor), a
+        frontier unit's placement upgrades, a tail row drops — and the
+        diff carries each correction at ANY depth of history: the
+        previous frontier action's swing-target legs (ext_*, NULL
+        until the opposite pivot is placed) close the moment that
+        pivot is placed, however far back the action sits. Only codes
+        the engine decided are touched — rows at codes outside this
+        run's universe stay as they are."""
+        view = render_sql_view(
+            "analysis/oracle_signals/existing_decisions",
+            sec_type=sec_code)
+        have = await self.conn.fetch(view.sql, *view.params)
+        existing = {(r["code"], r["date"]): r for r in have}
 
-        by_code: dict[str, list[dict]] = {}
+        decided: dict[tuple[str, datetime.date], dict] = {}
         for r in rows:
-            by_code.setdefault(r["code"], []).append(r)
+            decided[(r["code"], r["date"])] = r
+        decided_codes = {code for code, _ in decided}
+
+        writes = [
+            r for key, r in decided.items()
+            if (old := existing.get(key)) is None
+            or _decision_tuple(
+                old["action"], old["window_days"], old["confidence"],
+                old["ext_date"], old["ext_offset"], old["ext_price"])
+            != _decision_tuple(
+                r["action"], r["window_days"], r["confidence"],
+                r["ext_date"], r["ext_offset"], r["ext_price"])
+        ]
+        deletes: dict[str, list[datetime.date]] = {}
+        for key in existing:
+            if key[0] in decided_codes and key not in decided:
+                deletes.setdefault(key[0], []).append(key[1])
 
         n = 0
-        for code, cutoff in tail_cutoffs.items():
-            decided = sorted(by_code.get(code, []),
-                             key=lambda r: r["date"])
-            await self.conn.execute(
-                f"DELETE FROM {TABLE} "
-                f"WHERE sec_type = $1 AND code = $2 AND date >= $3",
-                sec_code, code, cutoff)
-            tail = [r for r in decided if r["date"] >= cutoff]
-            gap = [r for r in decided
-                   if r["date"] < cutoff
-                   and (r["code"], r["date"]) not in existing]
-            write = tail + gap
-            if write:
-                n += await bulk_upsert_async(
-                    self.conn, TABLE, write,
-                    key_columns=["sec_type", "code", "date"])
-        return n
+        if writes:
+            n += await bulk_upsert_async(
+                self.conn, TABLE, writes,
+                key_columns=["sec_type", "code", "date"])
+        n_deleted = 0
+        for code, dates in sorted(deletes.items()):
+            write = render_sql_write(
+                "analysis/oracle_signals/delete_code_dates",
+                sec_code, code, dates)
+            status = await self.conn.execute(write.sql, *write.params)
+            n_deleted += int(status.split()[-1])
+        if writes or n_deleted:
+            logger.info("[oracle] incremental diff: %s upsert(s), %s "
+                        "delete(s).", f"{n:,}", f"{n_deleted:,}")
+        return n + n_deleted
 
 
 def main() -> None:

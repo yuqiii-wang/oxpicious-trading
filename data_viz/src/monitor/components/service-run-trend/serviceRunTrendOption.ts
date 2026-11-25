@@ -11,6 +11,7 @@
 import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
 import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
+import { fmtDate } from "@/shared/datetime";
 import {
   axisColors,
   commonDataZoom,
@@ -40,7 +41,7 @@ export function buildServiceRunTrendOption(
         const runs = counts[idx] ?? 0;
         const abnormal = abnormalCounts[idx] ?? 0;
         return [
-          `<b>${dates[idx]}</b>`,
+          `<b>${fmtDate(dates[idx])}</b>`,
           `${runs} run${runs === 1 ? "" : "s"}`,
           abnormal > 0 ? `${abnormal} abnormal` : null,
         ]
@@ -80,7 +81,7 @@ export function buildServiceRunTrendOption(
                 lineStyle: { color: PALETTE_HI, type: "dashed", width: 1.2 },
                 label: {
                   color: c.textColor,
-                  formatter: selectedDate,
+                  formatter: fmtDate(selectedDate),
                   fontSize: 9,
                 },
                 data: [{ xAxis: selectedDate }],

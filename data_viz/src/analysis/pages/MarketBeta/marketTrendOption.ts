@@ -18,6 +18,7 @@ import {
   commonDataZoom,
 } from "@/theme/chart-palette";
 import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
+import { fmtDate, fmtMonth } from "@/shared/datetime";
 import { fmtNum } from "@/lib/series";
 import React from "react";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
@@ -193,7 +194,7 @@ export function buildMarketTrendOption(
         const total = totalsByDate[idx0] ?? 0;
         const children: React.ReactNode[] = [];
         children.push(
-          React.createElement(tooltipComponents.Header, null, dateStr)
+          React.createElement(tooltipComponents.Header, null, fmtDate(dateStr))
         );
         if (showAmt && total > 0) {
           children.push(
@@ -260,7 +261,7 @@ export function buildMarketTrendOption(
         fontSize: 9,
         interval: (_idx: number, value: string) =>
           displayMonths.has(value.slice(0, 7)) && firstDateOfMonth.has(value),
-        formatter: (v: string) => v.slice(0, 7),
+        formatter: (v: string) => fmtMonth(v),
       },
       splitLine: { show: false },
     },

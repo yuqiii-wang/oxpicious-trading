@@ -164,6 +164,11 @@ async function segmentViaHttp(
 
 const SEGMENTER_BASE_URL = "http://127.0.0.1:8767";
 
+/** The known-dummy credential — the segment route verifies the Bearer
+ *  like every local-model-host serving route (the host checks the
+ *  header's presence, not the secret). */
+const SEGMENTER_BEARER = "lmh-dummy";
+
 /** One POST /v1/tokenization/segment — {texts} in, {words} out
  *  (server_cluster/llm, the word-segmenter-zh backend). */
 async function segmentRequest(texts: string[]): Promise<unknown> {
@@ -174,7 +179,10 @@ async function segmentRequest(texts: string[]): Promise<unknown> {
       `${SEGMENTER_BASE_URL}/v1/tokenization/segment`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${SEGMENTER_BEARER}`,
+        },
         body: JSON.stringify({ texts }),
         signal: controller.signal,
       },

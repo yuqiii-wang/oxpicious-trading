@@ -113,6 +113,7 @@ class BaseOnlineSearchProvider(BaseLlmProvider):
         request_id: Optional[str] = None,
         created: Optional[datetime.datetime] = None,
         context: Optional[str] = None,
+        anchor_date: Optional[datetime.date] = None,
     ) -> SearchSummary:
         """Compose summarization over PRE-FETCHED hits (no search here).
 
@@ -123,13 +124,22 @@ class BaseOnlineSearchProvider(BaseLlmProvider):
         text anchored between the date and the search results (the AI
         Ask chart adviser passes its plot-info block there).
 
+        ``anchor_date`` is the date the QUESTION is about, for asks about
+        a PAST time point (the coverage backfill's why-did-X-move-on-D
+        questions): the whole-text date scan anchors on it instead of
+        today — a reference whose entire text only mentions years older
+        than the anchor year is the stale one — and the user message
+        pins the target date with an explicit no-post-dated-sources
+        instruction. None (default) keeps the exact today-anchored
+        behavior.
+
         The WHOLE-TEXT DATE SCAN double check rides every call: a
         reference whose entire text (title + snippet) only mentions
-        years older than today's year — the undated snippet describing
-        2023 while the question is about 2026 — is named in a caution
-        block appended to the user message (the model must double check
-        it before citing it for current state); the flagged tags ride
-        back on the summary as ``stale_text_refs``."""
+        years older than the scan anchor's year — the undated snippet
+        describing 2023 while the question is about 2026 — is named in a
+        caution block appended to the user message (the model must
+        double check it before citing it for the asked state); the
+        flagged tags ride back on the summary as ``stale_text_refs``."""
         model = model or getattr(self, "DEFAULT_MODEL", None)
         if not model:
             raise OnlineSearchError(
@@ -139,23 +149,27 @@ class BaseOnlineSearchProvider(BaseLlmProvider):
                 f"{self.name}: no references to summarize for {query!r}")
         references = format_references(hits)
         today = datetime.datetime.now(SHANGHAI_TZ)
+        scan_anchor = anchor_date or today.date()
         scanner = DateScanner()
         stale_refs = [
             (h.refer, scan.sample_years())
             for h in hits
             if (scan := scanner.scan(
                 f"{h.title}\n{h.content or ''}")).is_all_older(
-                today.date())
+                scan_anchor)
         ]
-        check_block = stale_refs_check_block(stale_refs, today.date())
+        check_block = stale_refs_check_block(
+            stale_refs, today.date(), anchor=scan_anchor)
         if stale_refs:
             logger.info("    [%s] whole-text date scan: %d/%d reference(s) "
                         "only mention pre-%d years — double-check block "
                         "appended (%s)", self.name, len(stale_refs),
-                        len(hits), today.year,
+                        len(hits), scan_anchor.year,
                         ", ".join(t for t, _ in stale_refs))
         user_msg = (
             f"今天的日期是{today:%Y-%m-%d}。\n\n"
+            + (f"问题所问的目标日期是{anchor_date:%Y-%m-%d}；引用来源的发布"
+               f"时间不得晚于该日期。\n\n" if anchor_date else "")
             + (f"{context}\n\n" if context else "")
             + f"网络搜索结果：\n\n{references}\n\n"
             + (f"{check_block}\n\n" if check_block else "")

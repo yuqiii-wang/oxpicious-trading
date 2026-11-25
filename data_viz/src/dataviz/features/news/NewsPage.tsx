@@ -5,7 +5,12 @@
  *   • SecNavShell — header (title + Refresh) + loading/error + page content.
  *     The sec_type toggle and code search are OFF: news is not a security
  *     type (the old header keyword bar moved into the question bar's 本地).
- *   • navSlot — source filter chips + the shared SecClassificationNav in its
+ *   • navSlot — provider filter chips (DB-driven: every DISTINCT
+ *     text.news.source, ordered by the curated static.news_prestige rank
+ *     then count — the pipeline providers first, the LLM-query reference
+ *     downloads' media names after; collapsed to the top chips with a
+ *     更多 expander, never all ~570 at once) + the shared
+ *     SecClassificationNav in its
  *     full TWO-COLUMN form (same as the security pages): LEFT sector →
  *     industry, RIGHT strategy → theme (BROAD/STRAT macro themes live here),
  *     mutually exclusive, no exchange row, no L3 security chips. Directly
@@ -31,14 +36,16 @@
  * and source apply to both (and to the nav tree counts themselves).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Box, Chip, Stack, Typography } from "@mui/material";
+import { Box, Chip, Stack, Tooltip, Typography } from "@mui/material";
 import { SecNavShell, useSecNav } from "@/shared/components/sec-nav";
 import SecClassificationNav from "@/shared/components/sec-classification/SecClassificationNav";
 import DateEventStrip, { type DateEvent } from "@/shared/components/date-events/DateEventStrip";
+import { fmtDate } from "@/shared/datetime";
 import {
   fetchNewsAuthors,
   fetchNewsCalendar,
   fetchNewsItems,
+  fetchNewsProviders,
   fetchNewsStrategyThemes,
   fetchNewsThemes,
   fetchNewsSearchTokens,
@@ -57,8 +64,31 @@ import { CodeTrendChart } from "@/ui/OhlcChart";
 import QuestionSearchBar, { QUESTION_SEARCH_ENABLED_SOURCES } from "./QuestionSearchBar";
 import NewsSearchResults from "./NewsSearchResults";
 
-/** Sources produced by downloads.macro.* (mirrors builds/text/loaders.py). */
+/** Pipeline providers produced by downloads.macro.* (mirrors
+ *  builds/text/loaders.py) — the FALLBACK chip list for when the
+ *  /api/news/providers fetch fails. The DB-driven list is the source of
+ *  truth (every DISTINCT text.news.source, prestige-ordered); this also
+ *  keeps the ONLINE-search enablement check decoupled from the fetch. */
 const NEWS_SOURCES = ["gov", "ndrc", "pboc_lpr", "pboc_omo", "pboc_oma", "zhihu"] as const;
+
+/** Chips visible before the 更多 expander — never render the ~570
+ *  providers / 60 authors at once. */
+const PROVIDER_COLLAPSED_COUNT = 12;
+const AUTHOR_COLLAPSED_COUNT = 8;
+
+/** One chip row entry (provider or author) — prestige is the
+ *  static.news_prestige payload (rank/tier/label) when curated, else null. */
+interface NewsOriginChip {
+  name: string;
+  count: number;
+  prestige: Record<string, unknown> | null;
+}
+
+/** The chip tooltip's prestige display label (prestige.label when it is a
+ *  string — the curated Chinese tier label), else null. */
+function prestigeLabel(prestige: Record<string, unknown> | null): string | null {
+  return prestige && typeof prestige.label === "string" ? prestige.label : null;
+}
 
 /** Default scope per product spec: zhihu answers for the 上证 broad theme.
  *  Applied once when the strategy tree first loads (user can change it). */
@@ -259,16 +289,47 @@ export default function NewsPage() {
     [scopeKey, searchTerm, searchMode, source, author, bigMvOnly], // eslint-disable-line react-hooks/exhaustive-deps -- scopeKey is the canonical scope identity
   );
 
-  // Scope/search/source changes reset the day pick + pagination + author pick
-  // (the author list itself is scoped by everything except author).
+  // Scope/search/provider changes reset the day pick + pagination + author
+  // pick + the chip expanders (the provider/author lists themselves are
+  // scoped by everything except their own pick).
   useEffect(() => {
     setSelectedDate(null);
     setPage(1);
     setAuthor(null);
+    setProvidersExpanded(false);
+    setAuthorsExpanded(false);
   }, [scopeKey, searchTerm, source, bigMvOnly]);
 
-  // Top authors for the filter chips (scoped by everything except author).
-  const [authors, setAuthors] = useState<Array<{ author: string; count: number }>>([]);
+  // Provider chips — DB-driven: every DISTINCT text.news.source with its
+  // count, ordered by the curated static.news_prestige rank then count
+  // (the pipeline six are just the curated head; the LLM-query reference
+  // downloads' media names rank after). Scoped by everything EXCEPT the
+  // source itself; a fetch failure falls back to the pipeline list.
+  const [providers, setProviders] = useState<NewsOriginChip[]>([]);
+  const [providersExpanded, setProvidersExpanded] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetchNewsProviders({
+      ...scope,
+      search: searchTerm,
+      search_mode: searchTerm ? searchMode : null,
+      author,
+    })
+      .then((p) => {
+        if (!cancelled) {
+          setProviders(p.map((d) => ({ name: d.provider, count: d.count, prestige: d.prestige })));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setProviders([]);
+      });
+    return () => { cancelled = true; };
+  }, [scopeKey, searchTerm, searchMode, author]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Top authors for the filter chips (scoped by everything except author),
+  // prestige-ordered the same way as the providers.
+  const [authors, setAuthors] = useState<NewsOriginChip[]>([]);
+  const [authorsExpanded, setAuthorsExpanded] = useState(false);
   useEffect(() => {
     let cancelled = false;
     fetchNewsAuthors({
@@ -278,7 +339,9 @@ export default function NewsPage() {
       source,
     })
       .then((a) => {
-        if (!cancelled) setAuthors(a);
+        if (!cancelled) {
+          setAuthors(a.map((d) => ({ name: d.author, count: d.count, prestige: d.prestige })));
+        }
       })
       .catch(() => {
         if (!cancelled) setAuthors([]);
@@ -351,12 +414,70 @@ export default function NewsPage() {
       ? nav.headerLabel
       : "全部行业";
 
+  // Chip rows: providers from the DB (fetch failure → the pipeline six,
+  // no counts), authors from the DB; each row collapses to its top N
+  // chips with the ACTIVE chip swapped in when it falls outside the head
+  // — `hidden` is ALWAYS the tail beyond the head: collapsed it only
+  // feeds the 更多 (N) expander label, expanded the scrollable cloud
+  // below renders it.
+  const providerChips: NewsOriginChip[] =
+    providers.length > 0
+      ? providers
+      : NEWS_SOURCES.map((s) => ({ name: s, count: 0, prestige: null }));
+  const authorChips: NewsOriginChip[] = authors;
+  const collapseChips = (
+    chips: NewsOriginChip[],
+    collapsedCount: number,
+    active: string | null,
+  ): { visible: NewsOriginChip[]; hidden: NewsOriginChip[] } => {
+    const head = chips.slice(0, collapsedCount);
+    if (active && !head.some((c) => c.name === active)) {
+      const activeChip = chips.find((c) => c.name === active);
+      if (activeChip) head[head.length - 1] = activeChip;
+    }
+    return { visible: head, hidden: chips.slice(collapsedCount) };
+  };
+  const providerSplit = collapseChips(providerChips, PROVIDER_COLLAPSED_COUNT, source);
+  const authorSplit = collapseChips(authorChips, AUTHOR_COLLAPSED_COUNT, author);
+
+  /** One provider/author chip: label carries the article count; the
+   *  tooltip shows the curated prestige label when one exists. */
+  const renderOriginChip = (
+    chip: NewsOriginChip,
+    active: string | null,
+    onPick: (name: string | null) => void,
+    searchEnabled: boolean,
+  ) => {
+    const tier = prestigeLabel(chip.prestige);
+    return (
+      <Tooltip key={chip.name} title={tier ?? chip.name} disableHoverListener={!tier}>
+        <Chip
+          label={chip.count > 0 ? `${chip.name} (${chip.count})` : chip.name}
+          size="small"
+          color={active === chip.name ? "primary" : "default"}
+          variant={active === chip.name ? "filled" : "outlined"}
+          onClick={() => onPick(active === chip.name ? null : chip.name)}
+          disabled={(onlineHover || onlineActive) && !searchEnabled}
+          sx={{
+            fontSize: "0.7rem",
+            "& .MuiChip-label": {
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              maxWidth: 220,
+            },
+          }}
+        />
+      </Tooltip>
+    );
+  };
+
   return (
     <SecNavShell
       nav={nav}
       title="News"
       backPath="/dataviz"
-      subtitle={`${scopeLabel}${selectedDate ? ` · ${selectedDate}` : " · 全部日期"} — 点选日期圆点筛选当日新闻`}
+      subtitle={`${scopeLabel}${selectedDate ? ` · ${fmtDate(selectedDate)}` : " · 全部日期"} — 点选日期圆点筛选当日新闻`}
       showSearch={false}
       // Replace the shell's default security nav with the news variant:
       // full two-column classification (sector/industry vs strategy/theme —
@@ -401,15 +522,23 @@ export default function NewsPage() {
             localEmpty={localEmpty}
             active={searchResult !== null}
           />
-          {/* Source + Author rows — directly below the Industry row, same
+          {/* Provider + Author rows — directly below the Industry row, same
               chip style as the classification rows. Both narrow the nav
               counts, the date strip and the list — and travel with the
-              question search request. Sources without question-search
-              support render disabled only while the Online button is
-              hovered or an online search is active — never on typing. */}
+              question search request. Providers come from the DB (every
+              DISTINCT text.news.source, prestige-ordered by
+              static.news_prestige — the pipeline providers first, the
+              LLM-query reference downloads' media names after); both rows
+              collapse to their top chips with a 更多 expander (the active
+              chip always stays visible; expanding reveals the rest in a
+              scrollable cloud — never the whole ~570-provider list at
+              once). Chips without question-search support render disabled
+              only while the Online button is hovered or an online search
+              is active — never on typing. A chip's tooltip shows its
+              curated prestige label (政府官网, 财经媒体, …). */}
           <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap", gap: 0.5, mb: 0.75 }}>
             <Typography variant="subtitle2" sx={{ fontWeight: 600, minWidth: 56, fontSize: "0.75rem" }}>
-              Source
+              Provider
             </Typography>
             <Chip
               label="All"
@@ -419,20 +548,28 @@ export default function NewsPage() {
               onClick={() => setSource(null)}
               sx={{ fontSize: "0.7rem" }}
             />
-            {NEWS_SOURCES.map((s) => (
+            {providerSplit.visible.map((c) =>
+              renderOriginChip(c, source, setSource, QUESTION_SEARCH_ENABLED_SOURCES.includes(c.name)),
+            )}
+            {providerSplit.hidden.length > 0 && (
               <Chip
-                key={s}
-                label={s}
+                label={providersExpanded ? "收起 ▴" : `更多 (${providerSplit.hidden.length})`}
                 size="small"
-                color={source === s ? "primary" : "default"}
-                variant={source === s ? "filled" : "outlined"}
-                onClick={() => setSource(source === s ? null : s)}
-                disabled={(onlineHover || onlineActive) && !QUESTION_SEARCH_ENABLED_SOURCES.includes(s)}
+                color="default"
+                variant="outlined"
+                onClick={() => setProvidersExpanded((v) => !v)}
                 sx={{ fontSize: "0.7rem" }}
               />
-            ))}
+            )}
           </Stack>
-          {authors.length > 0 && (
+          {providersExpanded && providerSplit.hidden.length > 0 && (
+            <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, maxHeight: 180, overflowY: "auto", mb: 0.75, pl: "64px" }}>
+              {providerSplit.hidden.map((c) =>
+                renderOriginChip(c, source, setSource, QUESTION_SEARCH_ENABLED_SOURCES.includes(c.name)),
+              )}
+            </Box>
+          )}
+          {authorChips.length > 0 && (
             <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap", gap: 0.5, mb: 0.75 }}>
               <Typography variant="subtitle2" sx={{ fontWeight: 600, minWidth: 56, fontSize: "0.75rem" }}>
                 Author
@@ -445,29 +582,26 @@ export default function NewsPage() {
                 onClick={() => setAuthor(null)}
                 sx={{ fontSize: "0.7rem" }}
               />
-              {authors.map((a) => (
+              {authorSplit.visible.map((c) => renderOriginChip(c, author, setAuthor, false))}
+              {authorSplit.hidden.length > 0 && (
                 <Chip
-                  key={a.author}
-                  label={`${a.author} (${a.count})`}
+                  label={authorsExpanded ? "收起 ▴" : `更多 (${authorSplit.hidden.length})`}
                   size="small"
-                  color={author === a.author ? "primary" : "default"}
-                  variant={author === a.author ? "filled" : "outlined"}
-                  onClick={() => setAuthor(author === a.author ? null : a.author)}
-                  sx={{
-                    fontSize: "0.7rem",
-                    "& .MuiChip-label": {
-                      whiteSpace: "nowrap",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      maxWidth: 220,
-                    },
-                  }}
+                  color="default"
+                  variant="outlined"
+                  onClick={() => setAuthorsExpanded((v) => !v)}
+                  sx={{ fontSize: "0.7rem" }}
                 />
-              ))}
+              )}
             </Stack>
           )}
+          {authorsExpanded && authorSplit.hidden.length > 0 && (
+            <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, maxHeight: 180, overflowY: "auto", mb: 0.75, pl: "64px" }}>
+              {authorSplit.hidden.map((c) => renderOriginChip(c, author, setAuthor, false))}
+            </Box>
+          )}
           {/* Big-move filter — single toggle chip in its own Filter row (same
-              chip idiom as Source/Author). ON keeps only articles whose
+              chip idiom as Provider/Author). ON keeps only articles whose
               mapped industry had a big market move that day
               (is_big_fluctuation); co-filters the date strip AND the list. */}
           <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", mb: 0.75 }}>
@@ -540,7 +674,7 @@ export default function NewsPage() {
           onPageChange={setPage}
           loading={itemsLoading}
           error={itemsError}
-          scopeLabel={`${scopeLabel}${selectedDate ? ` · ${selectedDate}` : ""}${searchTerm ? ` · “${searchTerm}”` : ""}${source ? ` · ${source}` : ""}${author ? ` · ${author}` : ""}${bigMvOnly ? " · On Big Fluctuations" : ""}`}
+          scopeLabel={`${scopeLabel}${selectedDate ? ` · ${fmtDate(selectedDate)}` : ""}${searchTerm ? ` · “${searchTerm}”` : ""}${source ? ` · ${source}` : ""}${author ? ` · ${author}` : ""}${bigMvOnly ? " · On Big Fluctuations" : ""}`}
         />
       )}
     </SecNavShell>

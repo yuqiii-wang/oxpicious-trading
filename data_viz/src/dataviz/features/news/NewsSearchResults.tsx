@@ -9,7 +9,7 @@
 import { Alert, Box, Chip, Typography } from "@mui/material";
 import { OpenInNew } from "@mui/icons-material";
 import type { NewsSearchItem, NewsSearchResponse } from "@shared/types";
-import { shanghaiDate } from "@/shared/datetime";
+import { shanghaiDate, fmtDate } from "@/shared/datetime";
 
 /** EditTime (unix seconds, string) → YYYY-MM-DD in Asia/Shanghai. */
 function editTimeDay(editTime: string | null | undefined): string {
@@ -78,7 +78,7 @@ export default function NewsSearchResults({ result, error, onDismiss }: Props) {
             }}
           >
             <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap" }}>
-              <Chip label={editTimeDay(it.EditTime)} size="small" variant="outlined" sx={{ fontSize: "0.7rem" }} />
+              <Chip label={fmtDate(editTimeDay(it.EditTime))} size="small" variant="outlined" sx={{ fontSize: "0.7rem" }} />
               {it.AuthorName && (
                 <Chip label={it.AuthorName} size="small" color="secondary" variant="outlined"
                   sx={{ fontSize: "0.7rem", maxWidth: 220 }} />

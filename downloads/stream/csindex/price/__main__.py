@@ -34,7 +34,8 @@ Loop cadence: 30 minutes. Each loop:
 Anti-bot: reuses ``AntiBotProxy`` paced by the service's
 external_request_config JSON row (rt=page: sleep 20s jittered) per request —
 same pattern as the SSE/SZSE streamers and the existing
-``downloads.index.csindex.quote`` module.
+``downloads.index.csindex.price`` module (the former quote
+package).
 
 Note: CSV backfill (recovering missed data from archived CSV files) is
 handled by the download/archive modules, NOT by this streaming module.
@@ -79,7 +80,7 @@ from downloads._common import (
     poll_interval_sec_for,
     sleep_sec_for,
 )
-from downloads.index.csindex.quote import CSINDEX_HEADERS
+from downloads.index.csindex.price import CSINDEX_HEADERS
 from _common.db_commons import get_db_connection
 from _common.importance import (
     fetch_importance_ranks_or_empty,

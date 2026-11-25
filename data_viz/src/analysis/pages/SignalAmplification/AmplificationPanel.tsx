@@ -19,6 +19,7 @@ import {
   type SignalAmplificationRecord,
   type SignalAmplificationRule,
 } from "@/lib/api-client";
+import { fmtDate, fmtStamp } from "@/shared/datetime";
 import {
   AMPLIFIERS,
   AMPLIFIER_TYPES,
@@ -192,7 +193,7 @@ export default function AmplificationPanel({
           label: "Built",
           align: "right",
           width: 130,
-          render: (r) => r.created_at,
+          render: (r) => fmtStamp(r.created_at),
         },
       ],
       [],
@@ -202,7 +203,7 @@ export default function AmplificationPanel({
   const recordColumns: ExpandedTableColumn<SignalAmplificationRecord>[] =
     useMemo(
       () => [
-        { key: "date", label: "Date", width: 110, render: (r) => r.date },
+        { key: "date", label: "Date", width: 110, render: (r) => fmtDate(r.date) },
         {
           key: "type",
           label: "Type",

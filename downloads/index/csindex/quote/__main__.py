@@ -1,91 +1,18 @@
-"""Entry point: ``python -m downloads.index.csindex.quote``.
+"""COMPAT SHIM (2026-11-23) — ``downloads.index.csindex.quote`` split
+into ``downloads.index.csindex.price`` (the daily sweep) and
+``downloads.index.csindex.pe`` (the weekly PE fetch, own weekly gate).
 
-Default (no args): nightly sweep — from2020 (cached-skip) + 1m window +
-intraday per code. The PE fetch + history merge are SKIPPED by default
-(the recent rows reach the DB via SSE trend / SZSE / CNINDEX / BSE
-snapshots in builds CSINDEX DAILY's source ladder; the history CSVs are
-only the deep-history fallback).
-
---pe-only: the nightly PE step — per code ONLY the incremental PE
-fetch + the history-CSV merge that folds it in (no from2020/1m/
-intraday/mop-up work). Runs as its OWN orchestration step so the wave
-scheduler holds it parallel with unrelated-src steps (same src_host
-keeps it serial vs this sweep — the two never share a wave).
-
---refresh-history: also run the PE fetch + history merge (the slow
-full-table exports) — the one-time convergence for caches left behind
-by skipped runs, or to re-capture restated CSIndex data.
-
-The entry point is the :class:`CsindexQuoteDownload` DownloadJob — the
-former ``__main__`` body is ``run()`` and the argparse setup moved into
-``add_arguments`` (byte-identical help); the fetch cycle lives on the
-:class:`CsindexQuoteRunner` in ``runner.py``.
+This shim exists ONLY so a run already queued under the old script name
+(the nightly pass in flight when the split landed — its step list was
+fixed at tier start) still executes. It forwards to the price entry
+verbatim, which still accepts every old argument (``--pe-only``
+included). Nothing in the tier files, the UI or the config trees
+references this path anymore — DELETE once the pass that carried the
+old step list has ended.
 """
 from __future__ import annotations
 
-
-import argparse
-
-from downloads._common import DownloadJob
-
-from .runner import CsindexQuoteRunner
-from ._config import SERVICE
-
-from _common.log_setup import setup_logging  # noqa: E402
-logger = setup_logging("quote")
-
-
-class CsindexQuoteDownload(DownloadJob):
-    """DownloadJob for the CSIndex quote fetch cycle — the former
-    ``__main__`` body is ``run()`` (verbatim argument mapping); the fetch
-    logic is the :class:`CsindexQuoteRunner` method."""
-
-    description = __doc__
-
-    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
-        parser.add_argument(
-            "--ensure-prev-trading-day",
-            action="store_true",
-            help=(
-                "Targeted mode: only fetch codes whose local CSVs lack the "
-                "previous trading day row (fast local check per code)."
-            ),
-        )
-        parser.add_argument(
-            "--pe-only",
-            action="store_true",
-            help=(
-                "Nightly PE step mode: per code only the incremental PE "
-                "fetch + history-CSV merge (no from2020/1m/intraday) — "
-                "the PE series is the one csindex output the nightly "
-                "chain needs early."
-            ),
-        )
-        parser.add_argument(
-            "--refresh-history",
-            action="store_true",
-            help=(
-                "Also run the PE fetch + history merge (the slow full-table "
-                "exports). Default: skipped — recent rows reach the DB via "
-                "SSE trend / SZSE / CNINDEX / BSE snapshots."
-            ),
-        )
-        parser.add_argument(
-            "--sleep-sec", type=float, default=None,
-            help="Sleep seconds between requests "
-                 f"(default: external_request_config JSON for {SERVICE})",
-        )
-
-    def run(self) -> None:
-        logger.info(
-            CsindexQuoteRunner().download_index(
-                ensure_prev_trading_day=self.args.ensure_prev_trading_day,
-                sleep_sec=self.args.sleep_sec,
-                refresh_history=self.args.refresh_history,
-                pe_only=self.args.pe_only,
-            )
-        )
-
+from downloads.index.csindex.price.__main__ import CsindexPriceDownload
 
 if __name__ == "__main__":
-    CsindexQuoteDownload().execute()
+    CsindexPriceDownload().execute()

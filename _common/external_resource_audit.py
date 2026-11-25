@@ -93,6 +93,8 @@ _HOST_SUFFIXES: tuple[tuple[str, str], ...] = (
     ("cninfo.com.cn", "cninfo"),
     ("zhihu.com", "zhihu"),
     ("sina.cn", "sina"),
+    ("sina.com.cn", "sina"),
+    ("sge.com.cn", "sge"),
 )
 
 _queue: "queue.Queue[tuple]" = queue.Queue(maxsize=_QUEUE_MAX)

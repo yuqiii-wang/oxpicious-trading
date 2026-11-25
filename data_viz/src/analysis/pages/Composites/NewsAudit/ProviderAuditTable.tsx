@@ -2,11 +2,16 @@
  * ProviderAuditTable — the shared ExpandedTable for the News Audit page's
  * PROVIDER view: one row per 5-day window per origin (provider-level rows
  * carry an empty author), with the window metrics + the registry's blocked
- * flag and seen-date span.
+ * flag and seen-date span. Clicking a row EXPANDS it to the origin's
+ * articles inside that window (ProviderAuditItems — the shared news feed,
+ * one item per page).
  */
+import { useState } from "react";
 import ExpandedTable, { type ExpandedTableColumn } from "@/shared/components/ExpandedTable";
+import { fmtDate } from "@/shared/datetime";
 import type { NewsProviderAuditRow } from "@shared/types";
 import { authorFilterLabel, fmtPct, sentimentSx } from "./format";
+import ProviderAuditItems from "./ProviderAuditItems";
 
 function windowLabel(r: NewsProviderAuditRow): string {
   return r.is_complete
@@ -26,6 +31,9 @@ export default function ProviderAuditTable({
    *  never dead-ends against a stale tick selection. */
   filterScopeDeps?: unknown[];
 }) {
+  // The expanded (and tinted) row — rowKey of the clicked origin-window;
+  // clicking again collapses.
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const columns: ExpandedTableColumn<NewsProviderAuditRow>[] = [
     {
       key: "window",
@@ -40,6 +48,19 @@ export default function ProviderAuditTable({
       width: 110,
       render: (r) => <>{r.source}</>,
       filter: { type: "ticks", value: (r) => r.source },
+    },
+    {
+      key: "news_type",
+      label: "Type",
+      width: 120,
+      render: (r) =>
+        r.news_type === "other" ? (
+          <span style={{ opacity: 0.5 }}>other</span>
+        ) : (
+          <>{r.news_type}</>
+        ),
+      filter: { type: "ticks", value: (r) => r.news_type },
+      info: "The origin's media type (registry news_type): news article (news portals / gov), financial report (PBoC releases), social media (zhihu, xueqiu, guba, …), AI digest (ai_daily).",
     },
     {
       key: "author",
@@ -145,7 +166,7 @@ export default function ProviderAuditTable({
         r.first_seen_date == null || r.last_seen_date == null ? (
           <>—</>
         ) : (
-          <>{`${r.first_seen_date} → ${r.last_seen_date}`}</>
+          <>{`${fmtDate(r.first_seen_date)} → ${fmtDate(r.last_seen_date)}`}</>
         ),
     },
   ];
@@ -157,6 +178,16 @@ export default function ProviderAuditTable({
       maxHeight={560}
       enableFilters={enableFilters}
       filterScopeDeps={filterScopeDeps}
+      onRowClick={(r) =>
+        setExpandedKey((k) =>
+          k === `${r.window_start}|${r.source}|${r.author}`
+            ? null
+            : `${r.window_start}|${r.source}|${r.author}`,
+        )
+      }
+      selectedRowKey={expandedKey}
+      expandedRowKey={expandedKey}
+      expandedContent={(r) => <ProviderAuditItems row={r} />}
       paginated
       rowsPerPageOptions={[20, 50, 100]}
       defaultRowsPerPage={20}

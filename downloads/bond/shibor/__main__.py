@@ -513,7 +513,7 @@ class ShiborDownload(DownloadJob):
                             logger.info("%s csv already converted, skipping", tag)
                         else:
                             convert_xlsx_to_csv(fpath, logger=logger, log_tag=tag)
-                        proxy.sleep(max(0.1, sleep_sec * 0.3))
+                        # No request was made — nothing to pace.
                         continue
 
                     # Skip chunks previously confirmed to have no data (empty marker)

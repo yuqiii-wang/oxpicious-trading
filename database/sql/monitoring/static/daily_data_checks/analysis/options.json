@@ -1,0 +1,4 @@
+{
+  "view": "server_cluster/maintainer/daily_check/analysis/options",
+  "notes": "analysis_daily step 6 (analysis.options): analysis.options_spot_daily table-wide max(date) vs the stats.options_terms x stats.options_settlement frontier (the module's fetch_missing_spot_dates source, table-wide). 1-day slack for the settlement files' late-afternoon publish; beyond it the nightly options pass stopped."
+}

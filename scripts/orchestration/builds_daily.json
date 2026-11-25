@@ -52,5 +52,10 @@
   "script": "builds.text",
   "can_be_parallel": false,
   "note": "loads the temps/ai_daily/*.json artifacts written by downloads.macro.ai_daily: answers + reference hits -> text.news, Q&A -> llm.llm_qa (+ llm_qa_refs / news-group provenance)"
+ },
+ "12": {
+  "script": "builds.macro",
+  "can_be_parallel": false,
+  "note": "loads the temps/gold_silver/*.csv full-history files written by downloads.macro.gold_silver (downloads_daily step 32) into stats.macro_identity/basic_stats — SGE Au99.99/Ag99.99 spot + COMEX GC/SI main-continuous daily bars, change/change_pct computed per code; serves the Macro tab via stats.v_macro_daily"
  }
 }

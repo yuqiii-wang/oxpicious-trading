@@ -67,6 +67,7 @@ def native_search_prompt(lang: str = "zh", today: Optional[str] = None) -> str:
 def stale_refs_check_block(
     stale_refs: "Sequence[Tuple[str, Sequence[int]]]",
     today: datetime.date,
+    anchor: Optional[datetime.date] = None,
 ) -> str:
     """The per-ref staleness DOUBLE-CHECK block appended to a compose user
     message when the whole-text date scan
@@ -76,20 +77,44 @@ def stale_refs_check_block(
 
     *stale_refs* pairs each flagged reference's citation tag with the
     years its text mentions (newest-first sample rendered inline). Empty
-    input -> "" (nothing appended; undated or current-year-carrying refs
+    input -> "" (nothing appended; undated or anchor-year-carrying refs
     are never flagged).
+
+    *anchor* is the date the QUESTION is about (the compose flow's
+    ``anchor_date``) — None means the question is about the present, and
+    the block keeps the today-anchored wording. With an anchor the same
+    caution reads against the question's own time point: a reference
+    whose text only mentions years older than the anchor year likely
+    predates what the question asks about ("only 2022, nothing from the
+    question's {anchor.year}") — *today* still renders truthfully as the
+    run date.
     """
     if not stale_refs:
         return ""
-    lines = [f"[来源时效性双重核查] 今天是{today:%Y-%m-%d}。对上述来源的全文"
-             "日期扫描发现，以下来源的全文只出现早于"
-             f"{today.year}年的年份，没有任何{today.year}年或之后的日期："]
+    anchor = anchor or today
+    if anchor == today:
+        lines = [f"[来源时效性双重核查] 今天是{today:%Y-%m-%d}。对上述来源的全文"
+                 "日期扫描发现，以下来源的全文只出现早于"
+                 f"{today.year}年的年份，没有任何{today.year}年或之后的日期："]
+    else:
+        lines = [f"[来源时效性双重核查] 今天是{today:%Y-%m-%d}，问题所问的"
+                 f"日期是{anchor:%Y-%m-%d}。对上述来源的全文日期扫描发现，"
+                 "以下来源的全文只出现早于"
+                 f"{anchor.year}年的年份，没有任何{anchor.year}年或之后的日期："]
     for tag, years in stale_refs:
         sample = "、".join(f"{y}年" for y in years) or "（未见任何年份）"
         lines.append(f"- {tag}（文中出现的年份：{sample}）")
-    lines.append(
-        "这些来源很可能描述的是旧时点的情况，而非当前最新状态。请逐条双重核查："
-        "除非某来源的内容明确属于长期不变的背景事实（定义、产业链位置、历史沿革"
-        "等），不得用它支撑当前状态、最新数据或近期观点的要点；若确需引用，请在"
-        "要点中注明其数据所属时点，不得当作最新情况表述。")
+    if anchor == today:
+        lines.append(
+            "这些来源很可能描述的是旧时点的情况，而非当前最新状态。请逐条双重核查："
+            "除非某来源的内容明确属于长期不变的背景事实（定义、产业链位置、历史沿革"
+            "等），不得用它支撑当前状态、最新数据或近期观点的要点；若确需引用，请在"
+            "要点中注明其数据所属时点，不得当作最新情况表述。")
+    else:
+        lines.append(
+            "这些来源很可能描述的是问题时点之前或之后的旧情况，而非所问时点的状态。"
+            "请逐条双重核查：除非某来源的内容明确属于长期不变的背景事实（定义、"
+            "产业链位置、历史沿革等），不得用它支撑所问时点的状态、数据或观点的"
+            "要点；若确需引用，请在要点中注明其数据所属时点，不得当作所问时点的"
+            "情况表述。")
     return "\n".join(lines)

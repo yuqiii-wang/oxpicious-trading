@@ -1,20 +1,23 @@
 /**
- * AiQaRefBox — renders an LLM Q&A text passage (the answer) with its inline
- * citation markers turned into expandable ref buttons.
+ * AiQaRefBox — renders an LLM Q&A text passage (the answer) as parsed
+ * markdown with its inline citation markers turned into expandable ref
+ * buttons.
  *
  * The stored text embeds ZhiPu-style citation brackets — [ref_2],
  * [来源：ref_1], date-suffixed [来源：ref_1, 2026-09-11], and multi-ref
  * brackets [来源：ref_1，2026-09；来源：ref_2，2026-09-10] (fullwidth
- * ，/；, per-model variance) — which otherwise surface as raw text. Parsing
- * mirrors llm_agents' extract_cited_refs two-stage scan: bracketed spans
- * first, then every ref_N tag inside (brackets without any ref_N tag are
- * plain text and pass through untouched). Each citation bracket is replaced
- * with one small toggle button per cited tag; clicking a button expands an
- * inline box right below the citation showing the resolved article
- * (llm.llm_qa_refs joined back to text.news): the title link, the
- * exact/relevant typing with its persisted provenance (resolved_via —
- * summary echo / corpus match / ddgs title search), whether the answer
- * actually cites the article (is_used) and the source as tags,
+ * ，/；, per-model variance) — and is LLM markdown (headings, lists,
+ * tables). Parsing mirrors llm_agents' extract_cited_refs two-stage scan:
+ * bracketed spans first, then every ref_N tag inside (brackets without any
+ * ref_N tag are plain text and pass through untouched). Each citation
+ * bracket is rewritten to a cite:// markdown link so the WHOLE passage
+ * parses as one MarkdownView document and the citations stay inline in
+ * their paragraph; the link renderer swaps them for the small toggle
+ * buttons — clicking one expands an inline box right below the citation
+ * showing the resolved article (llm.llm_qa_refs joined back to text.news):
+ * the title link, the exact/relevant typing with its persisted provenance
+ * (resolved_via — summary echo / corpus match / ddgs title search), whether
+ * the answer actually cites the article (is_used) and the source as tags,
  * and a scrollable content preview (text.news.content, server-capped at
  * 4000 chars). A cited tag with no resolution row expands to a
  * placeholder instead.
@@ -29,44 +32,34 @@ import {
   type SxProps,
 } from "@mui/material";
 import type { Theme } from "@mui/material/styles";
+import type { ComponentProps } from "react";
+import type { Components } from "react-markdown";
 import { OpenInNew as OpenInNewIcon } from "@mui/icons-material";
+import { MarkdownView } from "@/shared/markdown";
 import type { AiQaRefItem } from "@shared/types";
+import { fmtDate } from "@/shared/datetime";
 
 // Same shapes as llm_agents/online_search_summary/core/citations.py: bracketed
 // spans, then ref_N tags inside. Nested brackets can't occur (the span
 // charset excludes [ ]). Non-citation brackets (e.g. "[要点]") stay text.
 const BRACKET_SPAN_RE = /\[([^\[\]]*)\]/g;
 const REF_TAG_RE = /ref_(\d+)/g;
+const CITE_HREF_PREFIX = "cite://";
 
-/** Split the passage into plain-text and citation-bracket segments (tags in
- *  citation order, deduplicated). */
-function parseSegments(text: string): Array<
-  | { kind: "text"; value: string }
-  | { kind: "cites"; tags: string[] }
-> {
-  const segments: Array<
-    | { kind: "text"; value: string }
-    | { kind: "cites"; tags: string[] }
-  > = [];
-  let last = 0;
-  for (const m of text.matchAll(BRACKET_SPAN_RE)) {
+/** Rewrite the passage as one markdown document: every citation bracket
+ *  becomes an adjacent run of cite:// links (one per deduplicated ref_N
+ *  tag); brackets without any ref_N tag and the rest of the text pass
+ *  through for the markdown parse. */
+function toCiteMarkdown(text: string): string {
+  return text.replace(BRACKET_SPAN_RE, (bracket, inner: string) => {
     const tags: string[] = [];
-    for (const t of m[1].matchAll(REF_TAG_RE)) {
+    for (const t of inner.matchAll(REF_TAG_RE)) {
       const tag = `ref_${t[1]}`;
       if (!tags.includes(tag)) tags.push(tag);
     }
-    if (tags.length === 0) continue; // no citation tags → literal text
-    const start = m.index ?? 0;
-    if (start > last) {
-      segments.push({ kind: "text", value: text.slice(last, start) });
-    }
-    segments.push({ kind: "cites", tags });
-    last = start + m[0].length;
-  }
-  if (last < text.length) {
-    segments.push({ kind: "text", value: text.slice(last) });
-  }
-  return segments;
+    if (tags.length === 0) return bracket;
+    return tags.map((tag) => `[${tag}](${CITE_HREF_PREFIX}${tag})`).join("");
+  });
 }
 
 /** One toggle button per cited tag — filled while its box is expanded;
@@ -239,7 +232,7 @@ export function RefExpandBox({ tag, refItem }: { tag: string; refItem?: AiQaRefI
               sx={{ fontSize: "0.65rem" }}
               title="文章发布日期（ref_time；未知时不显示）"
             >
-              {refItem.date}
+              {fmtDate(refItem.date)}
             </Typography>
           )}
         </Box>
@@ -273,42 +266,47 @@ export function RefExpandBox({ tag, refItem }: { tag: string; refItem?: AiQaRefI
   );
 }
 
-/** One citation bracket: the tag buttons inline, then the expanded boxes of
- *  every opened tag right below them (block-level, breaking the passage
- *  flow at the citation site). Expansion is per bracket group. */
-function CitationGroup({
-  tags,
-  byRef,
-}: {
-  tags: string[];
-  byRef: Map<string, AiQaRefItem>;
-}) {
-  const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
-  const toggle = (tag: string) =>
-    setOpen((cur) => {
-      const next = new Set(cur);
-      if (next.has(tag)) next.delete(tag);
-      else next.add(tag);
-      return next;
-    });
-  return (
-    <>
-      {tags.map((tag) => (
+/** The markdown link renderer for cite:// hrefs — the tag button inline at
+ *  the citation site, its expanded RefExpandBox (block-level, breaking the
+ *  passage flow) right below while open. Every other link falls through to
+ *  the plain themed anchor (LLM answers can carry their own [text](url)
+ *  links). Expansion state is per citation occurrence. */
+function makeCiteComponents(
+  byRef: Map<string, AiQaRefItem>,
+): Components {
+  const CiteLink = ({ href, children }: ComponentProps<"a">) => {
+    const tag = href?.startsWith(CITE_HREF_PREFIX)
+      ? href.slice(CITE_HREF_PREFIX.length)
+      : null;
+    const [open, setOpen] = useState(false);
+    if (!tag) {
+      return (
+        <Box
+          component="a"
+          href={href}
+          target="_blank"
+          rel="noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          sx={{ color: "primary.main", fontWeight: 500 }}
+        >
+          {children}
+        </Box>
+      );
+    }
+    const refItem = byRef.get(tag);
+    return (
+      <>
         <RefTagButton
-          key={tag}
           tag={tag}
-          refItem={byRef.get(tag)}
-          open={open.has(tag)}
-          onToggle={() => toggle(tag)}
+          refItem={refItem}
+          open={open}
+          onToggle={() => setOpen((v) => !v)}
         />
-      ))}
-      {tags
-        .filter((tag) => open.has(tag))
-        .map((tag) => (
-          <RefExpandBox key={`box-${tag}`} tag={tag} refItem={byRef.get(tag)} />
-        ))}
-    </>
-  );
+        {open && <RefExpandBox tag={tag} refItem={refItem} />}
+      </>
+    );
+  };
+  return { a: CiteLink };
 }
 
 export default function AiQaRefBox({
@@ -320,25 +318,34 @@ export default function AiQaRefBox({
   text: string;
   /** The Q&A's resolved refs (llm.llm_qa_refs) keyed by their ref tag. */
   refs: AiQaRefItem[];
-  /** Caller styling (font size / color — the box only fixes pre-wrap). */
+  /** Caller styling (font size / color — whitespace is the markdown
+   *  parse's job now, no pre-wrap). */
   sx?: SxProps<Theme>;
 }) {
   const byRef = useMemo(() => new Map(refs.map((r) => [r.ref, r])), [refs]);
-  const segments = useMemo(() => parseSegments(text), [text]);
+  const source = useMemo(() => toCiteMarkdown(text), [text]);
+  const citeComponents = useMemo(() => makeCiteComponents(byRef), [byRef]);
+  // react-markdown's default URL sanitizer strips unknown schemes (cite://
+  // would arrive as href="" and the tags would fall through to plain
+  // links) — allow our cite:// hrefs through, keep the default for the rest.
+  const citeUrlTransform = useMemo(
+    () => (url: string) =>
+      url.startsWith(CITE_HREF_PREFIX) ? url : null,
+    [],
+  );
   return (
     <Box
       sx={[
-        { whiteSpace: "pre-wrap", lineHeight: 1.65 },
+        { lineHeight: 1.65, minWidth: 0 },
         ...(Array.isArray(sx) ? sx : sx ? [sx] : []),
       ]}
     >
-      {segments.map((seg, i) =>
-        seg.kind === "text" ? (
-          <span key={i}>{seg.value}</span>
-        ) : (
-          <CitationGroup key={i} tags={seg.tags} byRef={byRef} />
-        ),
-      )}
+      <MarkdownView
+        dense
+        source={source}
+        extraComponents={citeComponents}
+        extraUrlTransform={citeUrlTransform}
+      />
     </Box>
   );
 }

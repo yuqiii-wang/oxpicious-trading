@@ -1,9 +1,12 @@
 """llm_agents.kg.graph.engine — :class:`KnowledgeGraph`, the
 in-memory namespace-scoped graph with its search index. The three
 rungs of the traversal are its methods: seed recognition
-(``seed_scores``), spreading activation (``walk``), rank + pack
-(``search``), plus the drill-down face (``neighborhood``) and the
-name-resolution helpers the expand face needs."""
+(``seed_scores`` — exact tokens, plus the FUZZY LANE for a token with
+no exact bucket: ``plural_stem`` / ``fuzzy_match``), spreading
+activation (``walk``), rank + pack (``search``, which also reports the
+rung counters as a ``SearchTrace``), plus the drill-down face
+(``neighborhood``) and the name-resolution helpers the expand face
+needs."""
 from __future__ import annotations
 
 import hashlib
@@ -18,12 +21,15 @@ from llm_agents.kg.graph.vocabulary import (
     _CJK_RE, _EDGE_OUTWARD_CAP, _EDGE_RENDER_CAP, _HUB_DEGREE,
     _HUB_FACTOR, _SEED_FLOOR, _SEED_MIN, _UNIGRAM_FACTOR, _WALK_FLOOR,
     _WALK_MIN, ACT_BLEND, FACE_DESC, FACE_NAME, FACE_TAG, FACE_TYPE,
-    HOP_DECAY, READS_FROM, SUBRELATION_BOOST, WALK_BEAM, edge_factor,
-    extract_tokens, normalize, seed_type_damp,
+    FUZZY_DAMP, FUZZY_SIMILARITY_MIN, HOP_DECAY, READS_FROM,
+    SUBRELATION_BOOST, WALK_BEAM, char_trigrams, edge_factor,
+    extract_tokens, is_fuzzy_token, normalize, seed_type_damp,
 )
 
 from llm_agents.kg.graph.data_definitions import (
     _Face,
+    ResolvedToken,
+    SearchTrace,
 )
 
 
@@ -66,6 +72,21 @@ class KnowledgeGraph:
                     bucket = self._index.setdefault(token, {})
                     if face.weight > bucket.get(entity.entity_id, 0.0):
                         bucket[entity.entity_id] = face.weight
+        # The fuzzy lane's postings (vocabulary.char_trigrams): trigram →
+        # the latin index tokens carrying it, plus each such token's own
+        # trigram count (the similarity denominator). Built with the
+        # index, so a scoped subgraph (``scoped``) carries its own.
+        postings: Dict[str, set] = {}
+        self._trigram_counts: Dict[str, int] = {}
+        for token in self._index:
+            if not is_fuzzy_token(token):
+                continue
+            trigrams = char_trigrams(token)
+            self._trigram_counts[token] = len(trigrams)
+            for trigram in trigrams:
+                postings.setdefault(trigram, set()).add(token)
+        self._trigram_postings: Dict[str, FrozenSet[str]] = {
+            trigram: frozenset(tokens) for trigram, tokens in postings.items()}
 
     # -- construction helpers ------------------------------------------
 
@@ -228,32 +249,113 @@ class KnowledgeGraph:
 
     # -- rung 1: seed recognition ---------------------------------------
 
-    def seed_scores(self, tokens: Sequence[str]) -> Dict[int, SeedHit]:
-        """The lexical seed rung: per query token, the entities whose
-        faces carry it, weighted by the face (name > tags >
-        description > type) and by the token's IDF (rarity over the
-        entity population — 指数 cannot outvote rsi). Returns entity →
-        accumulated score + the (token, best-face) evidence pairs."""
+    def fuzzy_match(self, token: str) -> Optional[Tuple[str, float]]:
+        """The FUZZY lane of the seed rung: the index token *token* is
+        closest to, with their character-trigram similarity
+        (:func:`~llm_agents.kg.graph.vocabulary.trigram_similarity`).
+        ``None`` when *token* is not fuzzy-eligible (not a latin word of
+        :data:`~llm_agents.kg.graph.vocabulary.FUZZY_MIN_LEN`+ chars) or
+        nothing clears
+        :data:`~llm_agents.kg.graph.vocabulary.FUZZY_SIMILARITY_MIN`.
+        Ties break toward the RARER token (the smaller bucket — the more
+        specific vocabulary), then lexically: deterministic. Only ever
+        asked for a token with NO exact bucket — an exact match always
+        wins."""
+        if not is_fuzzy_token(token):
+            return None
+        probe = char_trigrams(token)
+        shared: Dict[str, int] = {}
+        for trigram in probe:
+            for candidate in self._trigram_postings.get(trigram, ()):
+                shared[candidate] = shared.get(candidate, 0) + 1
+        best: Optional[Tuple[float, int, str]] = None
+        for candidate, count in shared.items():
+            # shared / union <= shared / max(len) — a cheap bound that
+            # skips the candidates no similarity could rescue.
+            widest = max(len(probe), self._trigram_counts[candidate])
+            if count < FUZZY_SIMILARITY_MIN * widest:
+                continue
+            similarity = count / (len(probe)
+                                  + self._trigram_counts[candidate] - count)
+            if similarity < FUZZY_SIMILARITY_MIN:
+                continue
+            key = (-similarity, len(self._index[candidate]), candidate)
+            if best is None or key < best:
+                best = key
+        return None if best is None else (best[2], -best[0])
+
+    def plural_stem(self, token: str) -> Optional[str]:
+        """The exact index token an English PLURAL of one strips to
+        (``labels`` → ``label``, ``calls`` → ``call``, ``indexes`` →
+        ``index``): the ``s`` ending first, then ``es``. ``None`` when
+        *token* is not fuzzy-eligible or neither strip is an index
+        token — a word that merely ends in ``s`` (``analysis``,
+        ``status``) strips to nothing and stays unmatched. Asked only for
+        a token with NO exact bucket."""
+        if not is_fuzzy_token(token) or not token.endswith("s"):
+            return None
+        for stem in (token[:-1], token[:-2]):
+            if stem in self._index:
+                return stem
+        return None
+
+    def _resolve_tokens(self, tokens: Sequence[str],
+                        ) -> List[ResolvedToken]:
+        """Each query token against the token index: its exact bucket at
+        factor 1.0, or — with no exact bucket — the fuzzy lane: the
+        index token its plural strips to (similarity 1.0), else the
+        closest vocabulary token by trigram similarity, at factor
+        ``FUZZY_DAMP × similarity``. Skipped when that vocabulary token
+        is ALSO an exact query token (the ask already covers it).
+        Tokens matching neither way drop out."""
+        token_set = frozenset(tokens)
+        resolved: List[ResolvedToken] = []
+        for token in tokens:
+            bucket = self._index.get(token)
+            if bucket:
+                resolved.append(ResolvedToken(token, bucket, 1.0, None))
+                continue
+            stem = self.plural_stem(token)
+            fuzzy = ((stem, 1.0) if stem is not None
+                     else self.fuzzy_match(token))
+            if fuzzy is None or fuzzy[0] in token_set:
+                continue
+            matched, similarity = fuzzy
+            resolved.append(ResolvedToken(
+                token, self._index[matched], FUZZY_DAMP * similarity,
+                matched))
+        return resolved
+
+    def _seed_from(self, resolved: Sequence[ResolvedToken],
+                   ) -> Dict[int, SeedHit]:
+        """The lexical seed rung over resolved tokens: per token, the
+        entities its bucket holds, weighted by the face (name > tags >
+        description > type), by the token's IDF (rarity over the entity
+        population — 指数 cannot outvote rsi) and by the token's factor
+        (1.0 exact; damped for a fuzzy match)."""
         n = max(1, len(self._entities))
         scores: Dict[int, float] = {}
         evidence: Dict[int, Dict[str, str]] = {}
-        for token in tokens:
-            bucket = self._index.get(token)
-            if not bucket:
-                continue
+        for item in resolved:
+            bucket = item.bucket
             # Unigram CJK tokens are noisier than bigrams/words: they
             # match at half strength (a shared single character is
             # weak evidence of aboutness).
             weight_scale = (_UNIGRAM_FACTOR
-                            if _CJK_RE.fullmatch(token) else 1.0)
+                            if _CJK_RE.fullmatch(item.token) else 1.0)
             idf = 1.0 + (n - len(bucket)) / n
             for entity_id, face_weight in bucket.items():
-                contribution = face_weight * weight_scale * idf
-                scores[entity_id] = scores.get(entity_id, 0.0) + contribution
-                evidence.setdefault(entity_id, {})[token] = (
-                    "name" if face_weight >= FACE_NAME else
-                    "tag" if face_weight >= FACE_TAG else
-                    "description" if face_weight >= FACE_DESC else "type")
+                contribution = (face_weight * weight_scale * idf
+                                * item.factor)
+                scores[entity_id] = (scores.get(entity_id, 0.0)
+                                     + contribution)
+                kind = ("name" if face_weight >= FACE_NAME else
+                        "tag" if face_weight >= FACE_TAG else
+                        "description" if face_weight >= FACE_DESC
+                        else "type")
+                # A fuzzy hit says what it matched: `momemtum[name≈momentum]`.
+                evidence.setdefault(entity_id, {})[item.token] = (
+                    f"{kind}≈{item.matched}" if item.matched else kind)
         hits: Dict[int, SeedHit] = {}
         for entity_id, score in scores.items():
             entity = self._entities.get(entity_id)
@@ -262,6 +364,17 @@ class KnowledgeGraph:
             terms = tuple(sorted(evidence[entity_id].items()))
             hits[entity_id] = SeedHit(score=score * damp, terms=terms)
         return hits
+
+    def seed_scores(self, tokens: Sequence[str]) -> Dict[int, SeedHit]:
+        """The lexical seed rung: per query token, the entities whose
+        faces carry it, weighted by the face (name > tags >
+        description > type) and by the token's IDF (rarity over the
+        entity population — 指数 cannot outvote rsi). A token with no
+        exact bucket seeds through the FUZZY lane when a vocabulary
+        token is close enough (:meth:`fuzzy_match`), strictly below the
+        exact hit. Returns entity → accumulated score + the (token,
+        best-face) evidence pairs."""
+        return self._seed_from(self._resolve_tokens(tokens))
 
     # -- rung 2: spreading activation -----------------------------------
 
@@ -343,12 +456,26 @@ class KnowledgeGraph:
         walk → blended rank → the packed subgraph (top nodes + the
         edges among them)."""
         tokens = extract_tokens(query)
-        seeds = self.seed_scores(tokens)
+        resolved = self._resolve_tokens(tokens)
+        seeds = self._seed_from(resolved)
         walked = self.walk(seeds, tokens, max_hops=hops)
         max_seed = max((hit.score for hit in seeds.values()), default=0.0)
-        max_act = max((hit.activation for hit in walked.values()),
+        # The walk's OWN scale: the strongest activation among the
+        # PROPAGATED nodes — seeds excluded. A seed's activation IS its
+        # lexical score (tens on the live graph), and ``walk`` records
+        # seeds too (they receive energy from their neighbours), so
+        # normalizing the propagated rows by a seed's activation
+        # flattened every walk score toward zero — measured 2026-11-23:
+        # 0.02–0.27 on 137 live queries against the ~0..1 this rank rung
+        # documents — and the walk relevance floor (a fraction of the
+        # raw seed top) then pruned EVERY propagated row to the
+        # _WALK_MIN in 100% of them: the spreading-activation rung
+        # contributed exactly two nodes, whatever the query. On the walk
+        # scale the strongest propagated row scores ACT_BLEND and the
+        # floor grades as designed (see the floor below).
+        max_act = max((hit.activation for entity_id, hit
+                       in walked.items() if entity_id not in seeds),
                       default=0.0)
-        ranked: List[Tuple[float, KgEntity, str]] = []
         seed_rows: List[Tuple[float, KgEntity, str]] = []
         for entity_id, hit in seeds.items():
             entity = self._entities.get(entity_id)
@@ -361,12 +488,12 @@ class KnowledgeGraph:
         # drops out (min _SEED_MIN kept) — specific questions return
         # focused sets instead of always filling the budget.
         seed_rows.sort(key=lambda item: (-item[0], item[1].name))
+        n_seeds = len(seed_rows)
+        seed_floor = seed_rows[0][0] * _SEED_FLOOR if seed_rows else 0.0
         if seed_rows:
-            floor = seed_rows[0][0] * _SEED_FLOOR
-            kept = [row for row in seed_rows if row[0] >= floor]
+            kept = [row for row in seed_rows if row[0] >= seed_floor]
             seed_rows = kept if len(kept) >= _SEED_MIN \
                 else seed_rows[:_SEED_MIN]
-        ranked.extend(seed_rows)
         walk_rows: List[Tuple[float, KgEntity, str]] = []
         for entity_id, hit in walked.items():
             if entity_id in seeds:
@@ -382,20 +509,32 @@ class KnowledgeGraph:
             if seed_hit is None and self.degree(entity_id) > _HUB_DEGREE:
                 score *= _HUB_FACTOR
             walk_rows.append((score, entity, self._walk_why(hit)))
-        # The activation relevance floor, judged on the GLOBAL scale
-        # (seeds keep raw lexical scores; walk scores blend to ~0..1 —
-        # a fraction of the overall top separates real enrichment from
-        # decay noise). Min _WALK_MIN kept when any walked rows exist.
+        # The activation relevance floor, judged on the GLOBAL scale:
+        # a fraction (_WALK_FLOOR) of the OVERALL top — the raw seed top
+        # (how specifically the ask NAMES its tables) or the top walk
+        # score — separates real enrichment from decay noise. The two
+        # scales meet as designed: walk scores top out at ACT_BLEND (the
+        # strongest propagated row), so a strongly named ask (seed top
+        # above ACT_BLEND / _WALK_FLOOR) keeps its result FOCUSED — its
+        # propagated rows all fall under the floor and _WALK_MIN keeps
+        # the two strongest — while a vaguely named one surfaces more of
+        # its neighborhood. Min _WALK_MIN kept whenever walk rows exist.
         walk_rows.sort(key=lambda item: (-item[0], item[1].name))
+        n_walk = len(walk_rows)
+        walk_floor = 0.0
         if walk_rows:
             global_top = max(seed_rows[0][0] if seed_rows else 0.0,
                              walk_rows[0][0])
-            floor = global_top * _WALK_FLOOR
-            kept = [row for row in walk_rows if row[0] >= floor]
+            walk_floor = global_top * _WALK_FLOOR
+            kept = [row for row in walk_rows if row[0] >= walk_floor]
             walk_rows = kept if len(kept) >= _WALK_MIN \
                 else walk_rows[:_WALK_MIN]
-        ranked.extend(walk_rows)
-        ranked.sort(key=lambda item: (-item[0], item[1].name))
+        # SEEDS FIRST, then the propagated rows — both classes already
+        # in their own score order. Structural, not a score comparison:
+        # a table that NAMES the ask is never outranked by connectivity
+        # alone (a propagated row carries no lexical part, so its score
+        # is pure activation).
+        ranked = seed_rows + walk_rows
         chosen = ranked[:max(1, max_nodes)]
         chosen_ids = {entity.entity_id for _, entity, _ in chosen}
         # Edge packing, in two tiers: edges FULLY INSIDE the chosen set
@@ -430,7 +569,17 @@ class KnowledgeGraph:
             nodes=tuple(ScoredNode(entity, score, why)
                         for score, entity, why in chosen),
             edges=tuple(edges), n_entities=len(self._entities),
-            n_edges=len(self._edges))
+            n_edges=len(self._edges),
+            trace=SearchTrace(
+                n_tokens=len(set(tokens)), n_seeds=n_seeds,
+                n_seed_kept=len(seed_rows),
+                n_seed_pruned=n_seeds - len(seed_rows),
+                n_walk=n_walk, n_walk_kept=len(walk_rows),
+                n_walk_pruned=n_walk - len(walk_rows),
+                n_fuzzy_tokens=sum(1 for item in resolved if item.is_fuzzy),
+                seed_top=seed_rows[0][0] if seed_rows else 0.0,
+                walk_top=walk_rows[0][0] if walk_rows else 0.0,
+                seed_floor=seed_floor, walk_floor=walk_floor))
 
     def _walk_why(self, hit: WalkHit) -> str:
         """The provenance line of one propagated node: hop count, the
@@ -453,13 +602,22 @@ class KnowledgeGraph:
     # -- the drill-down face ---------------------------------------------
 
     def neighborhood(self, names: Sequence[str], *, hops: int = 1,
-                     max_nodes: int = 24,
+                     max_nodes: int = 96,
                      ) -> Tuple[List[KgEntity], List[KgEdge],
                                 List[KgEntity], List[str]]:
         """The expand face: resolve *names* (exact / unique bare /
         unique suffix), BFS their ≤hops neighborhoods, and return
         ``(resolved, edges, neighbors, unresolved)`` — the edges are
-        every edge with ALL members inside the collected set."""
+        every edge with ALL members inside the collected set.
+
+        The node budget exists to bound a hops-2 BFS, not to clip a
+        hub's own edges: the trim keeps every partner of a RESOLVED
+        core before anything else (the face's contract is "every edge
+        the named node rides" — 2026-11-23, after the ns0 hubs grew
+        past the old 24 cap and the alphabetical trim silently dropped
+        their joins_on/computed_from partners), then fills the rest by
+        name. The default covers the largest live hub
+        (stats.sec_classification: 91 edge ends + the core = 92)."""
         resolved: List[KgEntity] = []
         unresolved: List[str] = []
         for name in names:
@@ -481,14 +639,23 @@ class KnowledgeGraph:
                         nxt.append(other)
             frontier = nxt
         collected = set(seen)
-        if len(collected) > max(1, max_nodes):
-            # Keep the named cores + the nearest by BFS layer; trim the
-            # last layer's excess arbitrarily-but-stably by name.
+        budget = max(1, max_nodes)
+        if len(collected) > budget:
             keep = {entity.entity_id for entity in resolved}
+            core_partners: List[int] = []
+            for entity in resolved:
+                for _, other, _ in self._adjacency.get(
+                        entity.entity_id, ()):
+                    if other not in keep and other not in core_partners:
+                        core_partners.append(other)
+            for entity_id in core_partners:
+                if len(keep) >= budget:
+                    break
+                keep.add(entity_id)
             for entity_id in sorted(
                     collected - keep,
                     key=lambda i: self._entities[i].name):
-                if len(keep) >= max(1, max_nodes):
+                if len(keep) >= budget:
                     break
                 keep.add(entity_id)
             collected = keep

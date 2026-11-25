@@ -1,0 +1,13 @@
+{
+  "service": "downloads.index.csindex.pe",
+  "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
+  "is_resident": false,
+  "freq": "weekly",
+  "priority": 160,
+  "schedule": "weekly tier in the 16:00 nightly chain (downloads_weekly, right after downloads_daily) — the task's own weekly gate (>= 6 calendar days since its last normal exit in monitor.service_audit) makes the nightly fires no-ops; --force bypass. Service split 2026-11-23 out of downloads.index.csindex.quote --pe-only (the nightly PE step, 2026-11-20..22)",
+  "notes": "Weekly CSIndex index-PE fetch for the full csindex-served index universe (exclusion-store scoped): per index ONLY the incremental PE (peg) series fetch (indexCsiDsPe endpoint) + the {code}_history.csv merge folding it in — the PE series has no other source (stats.index_valuation.pe via builds CSINDEX DAILY; it went NULL from 2026-10-27 under the old skip-by-default gate, hence the dedicated step). Drives the price package's shared CsindexQuoteRunner with pe_only=True under THIS service's pacing/audit identity. First run after the split self-baselines (no audit history proceeds by design).",
+  "source_ref": "scripts/orchestration/downloads_weekly.json",
+  "updated_at": "2026-11-23T00:00:00.000000+00:00"
+}

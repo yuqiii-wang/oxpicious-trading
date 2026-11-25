@@ -36,6 +36,7 @@ import {
 } from "@/theme/chart-palette";
 import { computeSnapshotStats } from "@/lib/options-stats";
 import { fmtPct, fmtMil, fmtNum } from "@/lib/series";
+import { fmtDate } from "@/shared/datetime";
 import { makeWallTooltipFormatter } from "./marketInterestTooltip";
 import type { EChartsOption } from "echarts";
 
@@ -220,7 +221,7 @@ function buildWallOption(
   return baseChartOption(mode, {
     grid: commonGrid({ left: 70, right: 20, top: 50, bottom: 36 }),
     title: {
-      text: `${label}  (${dateStr})  Spot=${fmtNum(stats.S)}  CW=${cwStr}  PW=${pwStr}  P/C=${fmtNum(stats.pcRatio)}  IV=${ivStr}  Skew=${skStr}  GEX=${gexStr}`,
+      text: `${label}  (${fmtDate(dateStr)})  Spot=${fmtNum(stats.S)}  CW=${cwStr}  PW=${pwStr}  P/C=${fmtNum(stats.pcRatio)}  IV=${ivStr}  Skew=${skStr}  GEX=${gexStr}`,
       left: "left",
       textStyle: { color: textColor, fontSize: 10, fontFamily: "monospace" },
     },

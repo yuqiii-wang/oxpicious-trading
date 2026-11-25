@@ -1834,7 +1834,25 @@ at call time; they are NOT config fields): s1 shipped (div 2000, band
 3. Single-window caveat: one OOS window (2025-07..2026-11), 10 codes,
    one snapshot — the OOS cushion is one regime's reading.
 
-## Part 19 — the oracle CONFIDENCE SCALING + its own optimizer (2026-11-20)
+## Part 19 — the oracle CONFIDENCE SCALING + its own optimizer (2026-11-20; DEMISED 2026-11-21)
+
+**2026-11-21 DEMISE (user-directed "demise the oracle dedicated
+strategy, but use the existing optimization for regular signals" —
+reversing the same day's isolation directive):** the dedicated oracle
+optimizer (`_oracle/optimizer.py` + `__main__.py`, the hand-pin
+convention) is DELETED; the nested `conf_scale` group is flattened to
+top-level `DEFAULT_PARAMS` keys (`grade_power` / `grade_floor` /
+`null_conf` / `exit_mode`, identity defaults) declared on
+`OracleSignalAlgo.TUNABLE_SPACE` — the EXISTING `_optm_engine` trainer
+optimizes them (Set A Omega, always BINARY, oracle alone; mixed
+selections carrying oracle are rejected at parse). The full-fidelity
+flags stay False ("show them all" — no gates/min-confidence; Set B
+stays a single point). The risk ORACLE hard route is demised too: the
+LITTLE criteria are magnitude-native now (loss-magnitude share < 0.10 +
+worst losing month < 0.05 of the P&L volume — the former per-trade
+count/CV gates were size-blind against graded sizing; oracle qualifies
+through the calculation). Digest: `docs/oracle_demise_2026-11-21.md`.
+The historical record of the demised optimizer follows.
 
 User direction: "adjust oracle signal confidence ... max profits and
 min risks, just confidence scaling; do not change other modules; the
@@ -1900,5 +1918,8 @@ Everything lives in `strategy/factors_and_algos/_oracle/` ONLY
   Naive-vs-identity pooled: near-identical absolute pnl (17.1k both) —
   the grade buys CAPITAL EFFICIENCY (163%→198% return), not pnl mass.
 
-(2026-11-20: the oracle mode is a SEPARATE isolated module — its study
-knowledge lives in `docs/oracle_*.md` digests, not in this skill.)
+(2026-11-20: the oracle mode was a SEPARATE isolated module — its study
+knowledge lives in `docs/oracle_*.md` digests, not in this skill.
+2026-11-21: the isolation is DEMISED — see the Part 19 preamble and
+`docs/oracle_demise_2026-11-21.md`; the existing trainer owns the
+oracle's confidence-scaling knobs and the risk LITTLE is calculated.)

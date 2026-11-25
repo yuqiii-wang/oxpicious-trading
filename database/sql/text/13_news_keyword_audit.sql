@@ -4,11 +4,15 @@
 --
 --  One row per (date, category_type, category_code): how many articles in
 --  the text.news corpus mentioned that category's keywords that day, and
---  how many times in total. The category mapping is static.keyword_maps
---  (the seeded keyword → category map: 0 industry / 1 market-description /
---  2 broadmarket rows — market rows decode via static.label_dim 'kw_market',
---  broadmarket rows via 'kw_theme'; skip rows (3) are never extracted, so
---  no audit row carries them).
+--  how many times in total. FAKE-NEWS EXCLUDED (2026-11-22): the join to
+--  text.news_digestions drops is_fake_news articles — every consumer of
+--  this rollup (the news-text panel's lex_tone_z, the Market Sentiments
+--  Ask AI insight metrics) is a sentiment/breadth gauge, and fake articles
+--  must not enter the calculation. The category mapping is
+--  static.keyword_maps (the seeded keyword → category map: 0 industry / 1
+--  market-description / 2 broadmarket rows — market rows decode via
+--  static.label_dim 'kw_market', broadmarket rows via 'kw_theme'; skip
+--  rows (3) are never extracted, so no audit row carries them).
 --
 --  WHY MATERIALIZED: the Ask AI insight metrics for the Market Sentiments
 --  page (analysis_insight_metrics page 'composites'/'ai-market-sentiments')
@@ -35,10 +39,12 @@ CREATE MATERIALIZED VIEW text.news_keyword_audit AS
 SELECT k.date,
        m.category_type,              -- 'kw_category_type': 0 industry | 1 market | 2 broadmarket | 3 skip (never extracted)
        m.category_code,              -- 'kw_market' when type=1, 'kw_theme' when type=2, NULL when industry or skip
-       COUNT(DISTINCT k.news_id)::integer AS articles,  -- articles mentioning the category's keywords
+       COUNT(DISTINCT k.news_id)::integer AS articles,  -- non-fake articles mentioning the category's keywords
        SUM(k.count)::bigint          AS mentions     -- total keyword occurrences across those articles
 FROM text.news_keywords k
 JOIN static.keyword_maps m USING (keyword)
+JOIN text.news_digestions d ON d.news_id = k.news_id
+WHERE COALESCE(d.is_fake_news, false) = false
 GROUP BY k.date, m.category_type, m.category_code;
 
 -- Row identity + the REFRESH CONCURRENTLY requirement.
@@ -59,7 +65,8 @@ COMMENT ON MATERIALIZED VIEW text.news_keyword_audit IS
   '(composites/ai-market-sentiments).';
 
 COMMENT ON COLUMN text.news_keyword_audit.articles IS
-  'Distinct articles whose extracted keywords (text.news_keywords) include '
+  'Distinct NON-FAKE articles (text.news_digestions.is_fake_news = false) '
+  'whose extracted keywords (text.news_keywords) include '
   'any keyword of the category that day — the breadth gauge the sentiment '
   'metrics resolve.';
 

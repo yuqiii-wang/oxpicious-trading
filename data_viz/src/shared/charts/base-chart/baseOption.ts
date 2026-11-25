@@ -22,6 +22,7 @@ import {
   commonLegend,
   commonTooltip,
 } from "@/theme/chart-palette";
+import { fmtDate, fmtMonth, isDateLike } from "@/shared/datetime/display";
 
 /**
  * Per-key override contract for `baseChartOption`. Everything from
@@ -61,12 +62,69 @@ function mergeFragment<T extends object>(base: T, override: T | null | undefined
 }
 
 /**
+ * Thousands separators — mirrors echarts' `addCommas` (its default numeric
+ * axis/pointer label text), so numeric axis-pointer bubbles that pass
+ * through our date formatter render exactly as before.
+ */
+function addCommas(n: number): string {
+  const parts = String(n).split(".");
+  return parts[0].replace(/(\d{1,3})(?=(?:\d{3})+(?!\d))/g, "$1,")
+    + (parts.length > 1 ? `.${parts[1]}` : "");
+}
+
+/**
+ * Axis-pointer label formatter — the seam echarts' DEFAULT axis-trigger
+ * tooltip runs its header (`axisValueLabel`) through, alongside the
+ * cross-pointer value bubbles. Date categories render in the UI-wide
+ * yyyy-Mmm-dd display format; every other value renders exactly as
+ * echarts' built-in default (category strings verbatim, numbers with
+ * commas, time-axis ticks as dates).
+ */
+function axisPointerDateLabel(params: { value: unknown; axisDimension?: string }): string {
+  const v = params.value;
+  if (typeof v === "string") {
+    // Category axis: date strings remap; other categories (code names, ...)
+    // pass through untouched.
+    return isDateLike(v) ? (v.length === 7 ? fmtMonth(v) : fmtDate(v)) : v;
+  }
+  if (typeof v === "number") {
+    // Only the x (time) axis carries epoch-millis values (all datasets
+    // post-2001, so ≥1e12 ms); numeric axes (rates, prices, amounts —
+    // incl. y-axis values beyond 1e12 yuan) keep the built-in commas.
+    if (params.axisDimension === "x" && v >= 1e12) return fmtDate(v);
+    return addCommas(v);
+  }
+  return fmtDate(v as Date);
+}
+
+/**
+ * Inject the date-header formatter into a default axis tooltip: builders
+ * that pass their own `formatter` (or their own axisPointer label
+ * formatter) keep full control; item-trigger tooltips have no axis header.
+ * The formatter only changes the DATE-LIKE values, so the default tooltip
+ * layout, value lines and `valueFormatter` handling stay echarts' own.
+ */
+function applyDateHeaderFormatter(tooltip: TooltipComponentOption): TooltipComponentOption {
+  if (!tooltip || tooltip.trigger !== "axis" || tooltip.formatter != null) {
+    return tooltip;
+  }
+  const ap = (tooltip.axisPointer ?? {}) as Record<string, unknown>;
+  const label = (ap.label ?? {}) as Record<string, unknown>;
+  if (label.formatter != null) return tooltip;
+  return {
+    ...tooltip,
+    axisPointer: { ...ap, label: { ...label, formatter: axisPointerDateLabel } },
+  };
+}
+
+/**
  * Build an option with the shared chart preamble. The three common fragments
  * default to `commonLegend(mode)` / `commonTooltip(mode)` / `commonGrid()`;
  * partial `legend`/`tooltip` overrides MERGE over the themed fragments
  * (`null` drops a fragment entirely), `grid` replaces verbatim (build its
  * partials through `commonGrid(overrides)`); every other key is spread
- * verbatim after the preamble.
+ * verbatim after the preamble. Default axis tooltips get the UI-wide
+ * yyyy-Mmm-dd date-header formatting (see `applyDateHeaderFormatter`).
  */
 export function baseChartOption(
   mode: ThemeMode,
@@ -82,7 +140,9 @@ export function baseChartOption(
     backgroundColor: "transparent",
     animation: false,
     legend: mergeFragment(commonLegend(mode), legendOverride),
-    tooltip: mergeFragment(commonTooltip(mode), tooltipOverride),
+    tooltip: applyDateHeaderFormatter(
+      mergeFragment(commonTooltip(mode), tooltipOverride),
+    ),
     grid,
     ...rest,
   };

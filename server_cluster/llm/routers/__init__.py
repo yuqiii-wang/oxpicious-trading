@@ -8,6 +8,8 @@ and inference logic stays in :mod:`..manager` / :mod:`..backends`.
                    first, model routing, envelope/SSE assembly
   jev.py           POST /v1/systemone — the standard Jev decision
                    contract (noul / choice / score)
+  ocr.py           POST /v1/ocr — image transcription (image files in,
+                   the extracted text out)
   models_admin.py  GET /v1/models, retrieve, POST load|offload
   tokenization.py  POST /v1/tokenization/segment
   ops.py           GET /health, GET /stats, POST /control
@@ -18,9 +20,9 @@ and inference logic stays in :mod:`..manager` / :mod:`..backends`.
 ``app.create_app`` includes the routers — the app factory is the only
 place that knows the whole surface.
 """
-from . import chat, jev, models_admin, ops, tokenization
+from . import chat, jev, models_admin, ocr, ops, tokenization
 
-ROUTER_MODULES = (chat, jev, models_admin, tokenization, ops)
+ROUTER_MODULES = (chat, jev, ocr, models_admin, tokenization, ops)
 
-__all__ = ["ROUTER_MODULES", "chat", "jev", "models_admin", "ops",
-           "tokenization"]
+__all__ = ["ROUTER_MODULES", "chat", "jev", "ocr", "models_admin",
+           "ops", "tokenization"]

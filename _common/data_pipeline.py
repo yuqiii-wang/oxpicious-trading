@@ -240,9 +240,21 @@ class DataPipeline(abc.ABC):
             )
         from _common.post_check import post_check
 
+        # Phase 4 (2026-11-21 control unification): the batch step's
+        # boundary checkpoints — report the run's start/done states and
+        # hold any claimed PAUSE at this boundary (the child's own
+        # checkpoints inside run() refine the phases; the generic
+        # boundary guarantees a pause NEVER holds mid-stage). Both are
+        # no-ops when registration failed.
+        from _common.service_heartbeat import pause_checkpoint, \
+            report_progress
+
         try:
+            report_progress(state="running", force=True)
+            pause_checkpoint()
             asyncio.run(self.amain())
         finally:
+            report_progress(state="done", force=True)
             post_check()
 
     # ------------------------------------------------------------------

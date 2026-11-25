@@ -6,7 +6,9 @@
  * rules/history panels and the shared tables consume THIS registry and
  * never name a family themselves — adding a family is one file + one
  * registry entry (the ENGINES-registry pattern the Python signals
- * tier uses).
+ * tier uses). The news_wash family was deleted 2026-11-22 — its rules
+ * migrated into the amplifier tier (the news amplifiers render on the
+ * Signal Amplification page).
  *
  * (The registry's curve-era members — the depth-response axis
  * builders, the threshold-bar decodes, the series GROUP model — were

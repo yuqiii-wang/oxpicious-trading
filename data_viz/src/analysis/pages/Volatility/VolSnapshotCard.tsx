@@ -18,6 +18,7 @@ import {
   TableRow,
   Typography,
 } from "@mui/material";
+import { fmtDate } from "@/shared/datetime";
 import type { VolatilityRow } from "@shared/types";
 
 interface Props {
@@ -66,7 +67,7 @@ export default function VolSnapshotCard({ code, name, rows }: Props) {
             {label} — latest snapshot
           </Typography>
           <Typography variant="caption" color="text.secondary">
-            as of {last.date}
+            as of {fmtDate(last.date)}
           </Typography>
         </Box>
         <TableContainer>

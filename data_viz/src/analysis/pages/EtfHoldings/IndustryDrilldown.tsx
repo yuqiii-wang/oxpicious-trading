@@ -43,6 +43,7 @@ import {
 } from "@/lib/api-client";
 import { PALETTE_HI, MA20_COLOR, MUTED_PALETTE, axisColors, commonGrid } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
+import { fmtDate } from "@/shared/datetime";
 import { rebaseTo100 } from "@/analysis/pages/MarketBeta/helpers";
 import type {
   MarketBetaChartResponse,
@@ -183,7 +184,7 @@ export default function IndustryDrilldown({
           const mc = lastAvail(meanClose, hovered);
           const pct = lastAvail(etfPct, hovered);
           const asOf = (d: string) =>
-            d < hovered ? `<span style="opacity:0.55"> (${d})</span>` : "";
+            d < hovered ? `<span style="opacity:0.55"> (${fmtDate(d)})</span>` : "";
           const mcRow = mc
             ? `${dot(lineColor)}${industryLabel} mean_close ${fmtNum(mc[1], 2)}${asOf(mc[0])}`
             : "";
@@ -191,7 +192,7 @@ export default function IndustryDrilldown({
             ? `${dot(MA20_COLOR)}in ${etfCode} ${fmtNum(pct[1], 2)}%${asOf(pct[0])}`
             : "";
           return (
-            `<div style="font-weight:600;margin-bottom:4px">${hovered}</div>` +
+            `<div style="font-weight:600;margin-bottom:4px">${fmtDate(hovered)}</div>` +
             [mcRow, pctRow].filter(Boolean).join("<br/>")
           );
         },

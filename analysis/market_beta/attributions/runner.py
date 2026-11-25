@@ -63,6 +63,14 @@ _BROAD_DATE_BATCH = 20
 _MEMBER_DATE_BATCH = 20
 _EQUAL_DATE_BATCH = 10
 
+# Incremental INSERTs above this row count refresh the planner stats
+# (db_commons bulk-write rule — stale statistics turn value-blind
+# prepared-statement readers into seq scans). A backfill-scale
+# incremental (e.g. the post-crash recompute of a killed force run)
+# must not leave the table un-analyzed; the daily 1-2-date inserts stay
+# under it and skip the pass.
+_ANALYZE_INCREMENTAL_MIN_ROWS = 100_000
+
 
 async def run_attributions(
     conn,
@@ -125,7 +133,10 @@ async def run_attributions(
     DROPPED before the bulk INSERTs so they pay zero index maintenance,
     then RECREATED + ANALYZE inside the same transaction. The PK is kept
     throughout for dedup safety. Incremental mode keeps the index (daily
-    inserts are small).
+    inserts are small) and REPAIRS it when an interrupted force run left
+    it missing (crash-safe guard before the INSERT phases — a force run
+    killed before its rebuild used to leave every later incremental run
+    on the PK-only layout).
 
     Pipeline
       1. Guard: if BOTH the stats.cross_stats industry grain is empty AND
@@ -240,6 +251,27 @@ async def run_attributions(
         if max_replica_lag_mb is not None:
             await _wait_for_replica_lag_async(conn, max_replica_lag_mb)
 
+    # Crash-safe secondary-index guard (incremental): a force run killed
+    # before its end-of-run index rebuild leaves the table without the
+    # secondary index, and this incremental path historically never
+    # repaired it (2026-11-24 SIGKILL incident: every later incremental
+    # run silently kept the PK-only layout). Verify + repair BEFORE the
+    # INSERT phases so any run after a crashed force run restores the
+    # index first; the steady state (indexes present) pays one catalog
+    # probe and skips the DDL entirely.
+    if incremental:
+        view_idx = render_sql_view(
+            "analysis/market_beta/attributions/queries/secondary_indexes",
+        )
+        present = {r["indexname"] for r in await conn.fetch(view_idx.sql)}
+        missing = [n for n in _SECONDARY_INDEXES if n not in present]
+        if missing:
+            logger.info(f"      Repairing {len(missing)} secondary "
+                        f"index(es) missing from {TABLE} (left by an "
+                        f"interrupted force run): {', '.join(missing)}...")
+            for idx_ddl in _CREATE_SECONDARY_INDEX_DDL:
+                await conn.execute(idx_ddl)
+
     def _date_batches(dates: List[datetime.date], size: int):
         """Split the date axis into ~size-date batches — each batch is
         ONE INSERT..SELECT statement / one COMMIT, so a full-history
@@ -350,6 +382,16 @@ async def run_attributions(
         n_eq += _parse_insert_count(status_eq)
     logger.info(f"      -> {n_eq:,} equal rows inserted "
           f"({time.time() - t_eq:.1f}s)")
+
+    # ---- Refresh planner stats after a backfill-scale incremental ----
+    # Force mode's ANALYZE below covers its own rebuild; an incremental
+    # backfill (post-crash recompute) can insert millions of rows and
+    # historically left stale statistics behind.
+    if incremental and (n_total_broad + n_total_member + n_eq) >= \
+            _ANALYZE_INCREMENTAL_MIN_ROWS:
+        await conn.execute(ANALYZE_TABLE_SQL)
+        logger.info(f"      ANALYZE {TABLE} done (incremental inserted "
+                    f"{n_total_broad + n_total_member + n_eq:,} rows)")
 
     # ---- Recreate secondary index + ANALYZE (force mode only) ----
     # The index was DROPPED above so ALL INSERTs paid zero index

@@ -14,7 +14,12 @@
 --   sec_type: value smallint — the sec_type's LABEL_CODE
 --   code: value text or None — bound to one code
 --   anchor_date: value date or None — bound to one anchor (None = latest per code)
+--   identity_table: fragment — IDENTITY_TABLE[secType] (the sec_type's
+--     stats identity source, scalar-subqueried for the display name)
 SELECT f.anchor_date, f.code,
+       (SELECT i.name FROM {{identity_table}} i
+        WHERE i.code = f.code
+        ORDER BY i.date DESC LIMIT 1) AS code_name,
        {{direction_decode}} AS direction,
        f.sigma_mult, f.trigger_no, f.base_close, f.sigma_20d_pct,
        f.forecast_close, f.forecast_change_pct,
@@ -25,7 +30,8 @@ SELECT f.anchor_date, f.code,
        f.confidence_bp,
        {{trend_decode}} AS trend_state,
        {{regime_decode}} AS regime_state,
-       f.position_open, f.would_execute, f.strategy_name
+       f.position_open, f.would_execute, f.strategy_name,
+       f.updated_at
 FROM strategy.forecast_next_day f
 WHERE f.sec_type = {{sec_type}}
   AND ({{code}}::text IS NULL OR f.code = {{code}})

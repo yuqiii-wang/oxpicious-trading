@@ -8,11 +8,14 @@
  * via POST /api/analysis/news-audit/run.
  */
 import { formatDate, toNum } from "../../lib/db.js";
-import { querySqlView } from "@api/lib/sql-views";
+import { querySqlView, sqlFrag } from "@api/lib/sql-views";
+import { labelDecodeSql } from "../infra/label-codes.js";
 import type { QueryResultRow } from "pg";
 import type {
   NewsContentAuditResponse,
   NewsContentAuditRow,
+  NewsCoverageAuditResponse,
+  NewsCoverageAuditRow,
   NewsProviderAuditResponse,
   NewsProviderAuditRow,
 } from "../../../shared/types.js";
@@ -41,6 +44,8 @@ interface DbProviderAuditRow extends QueryResultRow {
   avg_word_count: string | number | null;
   num_industries: number | null;
   computed_at: Date | string;
+  news_type: number | null;
+  news_type_label: string | null;
   is_blocked: boolean | null;
   first_seen_date: Date | string | null;
   last_seen_date: Date | string | null;
@@ -59,7 +64,11 @@ export async function getNewsProviderAudit(
 
   const rows = await querySqlView<DbProviderAuditRow>(
     "data_viz/api/services/analysis/news-audit/provider-audit",
-    { limit_windows: limitWindows, source },
+    {
+      limit_windows: limitWindows,
+      source,
+      news_type_decode: sqlFrag(labelDecodeSql("news_type", "pr.news_type")),
+    },
   );
 
   const providers: NewsProviderAuditRow[] = rows.map((r) => ({
@@ -75,6 +84,9 @@ export async function getNewsProviderAudit(
     avg_sentiment: toNum(r.avg_sentiment),
     avg_word_count: toNum(r.avg_word_count),
     num_industries: r.num_industries,
+    // Registry media type; LEFT JOIN miss / legacy 99 = "other".
+    news_type_code: r.news_type ?? 99,
+    news_type: r.news_type_label ?? "other",
     // LEFT JOIN miss = origin vanished from the registry (should not
     // happen — the sync runs first); read as "not blocked".
     is_blocked: r.is_blocked === true,
@@ -159,4 +171,65 @@ export async function getNewsContentAudit(
     enable_filters: true,
     rows: content,
   };
+}
+
+// ----------------------------------------------------------------------------
+//  GET coverage — the DAILY coverage audit (text.news_coverage_audit,
+//  built by analysis.news_audit's CoverageAuditStep; the 2026-11-22
+//  coverage migration's daily grain): one row per (trading day,
+//  industry) article/digested/fake counts, '000001' = the whole-market
+//  rollup row. The News Audit page's third view toggle.
+// ----------------------------------------------------------------------------
+interface DbCoverageAuditRow extends QueryResultRow {
+  date: Date | string;
+  industry_id: string;
+  n_articles: number | string;
+  n_digested: number | string;
+  n_fake: number | string;
+  n_industries: number | string | null;
+}
+
+const DEFAULT_LIMIT_DAYS = 20;
+const MAX_LIMIT_DAYS = 260; // ~one trading year
+
+function clampDayLimit(raw: string | undefined): number {
+  const n = Number.parseInt((raw ?? "").trim(), 10);
+  if (!Number.isFinite(n)) return DEFAULT_LIMIT_DAYS;
+  return Math.min(Math.max(n, 1), MAX_LIMIT_DAYS);
+}
+
+export async function getNewsCoverageAudit(
+  rawLimitDays: string | undefined,
+): Promise<NewsCoverageAuditResponse> {
+  const limitDays = clampDayLimit(rawLimitDays);
+
+  const rows = await querySqlView<DbCoverageAuditRow>(
+    "data_viz/api/services/analysis/news-audit/coverage-audit",
+    { limit_days: limitDays },
+  );
+  // Label the special scopes + the taxonomy ids once.
+  const labelMap = await fetchIndustryLabels(
+    Array.from(
+      new Set(rows.map((r) => r.industry_id).filter(
+        (id) => id.length > 0 && id !== "000001",
+      )),
+    ),
+  );
+
+  const coverage: NewsCoverageAuditRow[] = rows.map((r) => ({
+    date: formatDate(r.date),
+    industry_id: r.industry_id,
+    industry_label:
+      r.industry_id === "000001"
+        ? "(whole market)"
+        : r.industry_id.length > 0
+          ? labelMap.get(r.industry_id) ?? r.industry_id
+          : "(untagged)",
+    n_articles: toNum(r.n_articles) ?? 0,
+    n_digested: toNum(r.n_digested) ?? 0,
+    n_fake: toNum(r.n_fake) ?? 0,
+    n_industries: toNum(r.n_industries),
+  }));
+
+  return { limit_days: limitDays, enable_filters: true, rows: coverage };
 }

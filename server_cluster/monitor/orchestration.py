@@ -1,24 +1,31 @@
 """server_cluster.monitor.orchestration — the tier runner + router.
 
 The server-side shape of ``scripts/run_steps.sh``: one orchestration
-file's steps run in numeric key order, each submitted through this
-area's run registry (the shared jobs surface — so status polling, log
-tails, and POST /jobs/{tag}/stop all work for free) and POLLED to
-completion. Step failures are counted, never fatal to the tier
-(run_steps.sh semantics: monitoring is alert-only; a failed step just
-marks the tier failed). The runner's states live in memory (one server,
-in-flight tiers only — the durable run trail is the registry's + each
-step's own service_audit rows).
+file's steps run in numeric key order, each SUBMITTED TO ITS OWNING
+AREA SERVER over HTTP (:mod:`.step_router` — the 2026-11-21 scope-
+ownership unification: whoever configures a child also spawns it, so a
+step's child is parented by its own area's registry and adopted by that
+area after ITS restart) and POLLED to completion there. Step failures
+are counted, never fatal to the tier (run_steps.sh semantics:
+monitoring is alert-only; a failed step just marks the tier failed).
+The runner's states live in memory (one server, in-flight tiers only —
+the durable run trail is each owning server's registry + each step's
+own service_audit rows). There is NO in-process submit fallback: an
+unroutable or unreachable area fails the step (an unreachable one
+bounded — the same semantics as a lost run).
 
 ARRANGEMENT (the maintainer-arranged run path): a run posted with
-``arrange`` first upserts the tier's freq-window verdicts through the
-area's OrchestrationArranger (server_cluster/monitor/arrangement.py —
-the Shanghai-calendar rule over the service_config ``freq`` and the
-last successful exit) and then SKIPS the not-due steps (state
-``skipped_not_due``, never spawned) instead of relying on each step's
-in-module cadence guard to no-op — the maintainer's nightly chain
-arranges what to run, the Monitor UI's Orchestration page shows the
-arrangement. ``force`` records the arrangement but runs every step.
+``arrange`` first upserts the tier's verdicts through the area's
+OrchestrationArranger (server_cluster/monitor/arrangement.py — each
+step's DATA pre-check where one is declared: the latest closed sessions
+absent from its data table and whether their source csv is staged,
+server_cluster/monitor/pre_check.py; else the Shanghai-calendar rule
+over the service_config ``freq`` and the last successful exit) and
+then SKIPS the not-due steps (state ``skipped_not_due``, never
+spawned) instead of relying on each step's in-module cadence guard to
+no-op — the maintainer's nightly chain arranges what to run, the
+Monitor UI's Orchestration page shows the arrangement. ``force``
+records the arrangement but runs every step.
 
 diff-src-parallel (downloads tiers): steps carrying a ``src_host``
 (host group of their query destination) execute in WAVES — consecutive
@@ -27,27 +34,33 @@ the whole wave is polled to its exits before the next wave opens, so
 step order is never violated and same-host steps never overlap (their
 anti-bot pacing stays serial). A step WITHOUT ``src_host`` runs alone
 (fully serial — the escape hatch for ordering-dependent or
-must-stay-serial steps). The registry dedupe, per-service max_parallel
-claims and single-instance file locks all still apply per step.
+must-stay-serial steps). The END-OF-TIER resource-retry pass
+re-partitions its deferred steps through the same wave builder, so
+same-host steps deferred from different waves still run serially. The
+registry dedupe, per-service max_parallel claims and single-instance
+file locks all still apply per step.
 
-priority give-way: the wave protection above is per FILE — two
-concurrently-running files (the nightly chain and a manual run, the
-chain and the /non-daily backfill drive) can still contend for the
-machine and the query destinations. The runner is the PRIORITY BOARD:
-every step carries its service's priority (the service_config tree's
-``priority`` — :func:`_common.service_heartbeat.priority_for`: the
-downloads domain outranks every non-download regardless of cadence,
-and within a domain the more frequent the cadence the higher), and a
-step gives way to any STRICTLY higher-priority step of another run —
-a lower-priority wave step (and the /non-daily drive's re-run) holds
-back before its submit while one is in flight, and a higher-priority
-run arriving MID-RUN stops the child (registry stop) until that run
-finishes, then resumes it as a fresh child of the same module — the
-tasks' incremental guards pick up where the stop left off. Equal
-priorities never give way to each other (same-rank runs stay
-concurrent, as before). Runs adopted after a monitor restart carry no
-step plan, so they claim no board (the chain aborts on a lost run
-anyway — the same in-memory boundary).
+priority give-way (priority rank + SAME-SRC): the wave protection above
+is per FILE — two concurrently-running files (the nightly chain and a
+manual run, the chain and the /non-daily backfill drive) can still
+contend for the machine and the query destinations. The runner is the
+PRIORITY BOARD: every step carries its service's priority (the
+service_config tree's ``priority`` —
+:func:`_common.service_heartbeat.priority_for`: the downloads domain
+outranks every non-download regardless of cadence, and within a domain
+the more frequent the cadence the higher), and a step gives way when
+another run's in-flight child either outranks it STRICTLY or claims
+the SAME src_host — the rank alone cannot order the equal-rank case
+(the /non-daily drive's re-run of one csindex module against the
+chain's another). A blocked step holds back before its submit; one
+blocked MID-RUN is stopped (POST /jobs/{tag}/stop at the OWNING
+server) until the blocker finishes, then resumed as a fresh child of
+the same module — the tasks' incremental guards pick up where the stop
+left off. The /non-daily drive's running re-runs sit ON the board
+(:meth:`OrchestrationRunner.register_claim` / ``release_claim``), so
+both surfaces hold back / stop-resume symmetrically. Equal-priority,
+different-src claims never give way to each other (same-rank runs stay
+concurrent, as before).
 """
 from __future__ import annotations
 
@@ -56,6 +69,7 @@ import logging
 import os
 import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
@@ -74,6 +88,9 @@ from _common.caution_log import record_service_error
 # The step's give-way rank — the service_config tree's ``priority``
 # (downloads domain +100 over the freq rank; higher = wins conflicts).
 from _common.service_heartbeat import priority_for
+
+from .step_router import OwningStepsClient, StepRoute, StepRouter, \
+    UnroutedModuleError
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +111,13 @@ _DEFAULT_WAVE_WIDTH = 8
 # stalled registry sweep. Generous, and never reached in practice.
 _YIELD_EXIT_CAP_S = 300.0
 
+# How long an owning server may stay unreachable during a wave's status
+# poll before its in-flight steps are failed "like a lost run" (the tier
+# marks failed; /pipeline/finish remains the recovery). Bounds the poll
+# loop against an area server that died mid-tier — the children
+# themselves are detached and survive (their own registries track them).
+_AREA_UNREACHABLE_CAP_S = 120.0
+
 # Child exit-code contracts (frozen; canonical definitions in
 # _common.service_heartbeat.EXIT_ALREADY_RUNNING and
 # _common.pre_check.EXIT_RESOURCE — mirrored here to keep pandas out of
@@ -107,6 +131,17 @@ _YIELD_EXIT_CAP_S = 300.0
 #     retry pass; the missing resource frees asynchronously.
 _EXIT_ALREADY_RUNNING = 10
 _EXIT_RESOURCE = 11
+
+
+@dataclass(frozen=True)
+class PriorityBoard:
+    """One snapshot of the give-way board (:meth:`OrchestrationRunner.
+    priority_claims`). ``claims`` maps priority -> claimant labels —
+    the STRICTLY-higher test; ``src_claims`` maps src_host -> claimant
+    labels — the SAME-SRC test (a host group no other run's in-flight
+    child may share)."""
+    claims: dict[int, list[str]] = field(default_factory=dict)
+    src_claims: dict[str, list[str]] = field(default_factory=dict)
 
 
 def _max_wave_width() -> int:
@@ -124,12 +159,27 @@ def _max_wave_width() -> int:
 
 class OrchestrationRunner:
     """One in-flight tier run per tag (thread-safe; the router resolves
-    the instance off app.state)."""
+    the instance off app.state).
 
-    def __init__(self, registry) -> None:
-        self._registry = registry
+    Step execution rides the OWNING servers: ``self._router`` maps a
+    step's module to its area, ``self._steps`` submits/polls/stops it
+    there over HTTP. No run-registry handle of this server's own is
+    kept — a monitor-area step routes back to this server's /jobs
+    router like any other area's."""
+    _steps = OwningStepsClient()
+
+    def __init__(self, step_router: StepRouter | None = None) -> None:
+        self._router = step_router or StepRouter()
         self._lock = threading.Lock()
         self._runs: dict[str, dict] = {}
+        # Registered EXTERNAL claims (the /non-daily drive's running
+        # re-runs; tag -> {priority, src_host, label}) — the board's
+        # view of children this runner did not spawn, so same-src and
+        # strictly-higher give-way work across the two surfaces.
+        self._external_claims: dict[str, dict] = {}
+        # base_url → first unreachable-monotonic-ts during ONE wave's
+        # polling (cleared on the first successful fetch from that area).
+        self._area_unreachable_since: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # plan
@@ -272,12 +322,22 @@ class OrchestrationRunner:
             failed += n_failed
             deferred.extend(wave_deferred)
         if deferred:
+            # The deferred steps came from DIFFERENT waves, so their
+            # src_hosts may repeat — re-partition through the wave
+            # builder or two same-host steps would retry concurrently.
+            retry_waves = self._build_waves(deferred)
             logger.info("orchestration %s: retrying %d resource-starved "
-                        "step(s) after the tier body: %s", plan.file,
-                        len(deferred), " ".join(s.script for s in deferred))
-            n_failed, _ = self._run_wave(tag, plan.file, deferred,
-                                         resource_retry=True)
-            failed += n_failed
+                        "step(s) after the tier body in %d wave(s): %s",
+                        plan.file, len(deferred), len(retry_waves),
+                        " ".join(s.script for s in deferred))
+            for idx, wave in enumerate(retry_waves, start=1):
+                logger.info("orchestration %s: retry wave %d/%d: %s",
+                            plan.file, idx, len(retry_waves),
+                            " ".join(f"{s.num}[{s.src_host or 'serial'}]"
+                                     for s in wave))
+                n_failed, _ = self._run_wave(tag, plan.file, wave,
+                                             resource_retry=True)
+                failed += n_failed
         with self._lock:
             self._runs[tag]["state"] = "failed" if failed else "done"
         logger.info("orchestration %s: %s (%d step(s) failed)",
@@ -306,11 +366,11 @@ class OrchestrationRunner:
         (failed-step count, deferred steps)."""
         failed = 0
         deferred: list[OrchestrationStep] = []
-        pending: dict[str, OrchestrationStep] = {}
+        pending: dict[str, tuple[OrchestrationStep, StepRoute]] = {}
         held: list[OrchestrationStep] = []
         yields: dict[str, int] = {}
         for step in wave:
-            blocker = self._blocking_claimant(step.priority, tag)
+            blocker = self._blocking_claimant(step.priority, step.src_host, tag)
             if blocker is not None:
                 self._hold_step(tag, file, step.num,
                                 f"higher-priority run in flight "
@@ -320,7 +380,7 @@ class OrchestrationRunner:
             failed += self._submit_step(tag, file, step, pending)
         while pending or held:
             for step in list(held):
-                blocker = self._blocking_claimant(step.priority, tag)
+                blocker = self._blocking_claimant(step.priority, step.src_host, tag)
                 if blocker is not None:
                     continue
                 held.remove(step)
@@ -328,12 +388,26 @@ class OrchestrationRunner:
                             "board clear — resuming", file, step.num,
                             step.script)
                 failed += self._submit_step(tag, file, step, pending)
-            statuses = (self._registry.status_many(list(pending))
-                        if pending else {})
-            for entry_tag, step in list(pending.items()):
+            statuses, unreachable = self._statuses_for(pending)
+            for entry_tag, (step, route) in list(pending.items()):
+                if route.base_url in unreachable:
+                    # The owning area stayed unreachable past the cap:
+                    # the step fails "like a lost run" (the tier marks
+                    # failed; /pipeline/finish remains the recovery).
+                    # The tracker resets with the abandonment — a LATER
+                    # wave starts its own 120s tolerance from scratch
+                    # (a stale `since` would fail on the first blip).
+                    failed += self._fail_step(
+                        tag, file, step, None,
+                        f"owning server {route.area} ({route.base_url}) "
+                        f"unreachable for {int(_AREA_UNREACHABLE_CAP_S)}s "
+                        f"— step abandoned like a lost run")
+                    del pending[entry_tag]
+                    self._area_unreachable_since.pop(route.base_url, None)
+                    continue
                 status = statuses.get(entry_tag)
                 if status is not None and status.get("running", True):
-                    blocker = self._blocking_claimant(step.priority, tag)
+                    blocker = self._blocking_claimant(step.priority, step.src_host, tag)
                     if blocker is None:
                         continue
                     yields[step.num] = yields.get(step.num, 0) + 1
@@ -342,9 +416,9 @@ class OrchestrationRunner:
                         "stopping to give way (yield %d)", file,
                         step.num, step.script, step.priority, blocker,
                         yields[step.num])
-                    self._registry.stop(entry_tag)
+                    self._stop_at(route, entry_tag, file, step)
                     del pending[entry_tag]
-                    if not self._await_run_exit(entry_tag):
+                    if not self._await_run_exit(entry_tag, route):
                         failed += self._fail_step(
                             tag, file, step, None,
                             f"still running after the give-way stop "
@@ -410,53 +484,96 @@ class OrchestrationRunner:
     # priority give-way (the runner is the priority board)
     # ------------------------------------------------------------------
 
+    def register_claim(self, tag: str, priority: int,
+                       src_host: str | None, label: str) -> None:
+        """Put an EXTERNAL runner's in-flight child (the /non-daily
+        drive's running re-run) on the give-way board under ``tag`` —
+        from here on the board treats it like a running step of another
+        run: its ``priority`` feeds the strictly-higher test, its
+        ``src_host`` the same-src test. Re-registering a tag replaces
+        its claim (the resume path re-registers the same tag)."""
+        with self._lock:
+            self._external_claims[tag] = {"priority": priority,
+                                          "src_host": src_host,
+                                          "label": label}
+
+    def release_claim(self, tag: str) -> None:
+        """Drop the external claim under ``tag`` — every drive exit
+        path (exit, abandon, resume-submit failure) releases in a
+        finally."""
+        with self._lock:
+            self._external_claims.pop(tag, None)
+
     def priority_claims(self, exclude_tag: str | None = None
-                        ) -> dict[int, list[str]]:
-        """priority -> claimant labels (``file#num script``) over the
-        RUNNING steps of in-flight runs — the give-way board this
-        runner's lower-ranked waves (and the /non-daily backfill drive)
-        poll. The caller's own run is excluded via ``exclude_tag``:
-        same-run steps never block each other (a run's waves already
-        order its own steps)."""
+                        ) -> PriorityBoard:
+        """The give-way board over the RUNNING steps of in-flight runs
+        PLUS the registered external claims (the /non-daily drive's
+        running re-runs via :meth:`register_claim`) — the board this
+        runner's lower-ranked waves (and the drive itself) poll.
+        ``exclude_tag`` drops the caller's own tag: same-run steps never
+        block each other (a run's waves already order its own steps),
+        and a drive excludes its own registered claim."""
         with self._lock:
             claims: dict[int, list[str]] = {}
+            src_claims: dict[str, list[str]] = {}
             for run in self._runs.values():
                 if run["state"] != "running" or run["tag"] == exclude_tag:
                     continue
                 for record in run["steps"].values():
-                    if record["state"] == "running":
-                        claims.setdefault(record["priority"], []).append(
-                            f"{run['file']}#{record['num']} "
-                            f"{record['script']}")
-            return claims
+                    if record["state"] != "running":
+                        continue
+                    label = (f"{run['file']}#{record['num']} "
+                             f"{record['script']}")
+                    claims.setdefault(record["priority"], []).append(label)
+                    src_host = record.get("src_host")
+                    if src_host:
+                        src_claims.setdefault(src_host, []).append(label)
+            for tag, claim in self._external_claims.items():
+                if tag == exclude_tag:
+                    continue
+                claims.setdefault(claim["priority"], []).append(
+                    claim["label"])
+                if claim["src_host"]:
+                    src_claims.setdefault(claim["src_host"], []).append(
+                        claim["label"])
+            return PriorityBoard(claims=claims, src_claims=src_claims)
 
-    def _blocking_claimant(self, priority: int, exclude_tag: str
-                           ) -> str | None:
-        """The highest claimant STRICTLY above ``priority`` on the
-        board, if any (None = clear to run). Equal priorities never
-        block — same-rank runs stay concurrent, as before."""
-        claims = self.priority_claims(exclude_tag)
-        top = max((p for p in claims if p > priority), default=None)
-        if top is None:
-            return None
-        return f"{claims[top][0]} [P{top}]"
+    def _blocking_claimant(self, priority: int, src_host: str | None,
+                           exclude_tag: str) -> str | None:
+        """The blocker for a would-run step, if any (None = clear to
+        run). A claim STRICTLY above ``priority`` blocks as before; a
+        claim on the SAME ``src_host`` blocks too — same-src children
+        never overlap regardless of rank (the equal-priority case the
+        rank alone cannot order). Equal-priority, different-src claims
+        never block — same-rank runs stay concurrent, as before."""
+        board = self.priority_claims(exclude_tag)
+        top = max((p for p in board.claims if p > priority), default=None)
+        if top is not None:
+            return f"{board.claims[top][0]} [P{top}]"
+        if src_host:
+            busy = board.src_claims.get(src_host)
+            if busy:
+                return f"src {src_host} busy: {busy[0]}"
+        return None
 
     def _submit_step(self, tag: str, file: str, step: OrchestrationStep,
-                     pending: dict[str, OrchestrationStep]) -> int:
-        """Submit one wave step through the registry (the dedupe still
-        applies — two tiers racing one module converge on the same
-        entry). Returns the counted-failure delta (1 on a submit
-        failure, else 0)."""
+                     pending: dict[str, tuple[OrchestrationStep, StepRoute]],
+                     ) -> int:
+        """Submit one wave step to its OWNING area server (POST /jobs/run
+        there — its registry spawns and parents the child; the dedupe
+        still applies, two tiers racing one module converge on the same
+        tag). Returns the counted-failure delta (1 on a submit failure,
+        else 0). NO in-process fallback: an unroutable module or an
+        unreachable owning server fails the step."""
         with self._lock:
             record = self._runs[tag]["steps"][step.num]
             record["state"] = "running"
         step_tag = f"{tag}:{step.num}:{step.script}"
         try:
-            entry, already = self._registry.submit(
-                step.script, step.args, step_tag)
-        except Exception as exc:  # noqa: BLE001 — a submit failure is
-            logger.exception(  # counted, never fatal
-                "orchestration step submit failed")
+            route = self._router.route(step.script)
+        except UnroutedModuleError as exc:
+            logger.error("orchestration %s step %s (%s): unrouted — %s",
+                         file, step.num, step.script, exc)
             with self._lock:
                 record.update(state="failed", exit_code=None,
                               tag=step_tag)
@@ -470,15 +587,81 @@ class OrchestrationRunner:
                 service=step.script,
             )
             return 1
+        try:
+            entry_tag, already = self._steps.submit(
+                route, step.script, step.args, step_tag)
+        except Exception as exc:  # noqa: BLE001 — a submit failure is
+            logger.exception(  # counted, never fatal
+                "orchestration step submit failed (%s at %s)",
+                step.script, route.base_url)
+            with self._lock:
+                record.update(state="failed", exit_code=None,
+                              tag=step_tag)
+            record_service_error(
+                f"orchestration {file} step {step.num} submit failed "
+                f"({step.script} at {route.area} {route.base_url}): {exc}",
+                dedupe_key=f"submit:{step.script}",
+                detail={"tier": file, "step": step.num,
+                        "script": step.script, "args": step.args,
+                        "area": route.area, "base_url": route.base_url,
+                        "error": str(exc), "tag": step_tag},
+                service=step.script,
+            )
+            return 1
         with self._lock:
-            record["tag"] = entry.tag
+            record["tag"] = entry_tag
         if already:
-            # Same tag in flight — the registry deduped; poll the
+            # Same tag in flight — the owning registry deduped; poll the
             # SAME entry (two tiers racing one module converge).
             logger.info("orchestration %s step %s (%s) deduped to an "
                         "in-flight run", file, step.num, step.script)
-        pending[entry.tag] = step
+        pending[entry_tag] = (step, route)
         return 0
+
+    def _statuses_for(self, pending: dict[str, tuple[OrchestrationStep,
+                                                    StepRoute]],
+                      ) -> tuple[dict[str, dict], set[str]]:
+        """One merged status fetch across the pending steps' owning
+        servers (ONE GET /jobs/status per distinct base_url per poll
+        tick). Returns (tag → status, unreachable base_urls). An area
+        whose fetch fails is tolerated for ``_AREA_UNREACHABLE_CAP_S``
+        (its steps just keep pending — a transient blip never fails a
+        healthy child); past the cap its base_url is returned in the
+        unreachable set and the wave loop fails those steps like a lost
+        run."""
+        by_area: dict[str, tuple[StepRoute, list[str]]] = {}
+        for entry_tag, (_step, route) in pending.items():
+            group = by_area.setdefault(route.base_url, (route, []))
+            group[1].append(entry_tag)
+        merged: dict[str, dict] = {}
+        unreachable: set[str] = set()
+        now = time.monotonic()
+        for base_url, (route, tags) in by_area.items():
+            try:
+                merged.update(self._steps.status_many(route, tags))
+            except Exception as exc:  # noqa: BLE001 — bounded below
+                since = self._area_unreachable_since.setdefault(
+                    base_url, now)
+                logger.warning(
+                    "orchestration: status poll of %s (%s) failed since "
+                    "%.0fs: %s", route.area, base_url, now - since, exc)
+                if now - since >= _AREA_UNREACHABLE_CAP_S:
+                    unreachable.add(base_url)
+                continue
+            self._area_unreachable_since.pop(base_url, None)
+        return merged, unreachable
+
+    def _stop_at(self, route: StepRoute, entry_tag: str, file: str,
+                 step: OrchestrationStep) -> None:
+        """The give-way stop at the OWNING server (best effort — a
+        failed stop only logs; the SIGTERM ladder is the child-facing
+        backstop and _await_run_exit bounds the wait either way)."""
+        try:
+            self._steps.stop(route, entry_tag)
+        except Exception as exc:  # noqa: BLE001 — never fatal to the wave
+            logger.warning("orchestration %s step %s (%s): give-way stop "
+                           "at %s failed: %s", file, step.num, step.script,
+                           route.base_url, exc)
 
     def _hold_step(self, tag: str, file: str, num: str,
                    reason: str) -> None:
@@ -509,14 +692,18 @@ class OrchestrationRunner:
         )
         return 1
 
-    def _await_run_exit(self, entry_tag: str) -> bool:
-        """Poll one registry tag to its exit (a give-way-stopped child:
-        SIGTERM grace then SIGKILL bounds the child; the cap only
-        guards a stalled registry sweep). False when still running at
-        the cap."""
+    def _await_run_exit(self, entry_tag: str, route: StepRoute) -> bool:
+        """Poll one tag AT ITS OWNING SERVER to its exit (a give-way-
+        stopped child: SIGTERM grace then SIGKILL bounds the child; the
+        cap only guards a stalled registry sweep or an unreachable
+        area). False when still running at the cap."""
         deadline = time.monotonic() + _YIELD_EXIT_CAP_S
         while time.monotonic() < deadline:
-            status = self._registry.status_many([entry_tag]).get(entry_tag)
+            try:
+                status = self._steps.status_many(
+                    route, [entry_tag]).get(entry_tag)
+            except Exception:  # noqa: BLE001 — unreachable: keep waiting
+                status = {"running": True}
             if status is None or not status.get("running", True):
                 return True
             time.sleep(_STEP_POLL_S)

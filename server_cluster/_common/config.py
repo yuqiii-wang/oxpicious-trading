@@ -112,29 +112,34 @@ class AreaConfig(BaseModel):
         default=262144, ge=1024,
         description="How much of a run's service log the result endpoint "
         "returns as its output tails.")
-    # --- restart execution (2026-11-13 detection/execution split) --------
+    # --- restart execution -----------------------------------------------
+    # DEPRECATED 2026-11-21 (control unification plan Phase 2 — executor
+    # demotion): the maintainer is back to clock + janitor + EMERGENCY
+    # spawn only, and every supervisor spawns its own residents in
+    # process (the flag is false for every area). The field and the
+    # delegate wiring stay through the observation window, then go away
+    # with maintainer_client.restart_via_maintainer.
     restart_via_maintainer: bool = Field(
         default=False,
-        description="When true, this server's resident restarts are "
-        "DELEGATED over HTTP to the maintainer server (the cluster's "
-        "ONE executor, POST /processes/{service}/restart) — the "
-        "supervisor stays the detector (desired state, adoption, crash "
-        "backoff, stale-process fingerprints) and falls back to its "
-        "in-process spawn whenever the maintainer is unreachable. "
-        "Set on the areas that HAVE residents (downloader, monitor).")
+        description="DEPRECATED 2026-11-21, false everywhere: when true, "
+        "this server's resident restarts are DELEGATED over HTTP to the "
+        "maintainer server (POST /processes/{service}/restart) with the "
+        "in-process spawn as fallback. The executor demotion returned "
+        "restart execution to the scope supervisor (whoever configures "
+        "a child also spawns it); the maintainer keeps ONE direct-control "
+        "path — the emergency spawn gated on the scope server being "
+        "unreachable.")
 
 
 def _default_area(area: str, port: int, prefixes: list[str],
-                  residents: Optional[list[ResidentSpec]] = None,
-                  restart_via_maintainer: bool = False
+                  residents: Optional[list[ResidentSpec]] = None
                   ) -> AreaConfig:
     """One default area — the service name IS ``server_cluster.<area>``
     (the watchdog's spawn contract)."""
     return AreaConfig(
         area=area, service=f"server_cluster.{area}",
         module_prefixes=prefixes, port=port,
-        residents=[r.model_copy() for r in (residents or [])],
-        restart_via_maintainer=restart_via_maintainer)
+        residents=[r.model_copy() for r in (residents or [])])
 
 
 # The five known areas — the checked-in registry (a cluster_config.json
@@ -199,13 +204,14 @@ INFRA_RESIDENTS = [
 WATCHDOG_RESIDENTS = [ResidentSpec(service="database.stream_watchdog")]
 
 DEFAULT_AREAS: dict[str, AreaConfig] = {
-    # downloader + monitor are the two areas with residents — both
-    # DELEGATE their restarts to the maintainer (the cluster's ONE
-    # executor, 2026-11-13 detection/execution split); the in-process
-    # spawn stays as the fallback (bootstrap + maintainer outage).
+    # downloader + monitor are the two areas with residents. 2026-11-21
+    # executor demotion (control unification plan Phase 2): both spawn
+    # their residents IN PROCESS again — whoever configures a child also
+    # spawns it; the maintainer keeps only the emergency spawn (gated on
+    # the scope server being unreachable). The 2026-11-13
+    # detection/execution split's central-executor window is closed.
     "downloader": _default_area("downloader", 8769, ["downloads."],
-                                residents=STREAM_POLLERS,
-                                restart_via_maintainer=True),
+                                residents=STREAM_POLLERS),
     "builder": _default_area("builder", 8770, ["builds."]),
     "analyzer": _default_area("analyzer", 8771, ["analysis."]),
     "strategist": _default_area("strategist", 8772,
@@ -225,8 +231,7 @@ DEFAULT_AREAS: dict[str, AreaConfig] = {
     "monitor": _default_area("monitor", 8773,
                              ["database.", "llm_agents.", "test."],
                              residents=SERVER_RESIDENTS + INFRA_RESIDENTS
-                             + WATCHDOG_RESIDENTS,
-                             restart_via_maintainer=True),
+                             + WATCHDOG_RESIDENTS),
     # Read-only configuration area (2026-11): serves the service catalog
     # (the service_config tree + per-area residents),
     # the orchestration step files, and the cluster topology as JSON — the

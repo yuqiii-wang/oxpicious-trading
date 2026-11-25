@@ -1,6 +1,6 @@
 """Fetch the LATEST missing trading date's PE per SSE stock into the archive.
 
-Nightly companion to ``downloads.stock.sse.trend_pe`` (the weekly anchor
+Nightly companion to ``downloads.stock.sse.pe`` (the weekly anchor
 crawl): for each IMPORTANT SSE stock (curated importance rank 0-1 of the
 importance_rules stock JSONs — the shared ``load_important_stocks``
 universe), request 静态市盈率(倍) + 总换手率(%) for the LATEST missing
@@ -20,12 +20,12 @@ costs only the in-memory read). A fetch failure (PE not yet published /
 suspended stock / host block) leaves the stock missing; the next nightly
 sweep retries the same date, so publication lag self-heals. The gap-anchor
 crawl (quarterly snapshots + big-jump dates) is the weekly
-``downloads.stock.sse.trend_pe`` sweep (2026-11-20: the archive module's
+``downloads.stock.sse.pe`` sweep (2026-11-20: the archive module's
 former PE half, migrated to the trend side — this module now imports the
 shared 成交概况 fetch helpers from there).
 
 Entry point: ``python -m downloads.stock.sse.pe_latest`` — a DownloadJob
-reusing the trend_pe module's 成交概况 fetch helpers and its
+reusing the pe module's 成交概况 fetch helpers and its
 ``load_important_stocks`` universe loader.
 """
 from __future__ import annotations
@@ -49,7 +49,7 @@ from downloads._common import (
 )
 from downloads._common.exchanges.sse import CSV_ENCODING
 from downloads.stock.sse.archive.__main__ import ARCHIVE_DIRNAME
-from downloads.stock.sse.trend_pe.__main__ import (
+from downloads.stock.sse.pe.__main__ import (
     PE_FULL_COLUMNS,
     SSE_TRADE_STATS_URL,
     _fetch_trade_stats_alt,
@@ -209,7 +209,7 @@ class SseStockPeLatestDownload(DownloadJob):
             )
 
         # Universe: the IMPORTANT SSE stocks only (curated rank 0-1 of the
-        # importance_rules stock JSONs) — the same universe trend_pe's
+        # importance_rules stock JSONs) — the same universe pe service's
         # weekly anchor sweep loads. Non-important {code}_pe.csv files keep
         # their history on disk but stop getting fresh anchors.
         conn = get_db_connection()

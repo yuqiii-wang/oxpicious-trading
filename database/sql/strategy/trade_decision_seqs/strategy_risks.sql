@@ -115,9 +115,11 @@ CREATE TABLE IF NOT EXISTS strategy.strategy_risks (
 
     -- Risk grade (derived from the absolute risk_score on the new
     --   exponential scale, k = ln 2 ⇒ one window at threshold = 1.0):
-    --   LITTLE = structural — criteria-based (almost no losses + stable
-    --     gains + profitable) OR the ORACLE mode (strategy_name 'oracle*',
-    --     the perfect-foresight upper-bound replay = the risk floor)
+    --   LITTLE = structural — criteria-based, MAGNITUDE-NATIVE (almost no
+    --     losses by magnitude share + no material losing month + net
+    --     profitable; the 2026-11-21 refactor demised the former per-trade
+    --     count/CV gates and the ORACLE hard route — the perfect-foresight
+    --     replay qualifies through the same calculated criteria)
     --   < 1.0 = LOW, 1.0–3.0 = MODERATE, 3.0–6.0 = ELEVATED, > 6.0 = HIGH
     risk_grade                    TEXT
         CHECK (risk_grade IN ('LITTLE', 'LOW', 'MODERATE', 'ELEVATED', 'HIGH')),
@@ -204,7 +206,7 @@ COMMENT ON COLUMN strategy.strategy_risks.drawdown_1st_val IS 'Magnitude (trough
 COMMENT ON COLUMN strategy.strategy_risks.drawdown_2nd_val IS 'Magnitude (trough_cum_pnl - peak_cum_pnl, signed <= 0) of the 2nd-worst cumulative-P&L drawdown. NULL if fewer than 2 drawdown episodes.';
 COMMENT ON COLUMN strategy.strategy_risks.drawdown_3rd_val IS 'Magnitude (trough_cum_pnl - peak_cum_pnl, signed <= 0) of the 3rd-worst cumulative-P&L drawdown. NULL if fewer than 3 drawdown episodes.';
 COMMENT ON COLUMN strategy.strategy_risks.risk_score       IS 'Exponential rolling-window risk score. For each window W in {1d,30d,90d,365d}, the worst W-day rolling LOSS (realized + unrealized MTM dip + window-end residual) contributes exp(k * loss_fraction / threshold_W) - 1, where loss_fraction = |loss|/total_abs_pnl (LOSSES ONLY), threshold_W is a log-curve fit through (month=25%, season=50%, year=75% of total_abs_pnl), k = ln 2. Unrealized weighted at 30% vs realized. Higher = more dangerous.';
-COMMENT ON COLUMN strategy.strategy_risks.risk_grade       IS 'LITTLE / LOW / MODERATE / ELEVATED / HIGH — LITTLE is structural (criteria-based: almost no losses + stable gains + profitable; or the ORACLE mode strategy_name oracle*, the perfect-foresight replay = the risk floor); otherwise derived from risk_score: <1.0 LOW, <3.0 MODERATE, <6.0 ELEVATED, else HIGH.';
+COMMENT ON COLUMN strategy.strategy_risks.risk_grade       IS 'LITTLE / LOW / MODERATE / ELEVATED / HIGH — LITTLE is structural (criteria-based, magnitude-native: loss magnitude share < 10% of the P&L volume + worst losing month < 5% + net profitable); otherwise derived from risk_score: <1.0 LOW, <3.0 MODERATE, <6.0 ELEVATED, else HIGH.';
 COMMENT ON COLUMN strategy.strategy_risks.deepest_drop_since_unzero_pos IS 'Worst close-price peak-to-trough drawdown (signed fractional ratio, <= 0) observed during any maximal span where position > 0. Captures the worst paper-loss endured while holding. 0 = price only rose while holding.';
 COMMENT ON COLUMN strategy.strategy_risks.deepest_drop_since_unzero_pos_peak_date   IS 'Biz date of the peak (running max close) from which the worst unzero-position drop was measured.';
 COMMENT ON COLUMN strategy.strategy_risks.deepest_drop_since_unzero_pos_trough_date IS 'Biz date of the trough (lowest close) reached in the worst unzero-position drop.';

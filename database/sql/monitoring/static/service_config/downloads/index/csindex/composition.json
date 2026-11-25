@@ -6,7 +6,7 @@
   "is_resident": false,
   "freq": "quarterly",
   "priority": 140,
-  "schedule": "calendar-quarterly pass — quarter-start refresh on the 1st of Jan/Apr/Jul/Oct (cron-scheduled; in-runner quarterly-refresh guard: cached quarter < yesterday's quarter)",
+  "schedule": "calendar-quarterly pass — refresh one week after the quarter start (due the 8th of Jan/Apr/Jul/Oct; cron-scheduled; in-runner quarterly-refresh guard: cached quarter < yesterday's quarter)",
   "notes": null,
   "source_ref": "scripts/orchestration/downloads_quarterly.json",
   "updated_at": "2026-11-20T15:25:15.716730+00:00"

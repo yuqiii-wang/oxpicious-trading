@@ -5,5 +5,5 @@
     "view": "server_cluster/monitor/non_daily/oracle_signals_coverage"
   },
   "rerun_args": [],
-  "notes": "Oracle pivot coverage vs the bars frontier (20-day tolerance: the weekly cadence's ~1-week lag + the 5-row pivot confirmation window): a code whose newest pivot row lags the frontier is stale — the weekly tier's own gate makes the nightly fires no-ops, so the Saturday backfill re-run is what closes the gap."
+  "notes": "Oracle pivot coverage vs the bars frontier (20-day tolerance: the trail ends 2 bars before the frontier and the newest bars have no placeable pivots yet): a code whose newest pivot row lags the frontier is stale. DAILY incremental since 2026-11-21 (the former weekly tier + gate retired) keeps the built trail within a few bars — a gap beyond the tolerance means the nightly fire stopped writing (check the arrangement board / service_audit)."
 }

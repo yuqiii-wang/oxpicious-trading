@@ -33,6 +33,7 @@ import { baseChartOption, commonTooltip, useChartThemeMode } from "@/shared/char
 import { useAiAskAddon, INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import { useDocs, compactDefined } from "@/shared/docs";
+import { fmtMonth } from "@/shared/datetime";
 import {
   MA20_COLOR,
   MA60_COLOR,
@@ -294,7 +295,7 @@ export default function IndexPanel({ index, onDateClick, insightPage = INSIGHT_P
         axisLabel: {
           color: c.textColor,
           fontSize: 8,
-          formatter: (v: string) => v.slice(0, 7),
+          formatter: (v: string) => fmtMonth(v), // monthly tick labels
           interval: Math.max(1, Math.floor(broken.dates.length / 8)),
         },
         splitLine: { show: false },

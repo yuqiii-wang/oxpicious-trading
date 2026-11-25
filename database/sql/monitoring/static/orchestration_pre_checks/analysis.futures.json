@@ -1,0 +1,10 @@
+{
+  "service": "analysis.futures",
+  "kind": "derive",
+  "tables": [
+    {
+      "table": "analysis.futures_ext"
+    }
+  ],
+  "notes": "Presence = the session in analysis.futures_ext (pk code, date)."
+}

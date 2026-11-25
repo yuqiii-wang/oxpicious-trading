@@ -83,6 +83,43 @@ export interface DebtDailyResponse {
 }
 
 // ----------------------------------------------------------------------------
+// Macro (precious metals — SGE Au99.99/Ag99.99 spot + COMEX GC/SI main
+// continuous)
+//   Daily bars per instrument: one row per (code, date) from
+//   stats.v_macro_daily (macro_identity + macro_basic_stats), loaded by
+//   builds.macro from temps/gold_silver/*.csv (downloads.macro.gold_silver).
+//   Units are per-instrument (macro_identity.unit): Au99.99 CNY/克,
+//   Ag99.99 CNY/kg, GC/SI USD/ozt — never convert client-side.
+// ----------------------------------------------------------------------------
+export interface MacroDailyRow {
+  date: string;
+  code: string;
+  name: string;
+  /** static.label_dim 'macro_metal' decode of metal_type (0 gold / 1 silver). */
+  metal_label: string;
+  unit: string;
+  /** Data source slug ("sge" | "sina"). */
+  source: string;
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  close: number | null;
+  /** vs the instrument's previous trading-day close (computed in builds.macro). */
+  change: number | null;
+  change_pct: number | null;
+  /** COMEX klines only (lots); null for the SGE spot bars. */
+  volume: number | null;
+}
+
+export interface MacroDailyResponse {
+  /** Unique sorted trading dates across the returned rows. */
+  dates: string[];
+  rows: MacroDailyRow[];
+  minDate: string;
+  maxDate: string;
+}
+
+// ----------------------------------------------------------------------------
 // PBoC Open Market Announcements (stats.pboc_oma)
 //   High-level policy notices (公开市场业务公告) — NOT daily transaction
 //   announcements. Loaded from temps/pboc_oma_news/oma_combined.csv by
@@ -2216,6 +2253,196 @@ export interface MarketCrowdednessChartResponse {
   rows: MarketCrowdednessChartRow[];
 }
 
+/** One row of the News Text States chart (text.news_text_daily — built
+ *  by analysis.news_text_daily): the day's news-text state panel for one
+ *  scope, with the security's close read live from stats for price
+ *  context. Metric fields NULL on dates with no defined row (the
+ *  n>=3-scored guard / window warm-up); industry-kind rows exist only
+ *  on event days. Validated readings (2026-11-21 study): the level is
+ *  state, not a direction call; sent_ema10 is contrarian at the monthly
+ *  tail; flow_af is the abnormal-coverage risk flag (negative forward
+ *  IC). The sentiment_z/sentiment_ma5/flow_z/kw_tone tail is the RAW
+ *  mood layer LEFT JOINed from analysis.text_metrics_daily (built by
+ *  analysis.text_metrics — the merged-in Text Sentiment Metrics page's
+ *  LLM-only Tetlock z family): '' (broad market) for the market scopes,
+ *  the scope's industry_id for industry scopes, always NULL for sector
+ *  scopes (no raw rows). */
+export interface NewsTextStatesChartRow {
+  /** Trading date (YYYY-MM-DD) of the close row. */
+  date: string;
+  /** Close price read live from stats (SSE Composite for the market
+   *  scopes, industry_basic_stats.mean_close pool-'all' slice for
+   *  industries). */
+  close: number | null;
+  /** Articles in scope that day (the coverage basis flow_af reads). */
+  n_articles: number | null;
+  /** Digested non-fake articles entering the sentiment aggregates. */
+  n_scored: number | null;
+  /** Lexicon-blended mean sentiment [-5,+5] (0.7*LLM + 0.3*CFSD, a
+   *  disagreeing article weighted 0.5) — state, not direction. */
+  sent_level: number | null;
+  /** (level − trailing-60d mean)/std, min 20 obs. */
+  sent_z: number | null;
+  /** ewm(sent_z, halflife 3) — the shock line. */
+  sent_ema3: number | null;
+  /** ewm(sent_z, halflife 10) — the persistent line (validated
+   *  contrarian at the monthly tail). */
+  sent_ema10: number | null;
+  /** Level day-over-day change (the CFSD paper's "change" predictor). */
+  sent_delta: number | null;
+  /** (n_articles − trailing-63d median)/IQR, min 40 obs — the
+   *  abnormal-coverage risk flag (|af| ≥ 1 = abnormal). */
+  flow_af: number | null;
+  /** Articles blended-scored > +1. */
+  flow_pos: number | null;
+  /** Articles blended-scored < −1 (a flag, never bucketed). */
+  flow_neg: number | null;
+  /** Std across per-origin mean scores (≥ 2 origins; NULL otherwise). */
+  disp_origin: number | null;
+  /** kw_market px-tone keyword z (up-family minus down-family mentions)
+   *  — the lexicon cross-check on the LLM curves. */
+  lex_tone_z: number | null;
+  /** TRUE when n_scored < 3 — no reliable reading that day. */
+  low_coverage: boolean;
+  /** RAW layer — Tetlock (2007) abnormal sentiment from
+   *  analysis.text_metrics_daily: the day's LLM-only mean deviation
+   *  from its trailing 60-article-day history, in std units. */
+  sentiment_z: number | null;
+  /** RAW layer — sentiment_z smoothed over 5 article-days. */
+  sentiment_ma5: number | null;
+  /** RAW layer — abnormal news volume (article_count vs its trailing
+   *  60-article-day distribution; Heston-Sinha flow z). */
+  flow_z: number | null;
+  /** RAW layer — (bull − bear) / (bull + bear) kw_market tone,
+   *  −1..+1 — the deterministic lexicon cross-check; NULL when no
+   *  directional mentions. */
+  kw_tone: number | null;
+}
+
+/** Response for GET /api/analysis/news-text-states/chart. */
+export interface NewsTextStatesChartResponse {
+  /** The requested scope kind ('news_scope_kind' code). */
+  scope_kind: number;
+  /** The requested scope code ('000001' market, industry_id otherwise). */
+  scope_code: string;
+  rows: NewsTextStatesChartRow[];
+}
+
+/** One row of the News Text States scope list (the selector source). */
+export interface NewsTextStatesScopeRow {
+  /** 'news_scope_kind' code (0 market_all / 1 market_recap / 2
+   *  industry / 3 sector). */
+  scope_kind: number;
+  /** Decoded kind label (static.label_dim index). */
+  scope_kind_label: string;
+  /** '000001' for the market kinds, the industry_id for kind 2, the
+   *  L1 sector_id for kind 3. */
+  scope_code: string;
+  /** Canonical Chinese display name from the classification (the raw
+   *  code when unmapped). */
+  scope_label: string;
+  /** Panel rows present for the scope. */
+  rows: number;
+  /** Earliest panel date. */
+  min_date: string;
+  /** Latest panel date. */
+  max_date: string;
+}
+
+/** Response for GET /api/analysis/news-text-states/scopes. */
+export interface NewsTextStatesScopesResponse {
+  rows: NewsTextStatesScopeRow[];
+}
+
+/** One row of the News Text States industry event days (kind 2 — a row
+ *  only on days the industry has scored articles). */
+export interface NewsTextStatesEventRow {
+  date: string;
+  industry_id: string;
+  /** Canonical Chinese display name from the classification (the raw
+   *  code when unmapped). */
+  industry_label: string;
+  /** Articles in the industry scope that day. */
+  n_articles: number;
+  /** Scored articles (low_coverage below 3). */
+  n_scored: number;
+  /** Blended event-day mean sentiment (NULL never — ≥ 1 scored). */
+  sent_level: number | null;
+  flow_pos: number;
+  flow_neg: number;
+  low_coverage: boolean;
+}
+
+/** Response for GET /api/analysis/news-text-states/events. */
+export interface NewsTextStatesEventsResponse {
+  rows: NewsTextStatesEventRow[];
+}
+
+/** One day of the lexicon-vs-LLM disagreement series (the ambiguity
+ *  flag — text.news_lexicon_scores over the digested corpus). */
+export interface NewsTextStatesDisagreementRow {
+  date: string;
+  /** CFSD-scored articles that day. */
+  scored_count: number;
+  /** Of them, flagged disagreeing (sign mismatch AND |llm−lex| ≥ 2 —
+   *  the flag that halves the article's daily-blend weight). */
+  disagree_count: number;
+}
+
+/** Response for GET /api/analysis/news-text-states/disagreement. */
+export interface NewsTextStatesDisagreementResponse {
+  rows: NewsTextStatesDisagreementRow[];
+}
+
+/** One strong-negative industry event day (kind 2, blended level
+ *  ≤ −1.5 — the study's strong-neg cut; historically followed by
+ *  positive 5d industry returns, suggestive 6-13-event evidence). */
+export interface NewsTextStatesStrongNegEventRow {
+  date: string;
+  industry_id: string;
+  /** Canonical Chinese display name from the classification (the raw
+   *  code when unmapped). */
+  industry_label: string;
+  n_articles: number;
+  n_scored: number;
+  sent_level: number;
+  flow_pos: number;
+  flow_neg: number;
+  low_coverage: boolean;
+}
+
+/** Response for GET /api/analysis/news-text-states/strong-neg-events. */
+export interface NewsTextStatesStrongNegEventsResponse {
+  rows: NewsTextStatesStrongNegEventRow[];
+}
+
+/** One scope's latest event-day reading in the recent-levels window
+ *  (kinds 2 industry / 3 sector — the cross-section the bar overview
+ *  plots; a scope with no event-day row in the window is absent). */
+export interface NewsTextStatesRecentLevelRow {
+  /** 'news_scope_kind' code (2 industry / 3 sector). */
+  scope_kind: number;
+  /** The industry_id (kind 2) or L1 sector_id (kind 3). */
+  scope_code: string;
+  /** Canonical Chinese display name from the classification (the raw
+   *  code when unmapped). */
+  scope_label: string;
+  /** The reading's event day. */
+  date: string;
+  /** Scored articles behind the reading (low_coverage below 3). */
+  n_scored: number;
+  /** Blended event-day mean sentiment (NULL never — ≥ 1 scored). */
+  sent_level: number;
+  flow_pos: number;
+  flow_neg: number;
+  low_coverage: boolean;
+}
+
+/** Response for GET /api/analysis/news-text-states/recent-levels. */
+export interface NewsTextStatesRecentLevelsResponse {
+  rows: NewsTextStatesRecentLevelRow[];
+}
+
 /** One row of the Market Crowdedness codes list (full universe). */
 export interface MarketCrowdednessCodeRow {
   code: string;
@@ -3160,6 +3387,13 @@ export interface NewsProviderAuditRow {
   avg_word_count: number | null;
   /** COUNT(DISTINCT industry_id) over the window's items. */
   num_industries: number | null;
+  /** Registry media type (text.news_providers.news_type) — label_dim
+   *  'news_type' code: 0 news_article | 1 financial_report |
+   *  2 social_media | 3 ai_digest | 99 other. */
+  news_type_code: number;
+  /** The decoded media-type label ("other" when the registry row is
+   *  missing). */
+  news_type: string;
   /** Registry blocklist flag (text.news_providers.is_blocked). */
   is_blocked: boolean;
   /** Registry seen-date span (text.news_providers). */
@@ -3210,6 +3444,35 @@ export interface NewsContentAuditResponse {
   industry_id: string;
   enable_filters: boolean;
   rows: NewsContentAuditRow[];
+}
+
+/** One coverage-audit row — ONE TRADING DAY's coverage counts for one
+ *  industry (text.news_coverage_audit, built by analysis.news_audit's
+ *  CoverageAuditStep; the 2026-11-22 coverage migration's daily grain).
+ *  industry_id '000001' = the WHOLE-MARKET rollup row; "" = untagged. */
+export interface NewsCoverageAuditRow {
+  /** Trading day (YYYY-MM-DD; weekend articles rolled forward). */
+  date: string;
+  /** '000001' = the whole-market rollup; "" = untagged; else the id. */
+  industry_id: string;
+  /** Display label ('(whole market)' / '(untagged)' / the taxonomy name). */
+  industry_label: string;
+  /** Every text.news row in scope (digested or not — the raw coverage
+   *  basis the daily panel's flow_af reads). */
+  n_articles: number;
+  /** Rows with a text.news_digestions row. */
+  n_digested: number;
+  /** Rows whose digestion flagged is_fake_news. */
+  n_fake: number;
+  /** Rollup row only: distinct industry buckets covered that day. */
+  n_industries: number | null;
+}
+
+/** Response for GET /api/analysis/news-audit/coverage?limit_days= */
+export interface NewsCoverageAuditResponse {
+  limit_days: number;
+  enable_filters: boolean;
+  rows: NewsCoverageAuditRow[];
 }
 
 
@@ -4853,6 +5116,9 @@ export interface ForecastNextDayRow {
   /** The real bar date the forecast is anchored on. */
   anchor_date: string;
   code: string;
+  /** Display name from the sec_type's stats identity table (latest row
+   *  per code); null when no identity row is available. */
+  code_name: string | null;
   /** "down" | "up" — the scenario's side of the σ move. */
   direction: string;
   /** The σ multiplier k ∈ {1, 2, 3}. */
@@ -4881,6 +5147,9 @@ export interface ForecastNextDayRow {
   would_execute: boolean | null;
   /** The strategy the reading applies to (the nightly portfolio). */
   strategy_name: string;
+  /** The forecast run's write time (the writer stamps it on every
+   *  registration — the page's "run at" display). */
+  updated_at: string;
 }
 
 /** Response for GET /api/strategy/forecast. */
@@ -4891,4 +5160,108 @@ export interface ForecastNextDayResponse {
   /** The explicit anchor filter when given (null = latest per code). */
   anchor_date: string | null;
   rows: ForecastNextDayRow[];
+}
+
+// ============================================================================
+//  Signal Rules Audit (composite analysis) — the per-family census
+//  (analysis_signals.signal_type_audit) and the pairwise family overlap
+//  (analysis_signals.signal_overlap_audit), built by
+//  `python -m analysis.signal_rules_audit` over the standalone trading
+//  tier of analysis_signals.history_signals. Periods are calendar years
+//  (counts additive; "all" = the API-side SUM re-aggregation).
+// ============================================================================
+
+/** One meta row — a YEAR period present in the audit at the scope. */
+export interface SignalAuditPeriodRow {
+  /** Calendar year (e.g. 2024). */
+  period: number;
+  period_start: string;
+  period_end: string;
+  /** The period's DISTINCT (code, date) days with any family signal —
+   *  the chance denominator of the overlap audit's expected_pct. */
+  signal_universe: number;
+  n_families: number;
+  n_events: number;
+  computed_at: string;
+}
+
+/** Response for GET /api/analysis/signals-audit/meta?sec_type= */
+export interface SignalAuditMetaResponse {
+  sec_type: string;
+  /** Descending by period (the UI's period selector). */
+  rows: SignalAuditPeriodRow[];
+}
+
+/** One per-family census row (one YEAR period, or the all-history sum
+ *  with period = 0). */
+export interface SignalTypeAuditRow {
+  /** Calendar year; 0 = the all-history sum. */
+  period: number;
+  period_start: string;
+  period_end: string;
+  /** signal_type label code (static.label_dim 'signal_type'). */
+  signal_type: number;
+  /** Decoded family name (label_dim), null when unmapped. */
+  signal_type_label: string | null;
+  /** DISTINCT (code, date) days the family fired. */
+  n_events: number;
+  n_buy: number;
+  n_sell: number;
+  n_codes: number;
+  n_days: number;
+  signal_universe: number;
+  first_date: string;
+  last_date: string;
+}
+
+/** Response for GET /api/analysis/signals-audit/summary?sec_type=&period= */
+export interface SignalTypeAuditResponse {
+  sec_type: string;
+  /** The calendar year, or "all" for the all-history sum. */
+  period: number | "all";
+  /** Backend arg for the shared ExpandedTable header filters. */
+  enable_filters: boolean;
+  rows: SignalTypeAuditRow[];
+}
+
+/** One ordered-pair overlap row — A = base family (matrix ROW),
+ *  B = other family (matrix COLUMN); overlap_pct is asymmetric by
+ *  design: of A's trigger days, the fraction B also fired on. */
+export interface SignalOverlapAuditRow {
+  /** Calendar year; 0 = the all-history sum. */
+  period: number;
+  period_start: string;
+  period_end: string;
+  /** Base family A (static.label_dim 'signal_type' code). */
+  signal_type: number;
+  signal_type_label: string | null;
+  /** Co-occurring family B (matrix column). */
+  other_signal_type: number;
+  other_signal_type_label: string | null;
+  n_base: number;
+  n_other: number;
+  n_universe: number;
+  n_overlap: number;
+  /** Overlap days with at least one matching side (buy↔buy / sell↔sell). */
+  n_same_action: number;
+  /** Overlap days with at least one opposite side (buy↔sell — conflicts). */
+  n_opposite_action: number;
+  /** n_overlap / n_base, 0..1. */
+  overlap_pct: number;
+  /** n_other / n_universe — chance co-occurrence. */
+  expected_pct: number;
+  /** n_overlap / (n_base + n_other - n_overlap), 0..1. */
+  jaccard: number;
+  /** overlap_pct / expected_pct — > 1 = enrichment beyond chance. */
+  lift: number;
+}
+
+/** Response for GET /api/analysis/signals-audit/overlap?sec_type=&period= */
+export interface SignalOverlapAuditResponse {
+  sec_type: string;
+  /** The calendar year, or "all" for the all-history sum. */
+  period: number | "all";
+  /** Backend arg for the shared ExpandedTable header filters. */
+  enable_filters: boolean;
+  rows: SignalOverlapAuditRow[];
 }

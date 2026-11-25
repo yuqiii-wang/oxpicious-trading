@@ -1,0 +1,4 @@
+{
+  "view": "server_cluster/maintainer/daily_check/analysis/pair_pct_change_ratios",
+  "notes": "analysis_daily step 10 (analysis.pair_pct_change_ratios): the table's max(date) vs the stride-20 grid date(s) that have left the module's 15-calendar-day re-target grace — every grid date 15+ days past the frontier must be covered; between grid dates the table legitimately stands still, so only an uncovered due grid date alarms."
+}

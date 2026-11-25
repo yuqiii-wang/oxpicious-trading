@@ -1,0 +1,4 @@
+{
+  "view": "server_cluster/maintainer/daily_check/analysis/margins",
+  "notes": "analysis_daily step 4 (analysis.margins): analysis.margin_tech_stats max(date) per sec_type (etf, stock) vs that sec_type's stats.*_liquidity_margin frontier — the pipeline's own detect_missing_dates source. A lagging row means the nightly margin pass stopped for that sec_type."
+}

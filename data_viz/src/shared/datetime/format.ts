@@ -1,11 +1,13 @@
 /**
  * Timestamp display formatters — the one place the UI turns a timestamp
  * into display text. Input is an ISO string or epoch milliseconds; all are
- * null-safe with the UI-wide "—" fallback. The browser's locale (and
- * timezone, for zone-tagged output) decides the exact rendering, matching
- * the pre-extraction behavior at every call site.
+ * null-safe with the UI-wide "—" fallback. Time-of-day rendering follows
+ * the browser's locale (and timezone, for zone-tagged output); the DATE
+ * portion renders in the UI-wide yyyy-Mmm-dd display convention via
+ * `fmtDate` (see ./display).
  */
 import { SHANGHAI_TZ } from "./shanghai";
+import { fmtDate } from "./display";
 
 /** Anything `new Date(...)` accepts here: ISO string or epoch millis. */
 export type TimestampInput = string | number;
@@ -16,10 +18,10 @@ export function fmtTime(iso: TimestampInput | null): string {
   return new Date(iso).toLocaleTimeString();
 }
 
-/** Locale date + time — "2026/10/10 14:03:27". */
+/** Date + locale time — "2026-Nov-21 14:03:27". */
 export function fmtDateTime(iso: TimestampInput | null): string {
   if (iso == null || iso === "") return "—";
-  return new Date(iso).toLocaleString();
+  return `${fmtDate(iso)} ${new Date(iso).toLocaleTimeString()}`;
 }
 
 /** Locale time with a short zone tag — "14:03:27 GMT+8". */
@@ -42,10 +44,12 @@ export function fmtTimeShanghai(iso: TimestampInput | null): string {
   });
 }
 
-/** Asia/Shanghai date + time — "2026/10/10 14:03:27". */
+/** Asia/Shanghai date + time — "2026-Nov-21 14:03:27". */
 export function fmtDateTimeShanghai(iso: TimestampInput | null): string {
   if (iso == null || iso === "") return "—";
-  return new Date(iso).toLocaleString(undefined, { timeZone: SHANGHAI_TZ });
+  return `${fmtDate(iso)} ${new Date(iso).toLocaleTimeString(undefined, {
+    timeZone: SHANGHAI_TZ,
+  })}`;
 }
 
 /** Asia/Shanghai time with a short zone tag — "14:03:27 GMT+8". */

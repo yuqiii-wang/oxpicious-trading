@@ -23,6 +23,7 @@ import {
 } from "@/theme/chart-palette";
 import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
 import { fmtNum } from "@/lib/series";
+import { fmtDate, fmtMonth } from "@/shared/datetime";
 import { rebaseTo100 } from "./helpers";
 import { renderReactElement } from "@/lib/react-tooltip-renderer";
 
@@ -118,7 +119,7 @@ export function buildIndexAllocationPriceOption(
         const dateStr = allDates[idx0] ?? "";
         if (!dateStr) return "";
         const children: React.ReactNode[] = [];
-        children.push(React.createElement("div", { style: { fontWeight: 600 } }, dateStr));
+        children.push(React.createElement("div", { style: { fontWeight: 600 } }, fmtDate(dateStr)));
         for (const p of arr) {
           const s = rebasedSeries.find((it) => it.name === p.seriesName);
           if (!s) continue;
@@ -150,7 +151,7 @@ export function buildIndexAllocationPriceOption(
         fontSize: 9,
         interval: (_idx: number, value: string) =>
           displayMonths.has(value.slice(0, 7)) && firstDateOfMonth.has(value),
-        formatter: (v: string) => v.slice(0, 7),
+        formatter: (v: string) => fmtMonth(v),
       },
       splitLine: { show: false },
     },

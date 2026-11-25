@@ -3,11 +3,13 @@
 The scheduled requests the online-search summary agent serves every biz
 day (driven by ``python -m downloads.macro.ai_daily``): the general
 summary of the day's stock market — how the broad market traded and
-which sectors saw significant rises and drops — plus the two daily
+which sectors saw significant rises and drops — plus the daily
 geopolitics/economy asks (``daily_geo_asks``): the day's major GLOBAL
 geopolitics/politics/economy news and its financial-market implications
 (asked and answered in English) and the same for CHINA (asked and
-answered in Chinese).
+answered in Chinese), plus the investor-focus pair — which areas,
+factors, events and concerns investors care about most in recent
+trading — asked once in ENGLISH and once in CHINESE.
 
 By default the request triggers on TODAY (Asia/Shanghai) when today is
 a trading day, else on the LATEST biz date before today — a weekend /
@@ -126,14 +128,17 @@ def daily_target_or_clamp(
 
 
 # ----------------------------------------------------------------------------
-# Daily geopolitics/economy asks — the two questions besides the
+# Daily geopolitics/economy asks — the questions besides the
 # broad-market general summary. Global news asks (and answers) in
 # English, China news in Chinese; both anchor the same trigger date as
 # the general summary and run EVERY run — no gate, no cooldown (they
-# are broad-market asks, not industry movers).
+# are broad-market asks, not industry movers). The investor-focus pair
+# joins the same list: the same attention question asked in English and
+# in Chinese.
 # ----------------------------------------------------------------------------
 GEO_SCOPE_GLOBAL = "global"
 GEO_SCOPE_CHINA = "china"
+GEO_SCOPE_INVESTORS = "investors"
 
 
 
@@ -168,6 +173,35 @@ def daily_china_geo_query(
             f"有哪些重要新闻？这些新闻对金融市场有什么影响？")
 
 
+def daily_investor_focus_query_en(
+    target: Optional[datetime.date] = None,
+) -> str:
+    """The daily investor-focus question, in English.
+
+    Asks which areas, factors, events and concerns investors care about
+    most in recent trading. Passing *target* pins an explicit biz date;
+    None anchors on the default trigger date (today / latest biz date).
+    """
+    d = target if target is not None else default_daily_target()
+    return (f"As of {d.strftime('%B')} {d.day}, {d.year}, which areas, "
+            f"factors and events do investors care about most in recent "
+            f"trading, and what are their main concerns?")
+
+
+def daily_investor_focus_query_zh(
+    target: Optional[datetime.date] = None,
+) -> str:
+    """The daily investor-focus question, in Chinese.
+
+    Asks which areas, factors and events investors care about most in
+    recent trading and what their main concerns are — the Chinese
+    counterpart of :func:`daily_investor_focus_query_en`.
+    """
+    d = target if target is not None else default_daily_target()
+    return (f"截至{d.year}年{d.month}月{d.day}日，最近投资者在交易中"
+            f"最关注哪些板块、因子和事件？主要担忧有哪些？")
+
+
 
 
 def daily_geo_asks(
@@ -175,18 +209,23 @@ def daily_geo_asks(
     *,
     count: int = DAILY_COUNT,
 ) -> List[GeoAsk]:
-    """The two daily geopolitics/economy asks: (global en, china zh).
+    """The daily broad-market asks besides the general summary.
 
-    The single entry point the daily driver needs — one GeoAsk per
-    scope, global first, each carrying the date-embedded question and
-    the anchor-aware search options (same recency window and reference
-    count as the broad-market summary).
+    The geopolitics/economy pair (global in English, China in Chinese)
+    plus the investor-focus pair — which areas, factors, events and
+    concerns investors care about most in recent trading — asked in
+    English and in Chinese. The single entry point the daily driver
+    needs — one GeoAsk per (scope, language), each carrying the
+    date-embedded question and the anchor-aware search options (same
+    recency window and reference count as the broad-market summary).
     """
     d = target if target is not None else default_daily_target()
     asks = []
     for scope, query, lang in (
         (GEO_SCOPE_GLOBAL, daily_global_geo_query(d), "en"),
         (GEO_SCOPE_CHINA, daily_china_geo_query(d), "zh"),
+        (GEO_SCOPE_INVESTORS, daily_investor_focus_query_en(d), "en"),
+        (GEO_SCOPE_INVESTORS, daily_investor_focus_query_zh(d), "zh"),
     ):
         opts = SearchOptions(
             count=count, recency=daily_recency(d), content_size="high")

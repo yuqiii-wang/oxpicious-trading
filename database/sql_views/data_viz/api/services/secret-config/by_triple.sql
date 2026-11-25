@@ -10,6 +10,7 @@
 --     'ext_http_source' when web_search)
 --   model_name: value text — nullable model name ('' == NULL)
 SELECT secret_id, secret_type, provider, sub_type, model_name, context_length,
+       input_modality, output_modality,
        api_url, api_key_enc, api_key_hint, is_active, notes, updated_at
   FROM static.secret_config
  WHERE secret_type = {{secret_type}}::smallint AND provider = {{provider}}::smallint

@@ -1,0 +1,17 @@
+{
+  "service": "downloads.stock.sse.trend",
+  "kind": "fetch",
+  "tables": [
+    {
+      "table": "stats.stock_basic_stats",
+      "code_scope": "\\.SS$"
+    }
+  ],
+  "csv": [
+    {
+      "dir": "temps/sse_trend",
+      "pattern": "sse_trend_stock_{date}.csv"
+    }
+  ],
+  "notes": "SSE stock EOD → builds.stock. Presence = the SSE slice of stats.stock_basic_stats (.SS suffix). The stream pre-writes stock_identity intraday, so identity would read present hours before the EOD load."
+}

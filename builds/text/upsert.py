@@ -75,15 +75,19 @@ class TextUpsert:
     async def fetch_existing_news(
         self,
     ) -> Dict[Tuple[str, str, datetime.date], Dict[str, Any]]:
-        """{(title, source, date): {news_id, word_count, industry_id}} currently stored."""
+        """{(title, source, date): {news_id, word_count, industry_id, author,
+        url}} currently stored. ``author``/``url``/``news_id`` feed the zhihu
+        loader's stored-row claim (builds.text.__main__ passes it pre-parse)."""
         rows = await self.conn.fetch(
-            f'SELECT news_id, title, source, date, word_count, industry_id '
+            f'SELECT news_id, title, source, date, word_count, industry_id, author, url '
             f'FROM {NEWS_TABLE}')
         return {
             (r["title"], r["source"] or "", r["date"]): {
                 "news_id": r["news_id"],
                 "word_count": r["word_count"],
                 "industry_id": r["industry_id"],
+                "author": r["author"],
+                "url": r["url"],
             }
             for r in rows
         }

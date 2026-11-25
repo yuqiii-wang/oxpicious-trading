@@ -16,6 +16,7 @@ import { Box, Dialog, Stack, Typography } from "@mui/material";
 import { QuestionAnswer as QuestionAnswerIcon } from "@mui/icons-material";
 import PostCard from "@/shared/components/post-feed/PostCard";
 import PostChip from "@/shared/components/post-feed/PostChip";
+import { MarkdownView, mdPlainText } from "@/shared/markdown";
 import { aiAskImageUrl, fetchAiAskDetail } from "@/lib/api-client";
 import type { AiAskHistoryDetail, AiAskHistoryItem } from "@shared/types";
 
@@ -49,7 +50,7 @@ export default function AskQaCard({ item }: { item: AiAskHistoryItem }) {
           </>
         }
         headline={item.question}
-        snippet={item.answer_snippet}
+        snippet={mdPlainText(item.answer_snippet)}
         snippetError={failed}
         fetchDetail={() => fetchAiAskDetail(item.ask_id)}
         renderDetail={(detail) => (
@@ -69,10 +70,11 @@ export default function AskQaCard({ item }: { item: AiAskHistoryItem }) {
               </Typography>
             )}
 
-            {/* The full answer (or the failure detail for failed asks). */}
+            {/* The full answer (or the failure detail for failed asks).
+                Answers are LLM markdown — parsed via MarkdownView; a failed
+                ask's error tail stays plain pre-wrap text. */}
             <Box
               sx={{
-                whiteSpace: "pre-wrap",
                 bgcolor: "action.hover",
                 borderRadius: 1,
                 p: 1.25,
@@ -80,9 +82,13 @@ export default function AskQaCard({ item }: { item: AiAskHistoryItem }) {
                 overflowY: "auto",
               }}
             >
-              <Typography variant="body2" color={failed ? "error.main" : undefined}>
-                {detail.answer ?? detail.error_tail ?? "（无内容）"}
-              </Typography>
+              {failed ? (
+                <Typography variant="body2" color="error.main" sx={{ whiteSpace: "pre-wrap" }}>
+                  {detail.error_tail ?? detail.answer ?? "（无内容）"}
+                </Typography>
+              ) : (
+                <MarkdownView dense source={detail.answer ?? "（无内容）"} />
+              )}
             </Box>
 
             {/* Derived keyword chips — the ask's search tags (codes, product,

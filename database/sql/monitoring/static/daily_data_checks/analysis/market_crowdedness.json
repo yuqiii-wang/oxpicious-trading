@@ -1,0 +1,4 @@
+{
+  "view": "server_cluster/maintainer/daily_check/analysis/market_crowdedness",
+  "notes": "analysis_daily step 11 (analysis.market_crowdedness): analysis.market_crowdedness max(date) per sec_type (index, industry) vs the stats.stock_liquidity_margin trading-day frontier (the module's own clamp — dates outside the liquidity range can never gain rows). A lagging sec_type means the nightly crowdedness pass stopped for it."
+}

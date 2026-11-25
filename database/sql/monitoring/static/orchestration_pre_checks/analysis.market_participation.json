@@ -1,0 +1,10 @@
+{
+  "service": "analysis.market_participation",
+  "kind": "derive",
+  "tables": [
+    {
+      "table": "analysis.market_participation"
+    }
+  ],
+  "notes": "Presence = the session's single row in analysis.market_participation (pk date)."
+}

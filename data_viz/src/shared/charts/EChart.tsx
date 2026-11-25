@@ -154,7 +154,15 @@ export default function EChart({ option, height = 320, minHeight = 200, group, o
       lastZoomRef.current = null;
     }
 
-    chart.setOption(effective, { notMerge: true, lazyUpdate: true });
+    // lazyUpdate: false — SYNCHRONOUS flush. ECharts' lazy path schedules
+    // the paint on requestAnimationFrame, which browsers stop firing in
+    // occluded/backgrounded panes (the in-app browser pane throttles rAF
+    // to zero) — the option then never paints and the chart mounts as an
+    // empty silent container (observed 2026-11-22: instances alive, zero
+    // canvas layers, no console errors, across every chart on the page).
+    // Options land only on fetch/theme changes (not per frame), so the
+    // synchronous paint costs nothing in steady state.
+    chart.setOption(effective, { notMerge: true, lazyUpdate: false });
   }, [option]);
 
   // Bind / re-bind event handlers when onEvents identity changes

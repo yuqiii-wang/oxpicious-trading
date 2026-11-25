@@ -61,7 +61,12 @@ class LlmRuntimeConfig(BaseModel):
     ``secret_type = llm`` static.secret_config row; ``provider`` is the
     row's own ``ext_llm_provider`` label — zhipu / dummy; ``api_key``
     is the DECRYPTED key or None when the row stores none — the
-    caller's env/registry fallback applies)."""
+    caller's env/registry fallback applies). ``input_modality`` /
+    ``output_modality`` are the row's ``llm_modality`` label codes (0
+    text | 1 text+vision | 2 text+image-gen | 3 audio | 99 other) —
+    the registry's declaration of what the model accepts / produces;
+    image-sending consumers consult ``input_modality`` first (1 =
+    vision-capable)."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -70,9 +75,14 @@ class LlmRuntimeConfig(BaseModel):
     api_url: Optional[str]
     api_key: Optional[str]
     context_length: Optional[int]
+    input_modality: int = 0
+    output_modality: int = 0
 
-
-
+    @property
+    def vision_capable(self) -> bool:
+        """The registry declares the model accepts images (the
+        ``text+vision`` input profile)."""
+        return self.input_modality == 1
 
     @classmethod
     async def load(cls) -> Optional["LlmRuntimeConfig"]:
@@ -118,11 +128,13 @@ class LlmRuntimeConfig(BaseModel):
             api_url=row["api_url"],
             api_key=api_key,
             context_length=row["context_length"],
+            input_modality=int(row["input_modality"] or 0),
+            output_modality=int(row["output_modality"] or 0),
         )
 
 _SELECT_SQL = """
 SELECT c.model_name, c.context_length, c.api_url, c.api_key_enc,
-       ld.label AS provider
+       c.input_modality, c.output_modality, ld.label AS provider
   FROM static.secret_config c
   JOIN static.label_dim st
     ON st.domain = 'secret_type' AND st.code = c.secret_type

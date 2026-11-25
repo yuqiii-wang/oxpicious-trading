@@ -13,6 +13,7 @@ import React from "react";
 import { fmtNum } from "@/lib/series";
 import { renderReactElement } from "@/lib/react-tooltip-renderer";
 import { FUTURES_EXPIRY_DOT } from "@/theme/chart-palette";
+import { fmtDate } from "@/shared/datetime";
 import type { ExpiryMarker, ExpiryMarkerDataItem } from "./sharedData";
 
 // ---- Shared helpers ------------------------------------------------------
@@ -61,7 +62,7 @@ export function ExpiryInfoBlock({
   children.push(
     React.createElement("div", {
       style: { margin: "6px 0 2px", fontWeight: 600, color: FUTURES_EXPIRY_DOT },
-    }, `📅 Expiry: ${marker.expiryDate}`),
+    }, `📅 Expiry: ${fmtDate(marker.expiryDate)}`),
   );
   children.push(
     React.createElement("div", {
@@ -124,12 +125,12 @@ function ExpiryDotTooltip({
   const children: React.ReactNode[] = [];
 
   children.push(
-    React.createElement("div", { style: { fontWeight: 600, marginBottom: "6px" } }, `📅 Expiry: ${marker.expiryDate}`),
+    React.createElement("div", { style: { fontWeight: 600, marginBottom: "6px" } }, `📅 Expiry: ${fmtDate(marker.expiryDate)}`),
   );
   children.push(
     React.createElement("div", {
       style: { opacity: 0.85, marginBottom: "4px", fontSize: "10px" },
-    }, `Last trading day: ${marker.tradingDate}`),
+    }, `Last trading day: ${fmtDate(marker.tradingDate)}`),
   );
   children.push(
     React.createElement("div", { style: { fontWeight: 600, marginBottom: "2px" } }, `Expiring Contracts (${marker.contracts.length}):`),
@@ -225,7 +226,7 @@ export function makeAxisTooltipFormatter(colors: TooltipColors) {
     const children: React.ReactNode[] = [];
     const dateStr = (arr[0].axisValue as string) || "";
 
-    children.push(React.createElement(Header, null, dateStr));
+    children.push(React.createElement(Header, null, fmtDate(dateStr)));
 
     const expiryItem = arr.find((p) => p.seriesName === EXPIRY_MARKERS_SERIES_NAME);
     if (expiryItem && expiryItem.data) {

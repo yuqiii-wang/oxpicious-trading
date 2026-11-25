@@ -11,6 +11,7 @@ import type { ReactNode } from "react";
 import {
   makeCodeTrendTooltipFormatter,
 } from "@/shared/charts/CodeTrendTooltip";
+import { fmtMonth } from "@/shared/datetime/display";
 import { breakArraysAtGaps, fmtNum, safeMa } from "@/lib/series";
 import {
   ohlcSeries,
@@ -731,7 +732,7 @@ export function buildOhlcOption({
       axisLabel: {
         color: c.textColor,
         fontSize: 8,
-        formatter: (v: string) => v.slice(0, 7),
+        formatter: (v: string) => fmtMonth(v),
         interval: Math.max(1, Math.floor(broken.dates.length / 8)),
       },
       splitLine: { show: false },

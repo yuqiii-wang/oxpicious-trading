@@ -7,6 +7,7 @@
  * aligns with the other trend charts (P/C Ratio, Total OI).
  */
 import type { OptionsRow, OptionsWallRow } from "@shared/types";
+import { fmtMonth } from "@/shared/datetime";
 
 export interface ExpiryCohort {
   key: string;
@@ -166,7 +167,7 @@ export function buildCohorts(rows: OptionsRow[]): ExpiryCohort[] {
   return Array.from(byExpiry.entries())
     .map(([key, totalOi]) => ({
       key,
-      label: key.length >= 7 ? key.slice(0, 7) : key,
+      label: fmtMonth(key),
       totalOi,
     }))
     .sort((a, b) => a.key.localeCompare(b.key));

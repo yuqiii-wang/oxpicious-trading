@@ -43,13 +43,66 @@ bindings) joined to the label mirrors:
                      the fragile side; strengthens the exit-timing
                      families' SELL.
 
+  news (2) — the daily news-text MARKET-state sub types
+  ('signal_amplifier_news'; text.news_text_daily scope market_all,
+  merged per DATE onto the anatomy frame + the per-code weekly
+  aggregates and drop leg — news_anatomy.NewsAnatomy; migrated from
+  the deleted news_wash detection family 2026-11-22: the news states
+  AMPLIFY the existing families' signals, never create their own.
+  The DAILY states ride the code's own drop leg — the news extreme
+  DURING the drop is the washout's confirmation; the weekly
+  aggregates fire un-gated — the aggregate carries the persistence
+  the leg confirms daily):
+
+    tone_disagree    (11, 负面声浪分歧, BUY reversion): the keyword-tone
+                     panic confirmed by cross-origin disagreement —
+                     lex_tone_z <= -1.5 & disp_z >= 1.0 (+1.90%,
+                     t=7.09, hit 73% — the measured strongest).
+    wave_disagree    (10, 情绪冲击分歧, BUY reversion): the sentiment
+                     shock confirmed by the negative-article wave AND
+                     the disagreement — sent_z <= -1.5 & flow_neg >= 3
+                     & disp_z >= 1.0 (+1.74%, t=6.87).
+    neg_wave         (2, 负面报道浪潮, BUY reversion): flow_neg >= 5 —
+                     the strongly-negative article wave (+1.87%,
+                     excess +1.60pp over drift, t=6.70).
+    tone_panic       (1, 关键词情绪恐慌, BUY reversion): lex_tone_z
+                     <= -1.5 — the down-family mention balance
+                     surging (+1.59%, t=4.65).
+    shock_wave       (9, 情绪冲击浪潮, BUY reversion): sent_z <= -1.5
+                     confirmed by flow_neg >= 3 (+1.34%, t=5.35).
+    sent_shock       (0, 情绪冲击, BUY reversion): sent_z <= -2.0 —
+                     the deep sentiment-shock tail (+0.77%, t=3.80).
+    quiet_cov        (3, 报道异常冷清, BUY reversion): flow_af <= -1.0 —
+                     abnormally quiet coverage (the honest marginal
+                     candidate, +0.26pp).
+    week_tone        (7, 周度情绪恐慌, BUY reversion): mean(lex_tone_z,5)
+                     <= -1.0 — the week's tone panic (stress +5.90%
+                     hit 78%, fwd60 +10.13%).
+    week_shock       (8, 周度情绪冲击, BUY reversion): mean(sent_z,5)
+                     <= -1.0 — the persistent weekly shock (stress
+                     +1.85%).
+    week_neg_wave    (6, 周度负面浪潮, BUY reversion): sum(flow_neg,5)
+                     >= 10 — the week's negative wave (+0.77%, t=3.21).
+    sent_euphoria    (4, 情绪亢奋背离, BUY divergence): sent_z >= +1.5 on
+                     the drop leg — "good news can't lift a falling
+                     market" (the divergence pair, faithful migration;
+                     the evidence block judges).
+    tone_euphoria    (5, 关键词亢奋背离, BUY divergence): lex_tone_z
+                     >= +1.5 on the drop leg (the pair's tone leg).
+    week_tone_recovery (12, 周度情绪修复, SELL exit): the weekly tone
+                     crosses UP through 0 after a deep wt episode
+                     within the lookback — the ONE sell side that
+                     cleared the bar (exit timing).
+
 DEPTH — the per-amplifier confidence-scale input (the CellGate
 convention: base * (1 + factor * min(depth, cap))), in each
 amplifier's own normalizer units: wick amplifiers scale in
 trailing-q90 bar units (lw/uw over its own bar), gap/breakout
 amplifiers in the code's trailing return-sigma units, dry_rebound in
 dryness fraction (bar - ratio)/bar, margin amplifiers in the balance's
-fraction beyond its own quantile bar.
+fraction beyond its own quantile bar, news amplifiers in the state
+metric's own units past its bar (z units; the fraction beyond for the
+count bars; the wt value for the recovery).
 
 Layout: whole-frame elementwise ops only — every mask is a fillna'd
 Series comparison chain (the cudf dtype contract: pure bool after
@@ -62,10 +115,16 @@ import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field
 
+from _common.df_utils import (
+    grouped_rolling_agg,
+    grouped_shift,
+    safe_columns,
+)
 from _common.labels import (
     ACTION_CODE,
     SIGNAL_AMPLIFIER_CODE,
     SIGNAL_AMPLIFIER_MARGIN_CODE,
+    SIGNAL_AMPLIFIER_NEWS_CODE,
     SIGNAL_AMPLIFIER_TYPE_CODE,
     SIGNAL_TYPE_CODE,
 )
@@ -117,6 +176,8 @@ def _sub_vocabulary(parent_label: str) -> dict[str, int]:
         return SIGNAL_AMPLIFIER_CODE
     if parent_label == "margin":
         return SIGNAL_AMPLIFIER_MARGIN_CODE
+    if parent_label == "news":
+        return SIGNAL_AMPLIFIER_NEWS_CODE
     raise ValueError(
         f"amplifier parent type '{parent_label}' has no sub-type "
         f"vocabulary wired in amplifiers._sub_vocabulary")
@@ -166,6 +227,7 @@ AMPLIFIER_DEFS: list[AmplifierDef] = _build_defs()
 _AMP_T = SIGNAL_AMPLIFIER_TYPE_CODE
 _AMP_OHLCV = (_AMP_T["ohlcv"],)
 _AMP_MARGIN = (_AMP_T["margin"],)
+_AMP_NEWS = (_AMP_T["news"],)
 
 # the constant bar definitions (stored on every rules row's amplifiers[]
 # bar_def and every history row's amplifier_params.bar_def — the UI
@@ -211,6 +273,79 @@ AMPLIFIER_BAR_DEFS: dict[tuple[int, int], dict] = {
         "window": cfg.AMP_MARGIN_WINDOW,
         "min_periods": cfg.AMP_MARGIN_MIN_PERIODS,
     },
+    # the NEWS amplifier bars (the migrated news_wash rules — the daily
+    # states carry the drop-leg window; the weekly ones the window;
+    # count bars carry op "above", z bars "below")
+    (_AMP_NEWS + (SIGNAL_AMPLIFIER_NEWS_CODE["sent_shock"],)): {
+        "kind": "news_state", "metric": "sent_z", "op": "below",
+        "bar": cfg.AMP_NEWS_Z_BAR,
+        "drop_leg_window": cfg.AMP_NEWS_DROP_LEG_WINDOW,
+    },
+    (_AMP_NEWS + (SIGNAL_AMPLIFIER_NEWS_CODE["tone_panic"],)): {
+        "kind": "news_state", "metric": "lex_tone_z", "op": "below",
+        "bar": cfg.AMP_NEWS_TONE_BAR,
+        "drop_leg_window": cfg.AMP_NEWS_DROP_LEG_WINDOW,
+    },
+    (_AMP_NEWS + (SIGNAL_AMPLIFIER_NEWS_CODE["neg_wave"],)): {
+        "kind": "news_state", "metric": "flow_neg", "op": "above",
+        "bar": cfg.AMP_NEWS_FLOWNEG_BAR,
+        "drop_leg_window": cfg.AMP_NEWS_DROP_LEG_WINDOW,
+    },
+    (_AMP_NEWS + (SIGNAL_AMPLIFIER_NEWS_CODE["quiet_cov"],)): {
+        "kind": "news_state", "metric": "flow_af", "op": "below",
+        "bar": cfg.AMP_NEWS_AF_CALM_BAR,
+        "drop_leg_window": cfg.AMP_NEWS_DROP_LEG_WINDOW,
+    },
+    (_AMP_NEWS + (SIGNAL_AMPLIFIER_NEWS_CODE["shock_wave"],)): {
+        "kind": "news_interaction", "metric": "sent_z", "op": "below",
+        "bar": cfg.AMP_NEWS_ZFLOW_Z_BAR,
+        "legs": {"flow_neg": cfg.AMP_NEWS_ZFLOW_NEG_BAR},
+        "drop_leg_window": cfg.AMP_NEWS_DROP_LEG_WINDOW,
+    },
+    (_AMP_NEWS + (SIGNAL_AMPLIFIER_NEWS_CODE["wave_disagree"],)): {
+        "kind": "news_interaction", "metric": "sent_z", "op": "below",
+        "bar": cfg.AMP_NEWS_ZFLOW_Z_BAR,
+        "legs": {"flow_neg": cfg.AMP_NEWS_ZFLOW_NEG_BAR,
+                 "disp_z": cfg.AMP_NEWS_INTER_DISP_BAR},
+        "drop_leg_window": cfg.AMP_NEWS_DROP_LEG_WINDOW,
+    },
+    (_AMP_NEWS + (SIGNAL_AMPLIFIER_NEWS_CODE["tone_disagree"],)): {
+        "kind": "news_interaction", "metric": "lex_tone_z", "op": "below",
+        "bar": cfg.AMP_NEWS_TONE_INTER_BAR,
+        "legs": {"disp_z": cfg.AMP_NEWS_INTER_DISP_BAR},
+        "drop_leg_window": cfg.AMP_NEWS_DROP_LEG_WINDOW,
+    },
+    (_AMP_NEWS + (SIGNAL_AMPLIFIER_NEWS_CODE["week_tone"],)): {
+        "kind": "news_state", "metric": "wt", "op": "below",
+        "bar": cfg.AMP_NEWS_WEEKLY_TONE_BAR,
+        "weekly_window": cfg.AMP_NEWS_WEEKLY_WINDOW,
+    },
+    (_AMP_NEWS + (SIGNAL_AMPLIFIER_NEWS_CODE["week_shock"],)): {
+        "kind": "news_state", "metric": "wz", "op": "below",
+        "bar": cfg.AMP_NEWS_WEEKLY_Z_BAR,
+        "weekly_window": cfg.AMP_NEWS_WEEKLY_WINDOW,
+    },
+    (_AMP_NEWS + (SIGNAL_AMPLIFIER_NEWS_CODE["week_neg_wave"],)): {
+        "kind": "news_state", "metric": "wfn", "op": "above",
+        "bar": cfg.AMP_NEWS_WEEKLY_FLOWNEG_BAR,
+        "weekly_window": cfg.AMP_NEWS_WEEKLY_WINDOW,
+    },
+    (_AMP_NEWS + (SIGNAL_AMPLIFIER_NEWS_CODE["sent_euphoria"],)): {
+        "kind": "news_state", "metric": "sent_z", "op": "above",
+        "bar": cfg.AMP_NEWS_POS_Z_BAR,
+        "drop_leg_window": cfg.AMP_NEWS_DROP_LEG_WINDOW,
+    },
+    (_AMP_NEWS + (SIGNAL_AMPLIFIER_NEWS_CODE["tone_euphoria"],)): {
+        "kind": "news_state", "metric": "lex_tone_z", "op": "above",
+        "bar": cfg.AMP_NEWS_POS_TONE_BAR,
+        "drop_leg_window": cfg.AMP_NEWS_DROP_LEG_WINDOW,
+    },
+    (_AMP_NEWS + (SIGNAL_AMPLIFIER_NEWS_CODE["week_tone_recovery"],)): {
+        "kind": "news_state", "metric": "wt", "op": "above",
+        "bar": 0.0,
+        "weekly_window": cfg.AMP_NEWS_WEEKLY_WINDOW,
+        "recovery_lookback": cfg.AMP_NEWS_WEEKLY_TONE_REC_LOOKBACK,
+    },
 }
 
 # the history-day frame's column vocabulary
@@ -240,6 +375,7 @@ class AmplifierEngine:
     #    NaN > bar is False so missing facts never qualify a day) -------
     def _masks(self) -> dict[tuple[int, int], pd.Series]:
         f = self.frame
+        cols = safe_columns(f)
         heavy = f["amt_ratio_20"] >= cfg.AMP_AMT_HEAVY_RATIO
         down_body = f["gap_oc"] < 0
         up_body = f["gap_oc"] > 0
@@ -273,7 +409,7 @@ class AmplifierEngine:
                 up_close & (f["amt_ratio_20"] <= cfg.AMP_AMT_DRY_RATIO)
             ),
         }
-        if "margin_balance" in f.columns:
+        if "margin_balance" in cols:
             # NaN balance / NaN bars never qualify a day (the codes
             # without margin data carry NULL columns)
             masks[_AMP_MARGIN + (mam["margin_washout"],)] = (
@@ -282,7 +418,74 @@ class AmplifierEngine:
             masks[_AMP_MARGIN + (mam["margin_crowding"],)] = (
                 f["margin_balance"] >= f["margin_bar_high"]
             )
+        if "sent_z" in cols:
+            masks.update(self._news_masks())
         return masks
+
+    # -- the news amplifier masks (NaN-safe state comparisons AND the
+    #    bool drop-leg column — a NULL state day never qualifies) -----
+    def _news_masks(self) -> dict[tuple[int, int], pd.Series]:
+        f = self.frame
+        nws = SIGNAL_AMPLIFIER_NEWS_CODE
+        leg = f["news_drop_leg"]
+        zflow = ((f["sent_z"] <= cfg.AMP_NEWS_ZFLOW_Z_BAR)
+                 & (f["flow_neg"] >= cfg.AMP_NEWS_ZFLOW_NEG_BAR))
+        return {
+            _AMP_NEWS + (nws["sent_shock"],): (
+                (f["sent_z"] <= cfg.AMP_NEWS_Z_BAR) & leg
+            ),
+            _AMP_NEWS + (nws["tone_panic"],): (
+                (f["lex_tone_z"] <= cfg.AMP_NEWS_TONE_BAR) & leg
+            ),
+            _AMP_NEWS + (nws["neg_wave"],): (
+                (f["flow_neg"] >= cfg.AMP_NEWS_FLOWNEG_BAR) & leg
+            ),
+            _AMP_NEWS + (nws["quiet_cov"],): (
+                (f["flow_af"] <= cfg.AMP_NEWS_AF_CALM_BAR) & leg
+            ),
+            _AMP_NEWS + (nws["shock_wave"],): (zflow & leg),
+            _AMP_NEWS + (nws["wave_disagree"],): (
+                zflow & (f["disp_z"] >= cfg.AMP_NEWS_INTER_DISP_BAR) & leg
+            ),
+            _AMP_NEWS + (nws["tone_disagree"],): (
+                (f["lex_tone_z"] <= cfg.AMP_NEWS_TONE_INTER_BAR)
+                & (f["disp_z"] >= cfg.AMP_NEWS_INTER_DISP_BAR) & leg
+            ),
+            _AMP_NEWS + (nws["week_tone"],): (
+                f["wt"] <= cfg.AMP_NEWS_WEEKLY_TONE_BAR
+            ),
+            _AMP_NEWS + (nws["week_shock"],): (
+                f["wz"] <= cfg.AMP_NEWS_WEEKLY_Z_BAR
+            ),
+            _AMP_NEWS + (nws["week_neg_wave"],): (
+                f["wfn"] >= cfg.AMP_NEWS_WEEKLY_FLOWNEG_BAR
+            ),
+            _AMP_NEWS + (nws["sent_euphoria"],): (
+                (f["sent_z"] >= cfg.AMP_NEWS_POS_Z_BAR) & leg
+            ),
+            _AMP_NEWS + (nws["tone_euphoria"],): (
+                (f["lex_tone_z"] >= cfg.AMP_NEWS_POS_TONE_BAR) & leg
+            ),
+            _AMP_NEWS + (nws["week_tone_recovery"],):
+                self._news_recovery_mask(),
+        }
+
+    # -- the weekly tone recovery: wt crosses UP through 0 with a deep
+    #    wt episode within the lookback rows STRICTLY BEFORE today
+    #    (shifted — trigger-time observable), the family's exit rule
+    #    verbatim -------------------------------------------------------
+    def _news_recovery_mask(self) -> pd.Series:
+        f = self.frame
+        deep = (f["wt"] <= cfg.AMP_NEWS_WEEKLY_TONE_BAR).fillna(False)
+        had_deep = grouped_rolling_agg(
+            f.assign(_deep=deep.astype("float64")), ["code"], "_deep",
+            cfg.AMP_NEWS_WEEKLY_TONE_REC_LOOKBACK, agg="max",
+            min_periods=1,
+        )
+        wt_prev = grouped_shift(f, ["code"], ["wt"],
+                                out_names=["_wt_prev"])["_wt_prev"]
+        return ((f["wt"] > 0.0) & (wt_prev <= 0.0)
+                & (had_deep.shift(1).fillna(0.0) > 0)).fillna(False)
 
     # -- per-amplifier depth (the amplifier's own normalizer units) ----
     def _depth(self, label: str) -> pd.Series:
@@ -314,6 +517,37 @@ class AmplifierEngine:
             # the balance's fraction ABOVE its q90 bar (>= 0 on the mask)
             bar = f["margin_bar_high"]
             return (f["margin_balance"] - bar) / bar.where(bar > 1e-12)
+        # the news amplifiers: the state metric's breach past its bar
+        # in its OWN units (z units below/above; the fraction beyond
+        # for the count bars; the wt value for the recovery). Depth
+        # rides the SENTIMENT leg's breach on the interaction pair —
+        # the direction-carrying member (the family's convention)
+        if label == "sent_shock":
+            return cfg.AMP_NEWS_Z_BAR - f["sent_z"]
+        if label == "tone_panic":
+            return cfg.AMP_NEWS_TONE_BAR - f["lex_tone_z"]
+        if label == "neg_wave":
+            bar = float(cfg.AMP_NEWS_FLOWNEG_BAR)
+            return (f["flow_neg"] - bar) / bar
+        if label == "quiet_cov":
+            return cfg.AMP_NEWS_AF_CALM_BAR - f["flow_af"]
+        if label in ("shock_wave", "wave_disagree"):
+            return cfg.AMP_NEWS_ZFLOW_Z_BAR - f["sent_z"]
+        if label == "tone_disagree":
+            return cfg.AMP_NEWS_TONE_INTER_BAR - f["lex_tone_z"]
+        if label == "week_tone":
+            return cfg.AMP_NEWS_WEEKLY_TONE_BAR - f["wt"]
+        if label == "week_shock":
+            return cfg.AMP_NEWS_WEEKLY_Z_BAR - f["wz"]
+        if label == "week_neg_wave":
+            bar = float(cfg.AMP_NEWS_WEEKLY_FLOWNEG_BAR)
+            return (f["wfn"] - bar) / bar
+        if label == "sent_euphoria":
+            return f["sent_z"] - cfg.AMP_NEWS_POS_Z_BAR
+        if label == "tone_euphoria":
+            return f["lex_tone_z"] - cfg.AMP_NEWS_POS_TONE_BAR
+        if label == "week_tone_recovery":
+            return f["wt"].fillna(0.0)
         raise KeyError(label)
 
     # -- the margin amplifiers' qualifying fact: the balance vs the sub

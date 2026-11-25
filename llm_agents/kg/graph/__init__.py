@@ -26,7 +26,14 @@ converged on, distilled to what a 10²-node static schema graph needs):
      CJK text is matched by CHARACTER BIGRAMS (segmenter-free recall:
      "热门股动量" shares 热门/门股/动量 with the tag 热门股 and the tag
      动量), latin text by whole word tokens; each token is weighted by
-     IDF so 指数 (in half the descriptions) cannot outvote rsi.
+     IDF so 指数 (in half the descriptions) cannot outvote rsi. Since
+     2026-11-23 a token with NO exact bucket seeds through the FUZZY
+     LANE (``KnowledgeGraph.plural_stem`` / ``fuzzy_match``): an
+     English plural strips to an exact index token, a close misspelling
+     (character-trigram similarity ≥ ``vocabulary.FUZZY_SIMILARITY_MIN``)
+     maps onto its nearest vocabulary word — strictly BELOW the exact
+     hit of the same face, and marked ``token[face≈matched]`` in the
+     provenance line; latin words of 4+ characters only.
   2. SPREADING ACTIVATION — the seeds' energy propagates along edges
      with a per-hop decay and per-(relation, direction) factors
      (``similar_to`` is the strongest symmetric family hint; a DERIVED
@@ -41,10 +48,16 @@ converged on, distilled to what a 10²-node static schema graph needs):
      acquaintance — the coherence signal spreading activation is for.
      The per-hop frontier is beam-bounded.
   3. RANK + PACK — seeds keep their lexical score; propagated nodes
-     blend normalized activation with the lexical score (connectivity
-     alone never outranks a table that NAMES the ask), the top-N nodes
-     and the edges AMONG them (the join/derivation paths the agent
-     actually needs) are rendered as one bounded text block.
+     score their activation on the WALK's own scale (the strongest
+     propagated row = ``ACT_BLEND``), and seeds structurally PRECEDE
+     them (connectivity alone never outranks a table that NAMES the
+     ask). Each class has a relevance floor relative to the question —
+     the seed tail a top seed dwarfs drops out; propagated rows are
+     floored at ``_WALK_FLOOR`` of the overall top, so the more
+     specifically the ask names its tables the fewer propagated rows
+     survive (``vocabulary``). The top-N nodes and the edges AMONG them
+     (the join/derivation paths the agent actually needs) are rendered
+     as one bounded text block.
 
 Submodules: ``values`` (the frozen value types), ``vocabulary``
 (the shared match vocabulary + every tuning constant), ``engine``
@@ -64,7 +77,8 @@ from llm_agents.kg.graph.rendering import (
     normalize_detail, render_expand, render_replay, render_search,
 )
 from llm_agents.kg.graph.values import (
-    KgEdge, KgEntity, ScoredNode, SeedHit, SearchResult, WalkHit,
+    KgEdge, KgEntity, ScoredNode, SearchResult, SearchTrace, SeedHit,
+    WalkHit,
 )
 from llm_agents.kg.graph.vocabulary import (
     ACT_BLEND, FACE_DESC, FACE_NAME, FACE_TAG, FACE_TYPE, HOP_DECAY,
@@ -75,8 +89,8 @@ __all__ = [
     "ACT_BLEND", "DETAIL_FULL", "DETAIL_LEAN", "DETAIL_TIERS",
     "FACE_DESC", "FACE_NAME", "FACE_TAG", "FACE_TYPE",
     "HOP_DECAY", "KgEdge", "KgEntity", "KnowledgeGraph", "NODE_MAX_CAP",
-    "NODE_MAX_DEFAULT", "ScoredNode", "SearchResult", "SeedHit",
-    "SUBRELATION_BOOST", "WalkHit", "WALK_BEAM", "edge_factor",
+    "NODE_MAX_DEFAULT", "ScoredNode", "SearchResult", "SearchTrace",
+    "SeedHit", "SUBRELATION_BOOST", "WalkHit", "WALK_BEAM", "edge_factor",
     "extract_tokens", "normalize", "normalize_detail", "render_expand",
     "render_replay", "render_search",
 ]

@@ -49,16 +49,25 @@ export const POOL_COLORS: Record<PoolSize, string> = {
  *  industries' MA-W curves over the W trading days starting on start_date. */
 export const CORR_WINDOWS: CorrWindow[] = ["20d", "60d", "252d"];
 
-/** Available rolling-days selector values for the BenchmarkPriceChart shade
- *  overlay. Each value N corresponds to the pre-materialized column
+/** Available rolling-days selector values for the HypesAndDrainsChart
+ *  window dropdown. Each value N corresponds to the pre-materialized column
  *  benchmark_non_this_industry_rolling_{N}days_price in
  *  analysis.industry_attributions. 120d (~6 months) is the default. */
 export const ROLLING_DAYS: RollingDays[] = [5, 20, 60, 120, 252, 504];
 
-/** Default rolling-days window for the BenchmarkPriceChart shade overlay.
- *  120 trading days ≈ 6 months — the default for the shade overlay AND for
- *  analysis.industry_hypes_and_drains. */
+/** Rolling-days options for the BenchmarkPriceChart (Benchmark Attribution
+ *  mode) shade overlay — ONLY 60d; the other windows were removed from the
+ *  dropdown (2026-11-21). The DB columns stay materialized (the hypes &
+ *  drains build and the rolling-backfill detector still key on them). */
+export const ATTRIBUTION_ROLLING_DAYS: RollingDays[] = [60];
+
+/** Default rolling-days window for the HypesAndDrainsChart window selector.
+ *  120 trading days ≈ 6 months — the default for analysis.industry_hypes_and_drains. */
 export const DEFAULT_ROLLING_DAYS: RollingDays = 120;
+
+/** Default rolling-days window for the BenchmarkPriceChart shade overlay —
+ *  the only option left in its dropdown (see ATTRIBUTION_ROLLING_DAYS). */
+export const DEFAULT_ATTRIBUTION_ROLLING_DAYS: RollingDays = 60;
 
 /** Human-readable label for each rolling-days option (shown in the dropdown). */
 export const ROLLING_DAYS_LABELS: Record<RollingDays, string> = {

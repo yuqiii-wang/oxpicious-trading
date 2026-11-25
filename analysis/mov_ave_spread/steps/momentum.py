@@ -589,6 +589,14 @@ class MomentumStep(TableStep):
                 missing_union |= td_st
                 logger.info(f"    -> {st}: momentum {len(td_st)} missing dates")
             needs_compute = bool(missing_union)
+            if not needs_compute and run.core_target_dates:
+                # Lockstep family: the core detail / trailing tables were
+                # (re)opened on these dates — rebuild the wholesale table
+                # over the current source even though its own date
+                # coverage looks complete.
+                logger.info(f"    -> {len(run.core_target_dates)} core "
+                            f"target date(s) reopen the wholesale rebuild")
+                needs_compute = True
             if not needs_compute:
                 logger.info("    -> DB is up to date; nothing to do.")
                 return

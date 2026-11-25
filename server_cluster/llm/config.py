@@ -7,15 +7,16 @@ every field still has a working default (a missing/malformed file must
 never stop the resident process; same contract as the service_config
 tree's tolerance in ``_common.service_heartbeat``).
 
-The model registry is :data:`DEFAULT_MODELS`: the three known local
+The model registry is :data:`DEFAULT_MODELS`: the known local
 models (see the package docstring). ``path`` values are relative to
 THIS package directory (the gitignored ``local_models/`` weights
 subdir) and are resolved to absolutes by :meth:`HostConfig.resolve`.
 Per-model ``idle_offload_s=None`` inherits the host default
-(:data:`DEFAULT_IDLE_OFFLOAD_S` = 1800 — the GPU→CPU offload tier,
-tightened from the one-hour age the word segmenter has always used),
+(:data:`DEFAULT_IDLE_OFFLOAD_S` = 600 — the GPU→CPU offload tier,
+tightened over the versions from the one-hour age the word segmenter
+has always used),
 and ``idle_unload_s=None`` inherits :data:`DEFAULT_IDLE_UNLOAD_S`
-(= 3600 — the second tier: a further hour of no use on CPU drops the
+(= 1200 — the second tier: a further 20 min of no use on CPU drops the
 weights from RAM entirely).
 
 Env knobs (all optional):
@@ -48,8 +49,8 @@ MODELS_DIR_NAME = "local_models"
 # DEFAULT_IDLE_UNLOAD_S idle seconds on CPU the weights drop from RAM
 # entirely (the next use cold-loads from disk). Per-model overrides via
 # ModelBackendSpec.idle_offload_s / idle_unload_s.
-DEFAULT_IDLE_OFFLOAD_S = 1800.0
-DEFAULT_IDLE_UNLOAD_S = 3600.0
+DEFAULT_IDLE_OFFLOAD_S = 600.0
+DEFAULT_IDLE_UNLOAD_S = 1200.0
 
 DEFAULT_PORT = 8767
 
@@ -60,11 +61,12 @@ class ModelBackendSpec(BaseModel):
     model_id: str = Field(
         description="The OpenAI `model` value routing to this backend "
         "(also the admin-API path segment).")
-    kind: Literal["dummy", "tokenization", "jev"] = Field(
+    kind: Literal["dummy", "tokenization", "jev", "ocr"] = Field(
         description="The backend class that serves this model: "
         "``tokenization`` = the StructBERT word segmenter, ``jev`` = a "
-        "Jev / System One decision model (OneJev fine-tunes), ``dummy`` "
-        "= the offline provider simulation.")
+        "Jev / System One decision model (OneJev fine-tunes), ``ocr`` "
+        "= an OCR / vision-language transcription model (PaddleOCR-VL), "
+        "``dummy`` = the offline provider simulation.")
     path: Optional[str] = Field(
         default=None,
         description="Model directory, relative to this package (the "
@@ -78,12 +80,12 @@ class ModelBackendSpec(BaseModel):
     idle_offload_s: Optional[float] = Field(
         default=None, ge=1.0,
         description="Idle seconds before weights offload to CPU; None "
-        "inherits the host default (1800).")
+        "inherits the host default (600).")
     idle_unload_s: Optional[float] = Field(
         default=None, ge=1.0,
         description="Idle seconds after the CPU offload before the RAM "
         "weights drop entirely (next use cold-loads from disk); None "
-        "inherits the host default (3600).")
+        "inherits the host default (1200).")
     # --- torch lifecycle (tokenization / jev) --------------------------
     device: str = Field(default="cuda", description="torch device; a "
         "missing CUDA degrades to CPU at load time.")
@@ -107,7 +109,7 @@ class ModelBackendSpec(BaseModel):
         return p if p.is_absolute() else PACKAGE_DIR / p
 
 
-# The three known local models — the checked-in registry. A custom
+# The known local models — the checked-in registry. A custom
 # host_config.json REPLACES this list wholesale (set `enabled: false` on
 # an entry rather than deleting it to keep the id resolvable).
 DEFAULT_MODELS: list[ModelBackendSpec] = [
@@ -123,6 +125,11 @@ DEFAULT_MODELS: list[ModelBackendSpec] = [
         model_id="onejev-1.6-4b", kind="jev",
         path=f"{MODELS_DIR_NAME}/OmniJev/OneJev1.6-4B",
         enabled=True, warmup=True, dtype="bfloat16"),
+    ModelBackendSpec(
+        model_id="paddleocr-vl-1.6", kind="ocr",
+        path=f"{MODELS_DIR_NAME}/PaddlePaddle/PaddleOCR-VL-1.6",
+        enabled=True, warmup=True, dtype="bfloat16",
+        max_new_tokens=8192),
 ]
 
 
@@ -140,12 +147,12 @@ class HostConfig(BaseModel):
     idle_offload_s: float = Field(
         default=DEFAULT_IDLE_OFFLOAD_S, ge=1.0,
         description="Host-default tier-1 idle age (GPU -> CPU offload; "
-        "the 30-minute policy).")
+        "the 10-minute policy).")
     idle_unload_s: float = Field(
         default=DEFAULT_IDLE_UNLOAD_S, ge=1.0,
         description="Host-default tier-2 idle age on top of the "
-        "offload (CPU RAM weights drop entirely; the further-hour "
-        "policy).")
+        "offload (CPU RAM weights drop entirely; the "
+        "further-20-minute policy).")
     auth_token: Optional[str] = Field(
         default=None,
         description="When set, chat requests must present exactly this "

@@ -24,6 +24,7 @@ import { axisColors, commonLegend, commonGrid, commonDataZoom } from "@/theme/ch
 import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
 import { variantColorOf } from "@/theme/group-colors";
 import { fmtNum } from "@/lib/series";
+import { fmtDate, fmtMonth } from "@/shared/datetime";
 import type { PoolSize, PerIndustryAggregation } from "./types";
 import { BENCHMARK_COLORS } from "./constants";
 import { classifyPoolSize, rebaseTo100 } from "./helpers";
@@ -525,7 +526,7 @@ export function buildIndustryChartOption(
         }
 
         const children: React.ReactNode[] = [
-          React.createElement("div", { style: { fontWeight: 600 } }, dateStr),
+          React.createElement("div", { style: { fontWeight: 600 } }, fmtDate(dateStr)),
           React.createElement("div", { style: { marginTop: 2, opacity: 0.7 } }, "Rebased to 100 at window start · actual close shown"),
         ];
         if (statsElement) children.push(statsElement);
@@ -542,7 +543,7 @@ export function buildIndustryChartOption(
       axisLabel: {
         color: c.textColor,
         fontSize: 9,
-        formatter: (v: string) => v.slice(0, 7),
+        formatter: (v: string) => fmtMonth(v),
       },
       splitLine: { show: false },
     },

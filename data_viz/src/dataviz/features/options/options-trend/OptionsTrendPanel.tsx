@@ -33,6 +33,7 @@ import { useChartThemeMode } from "@/shared/charts/base-chart";
 import { useAiAskAddon, INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import { useDocs } from "@/shared/docs";
+import { fmtDate, fmtMonth } from "@/shared/datetime";
 import type { ECharts, EChartsOption } from "echarts";
 import type { OptionsOiCellsResponse, OptionsOiDailyResponse, OptionsExpiryMetaResponse, OptionsWallRow } from "@shared/types";
 import {
@@ -139,7 +140,7 @@ export default function OptionsTrendPanel({
     return Array.from(totals.entries())
       .map(([expiry, totalOi]) => ({
         key: expiry,
-        label: expiry.length >= 7 ? expiry.slice(0, 7) : expiry,
+        label: fmtMonth(expiry),
         totalOi,
       }))
       .sort((a, b) => a.key.localeCompare(b.key));
@@ -487,7 +488,7 @@ export default function OptionsTrendPanel({
   const selectionLabel =
     monthFilter === "all"
       ? "All months"
-      : `${monthFilter} (${selectedExpiryKeys.length} ${
+      : `${fmtMonth(monthFilter)} (${selectedExpiryKeys.length} ${
           selectedExpiryKeys.length === 1 ? "expiry" : "expiries"
         })`;
 
@@ -524,7 +525,7 @@ export default function OptionsTrendPanel({
           <Alert severity="info" sx={{ height: 340 }}>
             {selectedExpiryKeys.length > 0
               ? `No OI data for ${selectionLabel}.`
-              : `No ${cohortMode} expiry cohorts (latest data date ${lastDate || "—"}).`}
+              : `No ${cohortMode} expiry cohorts (latest data date ${lastDate ? fmtDate(lastDate) : "—"}).`}
           </Alert>
         )}
 

@@ -9,12 +9,14 @@
  * _common.caution_log, the dev-skill rule).
  *
  * The working set is the OPEN rows (the default state filter, open-first
- * ordering: worst severity, most-recent-hit on top); switching to
- * resolved / all shows history. Resolve stamps is_resolved +
- * resolved_timestamp (spinner per row while the POST is in flight, then
- * a refresh); occurrence_count > 1 marks a RECURRING issue — a resolved
- * issue re-raising opens a fresh row, so an empty open view means every
- * known issue is handled.
+ * ordering: worst severity, most-recent-hit on top) of TODAY (the date
+ * filter defaults to the current GMT day — the caution's own day,
+ * Beijing 08:00 starts a new one; empty the field for all days).
+ * Switching to resolved / all shows history. Resolve stamps is_resolved
+ * + resolved_timestamp (spinner per row while the POST is in flight,
+ * then a refresh); occurrence_count > 1 marks a RECURRING issue — a
+ * resolved issue re-raising opens a fresh row, so an empty open view
+ * means every known issue is handled.
  *
  * Table chrome mirrors the Non-daily / Alerts panels (Paper → named
  * header box with filters, small dense table); detail (the logged
@@ -51,7 +53,8 @@ import {
   KeyboardArrowUp,
   Refresh,
 } from "@mui/icons-material";
-import { fmtDateTimeShanghai, shanghaiDate } from "@/shared/datetime";
+import { fmtDate, fmtDateTimeShanghai, shanghaiDate } from "@/shared/datetime";
+import { DateOrMonthField, normalizeDateOrMonth } from "@/shared/components/date-selector";
 import LogViewerDialog, { type LogFileView } from "@/shared/components/LogViewerDialog";
 import {
   fetchCautions,
@@ -140,6 +143,13 @@ export default function CautionsPage() {
   const [state, setState] = useState<CautionState>("open");
   const [source, setSource] = useState<CautionSource | "all">("all");
   const [severity, setSeverity] = useState<CautionSeverity | "all">("all");
+  // The date filter: the field text (may be mid-edit) + the canonical
+  // fetch target it resolves to. Defaults to the current GMT day — the
+  // caution's own day (the generated `date` column, Beijing 08:00
+  // starts a new one); emptying the field means all days.
+  const gmtToday = () => new Date().toISOString().slice(0, 10);
+  const [date, setDate] = useState<string>(gmtToday);
+  const [dateFilter, setDateFilter] = useState<string>(gmtToday);
   const [resolvingId, setResolvingId] = useState<number | null>(null);
   const [actionNote, setActionNote] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
@@ -152,6 +162,21 @@ export default function CautionsPage() {
   const [runLogLoading, setRunLogLoading] = useState(false);
   const [runLogError, setRunLogError] = useState<string | null>(null);
 
+  // Field text → canonical filter: only "" (= all days) and a valid
+  // exact day move the filter — partial/garbage text flags the field
+  // instead, so typing never fires a keystroke refetch.
+  const onDateChange = useCallback((value: string) => {
+    setDate(value);
+    if (value === "") {
+      setDateFilter("all");
+      return;
+    }
+    const norm = normalizeDateOrMonth(value);
+    if (norm != null && norm.length === 10) setDateFilter(norm);
+  }, []);
+  const normDate = normalizeDateOrMonth(date);
+  const dateInvalid = date !== "" && (normDate == null || normDate.length !== 10);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -160,6 +185,8 @@ export default function CautionsPage() {
         state,
         source === "all" ? null : source,
         severity === "all" ? null : severity,
+        200,
+        dateFilter,
       );
       setRows(res.rows);
     } catch (err) {
@@ -167,7 +194,7 @@ export default function CautionsPage() {
     } finally {
       setLoading(false);
     }
-  }, [state, source, severity]);
+  }, [state, source, severity, dateFilter]);
 
   useEffect(() => {
     void load();
@@ -269,6 +296,21 @@ export default function CautionsPage() {
             <MenuItem value="error">error</MenuItem>
             <MenuItem value="critical">critical</MenuItem>
           </TextField>
+          <Tooltip
+            title="Caution day = the GMT day of first seen (Beijing 08:00 starts a new day). Empty field = all days."
+            arrow
+          >
+            <span>
+              <DateOrMonthField
+                label="date"
+                value={date}
+                onChange={onDateChange}
+                error={dateInvalid}
+                helperText={dateInvalid ? "YYYY-MM-DD or empty = all" : undefined}
+                minWidth={150}
+              />
+            </span>
+          </Tooltip>
           <Tooltip title="Refresh">
             <IconButton onClick={() => void load()} disabled={loading}>
               {loading ? <CircularProgress size={20} /> : <Refresh />}
@@ -277,7 +319,8 @@ export default function CautionsPage() {
         </Box>
         <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: "block" }}>
           monitor.caution_log · one open row per issue per service (recurrences bump
-          occurrence_count / last_seen_at) · resolve closes the row — a resolved issue
+          occurrence_count / last_seen_at) · date = GMT day of first seen (Beijing 08:00
+          starts a new day; empty = all days) · resolve closes the row — a resolved issue
           re-raising opens a fresh one · writers: pipeline/daemon exits, orchestration
           steps, maintainer jobs, the API's own errors, AI suspicion seams,
           python -m _common.caution_log (manual)
@@ -289,7 +332,9 @@ export default function CautionsPage() {
         {!error && rows != null && rows.length === 0 && (
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
             {state === "open"
-              ? "No open cautions — every known issue is resolved."
+              ? dateFilter === "all"
+                ? "No open cautions — every known issue is resolved."
+                : `No open cautions dated ${dateFilter} — empty the date field for all days.`
               : "No caution rows match the filters."}
           </Typography>
         )}
@@ -503,7 +548,7 @@ export default function CautionsPage() {
         title={logDialog != null ? `${logDialog.service}.log` : ""}
         subtitle={
           logDialog != null
-            ? `${logDialog.date} · located from the caution's log context`
+            ? `${fmtDate(logDialog.date)} · located from the caution's log context`
             : null
         }
         log={logView}

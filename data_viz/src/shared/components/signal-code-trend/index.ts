@@ -8,7 +8,9 @@
  * of the plain OHLC code trend (the family plots its crowdedness
  * trigger source); the volatility family's pick renders
  * SignalVolatilityChart the same way (the Commons Volatility page's
- * top chart — close + HV 20d + EWMA — as the trigger source).
+ * top chart — close + HV 20d + EWMA — as the trigger source). The
+ * news_wash family was deleted 2026-11-22 — its rules migrated into
+ * the amplifier tier (the Signal Amplification page renders them).
  */
 export { default as SignalCodeTrendChart } from "./SignalCodeTrendChart";
 export type { SignalCodeTrendChartProps } from "./SignalCodeTrendChart";

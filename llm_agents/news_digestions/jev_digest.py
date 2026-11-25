@@ -153,6 +153,12 @@ class JevDigestionEngine:
             "industry_id": article.get("industry_id"),
             "summary": summary,
             "sentiment_level": level,
+            # Orthogonal component reads (stored alongside the composed
+            # product — aggregations weight them independently; see the
+            # text.news_digestions banner for the composition).
+            "p_bullish": float(p_bull),
+            "p_bearish": float(p_bear),
+            "intensity_score": float(score),
             "llm_model": self.config.model,
         }
 

@@ -1,0 +1,13 @@
+{
+  "service": "downloads.futures.cffex.trend",
+  "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
+  "is_resident": false,
+  "freq": "daily",
+  "priority": 170,
+  "schedule": "every A-share trading date, in the 16:00 nightly chain (downloads_daily step 25, late wave before builds_daily)",
+  "notes": "Current-month CFFEX daily futures/options CSVs into temps/cffex_trend (Playwright, anti-bot paced) — builds.futures globs archive + trend, builds.options.cffex reads the trend options files; kept before the builds tier. Data pre-check: the csv-missing reading runs the step only when a closed session's file is absent.",
+  "source_ref": "scripts/orchestration/downloads_daily.json",
+  "updated_at": "2026-11-24T00:00:00.000000+00:00"
+}

@@ -5,6 +5,7 @@
  *   - an individual month selects only that month's expiries
  */
 import { Box, ToggleButton, ToggleButtonGroup } from "@mui/material";
+import { fmtMonth } from "@/shared/datetime";
 
 interface Props {
   cohortMode: "active" | "history";
@@ -54,10 +55,10 @@ export default function CohortSelector({
           <ToggleButton
             key={m}
             value={m}
-            title={`Expiry month ${m}`}
+            title={`Expiry month ${fmtMonth(m)}`}
             sx={{ px: 1, py: 0.25, fontSize: "0.7rem" }}
           >
-            {m}
+            {fmtMonth(m)}
           </ToggleButton>
         ))}
       </ToggleButtonGroup>

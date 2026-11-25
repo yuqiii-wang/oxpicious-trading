@@ -37,6 +37,7 @@ import {
 import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import { useDocs } from "@/shared/docs";
+import { fmtDate } from "@/shared/datetime";
 import { INSIGHT_PAGES } from "@/shared/ai-ask";
 import { useStore } from "@/store/filters";
 import { PRICE_SCALE } from "@/theme/chart-palette";
@@ -198,7 +199,7 @@ export default function SpotSkewTrendPanel({
         ? "No IV/delta-calibrated option rows for this underlying — the smile chronology needs premium-calibrated quotes (stats.options_greeks)."
         : "Select an underlying to load the smile chronology."
       : view === "today"
-        ? `No expiry groups on ${selectedDate || "the selected date"}.`
+        ? `No expiry groups on ${selectedDate ? fmtDate(selectedDate) : "the selected date"}.`
         : "No data";
 
   // AI Ask — concise per-view guide (the long-form rationale lives in

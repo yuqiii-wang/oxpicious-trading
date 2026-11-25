@@ -1,0 +1,17 @@
+{
+  "service": "downloads.etf.szse.trend",
+  "kind": "fetch",
+  "tables": [
+    {
+      "table": "stats.etf_basic_stats",
+      "code_scope": "^1"
+    }
+  ],
+  "csv": [
+    {
+      "dir": "temps/szse_trend",
+      "pattern": "szse_trend_etf_{date}.csv"
+    }
+  ],
+  "notes": "SZSE ETF EOD (szse codes start with 1) → builds.etf. Presence = the SZSE slice of stats.etf_basic_stats — the ETF build's own gate (etf_identity is streamer-pre-seeded: the 2026-10-12 gap)."
+}

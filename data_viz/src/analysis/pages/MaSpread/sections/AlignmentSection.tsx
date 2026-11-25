@@ -24,6 +24,7 @@ import {
   useChartThemeMode,
 } from "@/shared/charts/base-chart";
 import type { MovAveSpreadAlignmentDay } from "@shared/types";
+import { fmtDate } from "@/shared/datetime";
 import { SectionLabel } from "../SectionLabel";
 import { PERIOD_GRID_SX } from "../constants";
 import type { ChartZoomRange } from "../types";
@@ -66,7 +67,7 @@ export function AlignmentSection({ alignmentRows, loading, zoom, onReady, onEven
           <BaseChart
             variant="bare"
             title="MA-Chain Alignment"
-            subtitle={`close > ma5 > ma20 > ma60 > ma120 > ma252 — score ${last?.alignment_score ?? "—"}/5 · ${last?.date ?? ""}`}
+            subtitle={`close > ma5 > ma20 > ma60 > ma120 > ma252 — score ${last?.alignment_score ?? "—"}/5 · ${fmtDate(last?.date)}`}
             loading={loading}
             option={option}
             emptyText="No alignment rows for this code"

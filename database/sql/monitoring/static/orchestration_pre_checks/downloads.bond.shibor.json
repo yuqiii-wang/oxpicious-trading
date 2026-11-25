@@ -1,0 +1,10 @@
+{
+  "service": "downloads.bond.shibor",
+  "kind": "fetch",
+  "tables": [
+    {
+      "table": "stats.debt_identity"
+    }
+  ],
+  "notes": "SHIBOR / LPR history (date-ranged chunk files, no per-date file). DB slice only: stats.debt_identity is date-keyed (one row per published session)."
+}

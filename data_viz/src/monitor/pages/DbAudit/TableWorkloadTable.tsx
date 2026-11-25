@@ -59,6 +59,7 @@ import {
 import type { DbAuditSource, DbTableEntry } from "@/lib/api-client/monitor";
 import { fetchDbPartitions } from "@/lib/api-client/monitor";
 import { fmtBytes, fmtCount, fmtRate } from "./fmt";
+import { fmtDate } from "@/shared/datetime";
 import DbTrendChart from "./DbTrendChart";
 
 /** Flag chip vocabulary — 0 default / 1 amber (warning) / 2 red (error);
@@ -79,7 +80,11 @@ function stamp(iso: string | null, source: DbAuditSource): string {
   if (!iso) return "—";
   if (source === "archive") {
     const d = new Date(iso);
-    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+    // UTC date parts are the honest rendering (the rollup's GMT-day
+    // grain) — remapped to the display convention only.
+    return fmtDate(
+      `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`,
+    );
   }
   return shortTime(iso);
 }

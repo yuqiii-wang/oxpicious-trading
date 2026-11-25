@@ -34,6 +34,7 @@ import {
 } from "@/theme/chart-palette";
 import type { StockDividend } from "@shared/types";
 import { signalRecordName } from "@/shared/components/signal-code-trend/families";
+import { fmtDate } from "@/shared/datetime/display";
 import type { OhlcForecastAction, OhlcTradeSignal } from "@/ui/OhlcChart/types";
 
 /** One forecast signal streak period, as reported on hover — the
@@ -167,7 +168,9 @@ export function makeCodeTrendTooltipFormatter(ctx: CodeTrendTooltipContext) {
           });
 
     const children: React.ReactNode[] = [];
-    children.push(makeHeader(dateStr));
+    // dateStr stays RAW — it keys the per-date maps below; only the header
+    // renders the UI-wide display format.
+    children.push(makeHeader(fmtDate(dateStr)));
 
     const div = ctx.dividendByDate?.get(dateStr);
     if (div) {
@@ -283,7 +286,7 @@ export function makeCodeTrendTooltipFormatter(ctx: CodeTrendTooltipContext) {
           { style: { color: TRIGGER_STREAK_COLOR } },
           "Streak",
         ),
-        ` · ${streak.start} → ${streak.end}${daysStr}`,
+        ` · ${fmtDate(streak.start)} → ${fmtDate(streak.end)}${daysStr}`,
       ]));
     }
 

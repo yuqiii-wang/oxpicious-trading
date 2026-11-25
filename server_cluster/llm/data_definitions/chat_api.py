@@ -13,11 +13,12 @@ stream, stream_options.include_usage, n (only 1), user (echoed in the
 response id... no — ignored). Everything else is tolerated-and-ignored
 (the SDK sends some fields no local backend can honor, e.g. logprobs).
 
-Text-only: a message content of content-parts is accepted when every
-part is ``{"type": "text"}``; image parts raise
+Text-only ON THE CHAT SURFACE: a message content of content-parts is
+accepted when every part is ``{"type": "text"}``; image parts raise
 :class:`ImageContentNotSupported` (the route maps it to a 400 envelope)
-— the OneJev backend serves TEXT chat; its vision preprocessing is not
-exposed yet.
+— the OneJev backends serve TEXT chat. Image input lives on the host's
+OCR contract, ``POST /v1/ocr`` (``data_definitions.ocr_api``), not on
+the chat wire.
 """
 from __future__ import annotations
 

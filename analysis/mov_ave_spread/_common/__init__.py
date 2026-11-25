@@ -5,7 +5,9 @@
   ohlc_vector  — vectorised roof/floor anchor algorithm (sparse-table
                  argmax host core; used by the ohlc-lines step)
   steps        — the internal-step skeleton: the TableStep template-method
-                 base + StepRun execution context + scope helpers
+                 base + StepRun execution context + StepTargets write scope
+                 (own missing dates ∪ the core's; held dates refresh-upserted)
+                 + scope helpers
 """
 from analysis.mov_ave_spread._common.guards import (
     gap_col,
@@ -25,12 +27,17 @@ from analysis.mov_ave_spread._common.derive import (
 )
 from analysis.mov_ave_spread._common.steps import (
     StepRun,
+    StepTargets,
     TableStep,
     filter_target_dates,
+    find_code_gaps,
+    find_core_code_gaps,
+    frame_code_date_pairs,
     infer_sec_types,
     purge_step_scope,
-    resolve_target_dates,
+    resolve_step_targets,
     sec_type_code,
+    upsert_long_frame_async,
 )
 
 __all__ = [
@@ -43,6 +50,8 @@ __all__ = [
     "compute_trading_amt_mas", "compute_trading_amt_market_share_mas",
     "compute_trading_amt_market_share_vs_mas",
     # steps plumbing
-    "StepRun", "TableStep", "filter_target_dates", "infer_sec_types",
-    "purge_step_scope", "resolve_target_dates", "sec_type_code",
+    "StepRun", "StepTargets", "TableStep", "filter_target_dates",
+    "find_code_gaps", "find_core_code_gaps", "frame_code_date_pairs",
+    "infer_sec_types", "purge_step_scope", "resolve_step_targets",
+    "sec_type_code", "upsert_long_frame_async",
 ]

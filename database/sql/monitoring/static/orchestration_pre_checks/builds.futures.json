@@ -1,0 +1,15 @@
+{
+  "service": "builds.futures",
+  "kind": "derive",
+  "tables": [
+    {
+      "table": "stats.futures_identity",
+      "code_scope": "^(?:IC|IF|IH|IM|TF|TL|TS|T)[0-9]{4}$"
+    },
+    {
+      "table": "stats.futures_basic_stats",
+      "code_scope": "^(?:IC|IF|IH|IM|TF|TL|TS|T)[0-9]{4}$"
+    }
+  ],
+  "notes": "Reads the CFFEX month archive + the trend files, so no csv stage. Presence = the CFFEX family (builds.futures' CFFEX_CODE_SCOPE) of BOTH shared futures tables — the offshore CN / MCA families must not mask it."
+}

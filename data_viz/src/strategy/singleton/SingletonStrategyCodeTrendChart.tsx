@@ -16,8 +16,10 @@
  *     aligned to the gap-broken category axis)
  *   • the selected risk-analytics period shaded green (gain) / red
  *     (loss) with its label — the RiskPanel bar-click shading
- *   • the per-day tooltip block: the day's decision (side/#, fill,
- *     signal reason) + the daily P&L rows (unrealized / total /
+ *   • the per-day tooltip block: the day's decision (side/#, fill, the
+ *     signal reason as SUB-ROWS — MIXED runs render the per-algo
+ *     breakdown, the other voices break at their own ` — ` / ` -> ` /
+ *     [note] grammar) + the daily P&L rows (unrealized / total /
  *     position / qty / return / hold / Sharpes)
  *   • the selected-decision emphasis (grow + glow via selectedSignalDate)
  *     and the pan-to-marker request (focusDateRequest) driven by the
@@ -54,7 +56,7 @@ import {
   escapeTooltipText,
   tooltipComponents,
 } from "@/lib/react-tooltip-renderer";
-import { stripMixPrefix } from "../_common/mixReason";
+import { parseMixReason, splitReasonRows } from "../_common/mixReason";
 import type { SelectedPeriod } from "../_common/types";
 import type {
   StrategyBacktestResponse,
@@ -95,6 +97,12 @@ export interface SingletonStrategyCodeTrendChartProps
 /** True when a SELL decision is the run's final liquidation row. */
 function isLastDaySell(d: { side: string; signal_reason: string }): boolean {
   return d.side === "SELL" && !!d.signal_reason?.startsWith("LAST DAY SELL");
+}
+
+/** One-decimal signed magnitude — the mix breakdown's `+37.5` look (the
+ *  collector's `{:+.1f}` human-tail format). */
+function signed1(v: number): string {
+  return (v >= 0 ? "+" : "") + v.toFixed(1);
 }
 
 /** Period label of a date for the selected risk period ("2024",
@@ -404,9 +412,39 @@ export default class SingletonStrategyCodeTrendChart extends CodeTrendChart<Sing
                 ),
               );
               lines.push(`Fill: ${fmtNum(decision.fill_price, 4)}`);
-              const reason = stripMixPrefix(decision.signal_reason);
-              if (reason) {
-                lines.push(`Signal: ${escapeTooltipText(reason)}`);
+              // The Signal rows — SUB-ROWS, never one 300-char line (the
+              // ECharts html tooltip does not wrap): a MIXED decision
+              // renders its structured per-algo breakdown (the
+              // __MIX__ JSON, one row per firing algo + the blended Σ,
+              // the DecisionTable's breakdown as tooltip rows); every
+              // other voice renders through the reason's own segment
+              // grammar (splitReasonRows — the oracle's ~300-char
+              // sentence breaks at its ` — ` / ` -> ` markers, its
+              // trailing [scale]/[amp] notes peel off), the first
+              // segment riding the Signal: row.
+              const parsed = parseMixReason(decision.signal_reason);
+              if (parsed.mix) {
+                lines.push(
+                  `Signal: MIXED ${parsed.mix.side}`
+                  + (parsed.mix.netted ? " (netted)" : ""),
+                );
+                for (const a of parsed.mix.algos) {
+                  if (a.c === 0 && a.n === 0) continue;
+                  lines.push(
+                    `· ${escapeTooltipText(a.a)}`
+                    + ` w=${Math.round(a.w * 100)}%`
+                    + ` c=${signed1(a.c)}→${signed1(a.n)}`,
+                  );
+                }
+                lines.push(`· Σ ${signed1(parsed.mix.blended)}`);
+              } else {
+                const [first, ...rest] = splitReasonRows(parsed.human);
+                if (first) {
+                  lines.push(`Signal: ${escapeTooltipText(first)}`);
+                  for (const seg of rest) {
+                    lines.push(`· ${escapeTooltipText(seg)}`);
+                  }
+                }
               }
             }
             if (daily) {

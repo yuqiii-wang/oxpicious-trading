@@ -81,6 +81,7 @@ import { askChartAi } from "@/lib/api-client/aiAsk";
 import { fetchInsightMetrics } from "@/lib/api-client/analysis-insights";
 import type { InsightMetricsResponse } from "@/lib/api-client/analysis-insights";
 import { DescriptionView } from "@/shared/components/description";
+import { MarkdownView } from "@/shared/markdown";
 import {
   DateOrMonthField,
   normalizeDateOrMonth,
@@ -911,7 +912,6 @@ export default function AiAskModal({
             <Box
               ref={answerRef}
               sx={{
-                whiteSpace: "pre-wrap",
                 bgcolor: "action.hover",
                 borderRadius: 1,
                 p: 1.5,
@@ -919,7 +919,8 @@ export default function AiAskModal({
                 overflowY: "auto",
               }}
             >
-              <Typography variant="body2">{answer}</Typography>
+              {/* LLM markdown — parsed via the shared themed renderer. */}
+              <MarkdownView dense source={answer} />
             </Box>
           )}
             </>

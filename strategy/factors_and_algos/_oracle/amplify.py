@@ -4,8 +4,10 @@ creative how to amplify signals, ensure oracle isolation").
 
 ORACLE-MODULE ISOLATION (the defining property): this stage lives in
 ``_oracle`` and only here — it is part of the oracle's own confidence
-surface (a post-scaling magnitude transform), owned by the oracle's
-isolated optimizer, never by the NestedTrainer / any other module.
+surface (a post-scaling magnitude transform), a STATIC replay
+component (its ``conf_amp`` group is a plain ``DEFAULT_PARAMS``
+entry, not a trainer axis — the NestedTrainer tunes only the
+confidence-scaling knobs).
 
 WHY IT EXISTS (the 2026-11-20 convexity study, docs/
 oracle_convexity_study_2026-11-20.md): magnitude-only grade scaling is
@@ -72,7 +74,7 @@ class AmplifyCfg(BaseModel):
     grade_gate: bool = True
     #: absolute per-BUY conf cap — caps the AMPLIFICATION only (>= 100
     #: so a base conf <= 100 is never squashed; higher values restore a
-    #: big HWM in fewer buys; leverage rides in the optimizer's capital
+    #: big HWM in fewer buys; leverage rides in the engine's capital
     #: column).
     buy_cap: float = Field(100.0, ge=100.0, le=400.0)
     #: streak_boost: same-side BUY run multiplier (1 + s*(run-1)).

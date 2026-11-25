@@ -5,7 +5,8 @@
 --  owner classification, and the futures / options contract classes.
 --  Owning tables: stats.stock_identity / sec_board_map (board),
 --  stats.sec_owners (sec_owner_type), stats.futures_identity +
---  analysis.futures_gap_quintiles (contract_type), stats.options_terms
+--  analysis.futures_gap_quintiles (contract_type), stats.macro_identity
+--  (metal_type), stats.options_terms
 --  + the analysis.options_* tables (option_type), the analysis.mov_ave*
 --  family, analysis.pe_and_dividends, and monitor.src_data_audit
 --  (sec_type); skew_type is PENDING
@@ -36,6 +37,9 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- contract_type: futures
     ('contract_type', 0, 'index', 0),
     ('contract_type', 1, 'bond',  1),
+    -- macro_metal: macro daily family's metal class (stats.macro_identity)
+    ('macro_metal', 0, 'gold',   0),
+    ('macro_metal', 1, 'silver', 1),
     -- option_type: options contract class (converted 2026-10-07 —
     -- stats.options_terms + the analysis.options_* tables)
     ('option_type', 0, 'CALL', 0),

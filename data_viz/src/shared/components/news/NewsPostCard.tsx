@@ -16,6 +16,7 @@ import PostChip from "@/shared/components/post-feed/PostChip";
 import { fetchNewsComments, fetchNewsItem } from "@/lib/api-client";
 import type { NewsComment, NewsItem, NewsItemDetail } from "@shared/types";
 import CommentThread from "./CommentThread";
+import PseudoImagea, { splitPseudoImageBlocks } from "./PseudoImagea";
 
 /** Deterministic avatar hue per author so the feed reads like a social app. */
 const AVATAR_COLORS = ["#5470c6", "#91cc75", "#fac858", "#ee6666", "#73c0de", "#3ba272", "#fc8452", "#9a60b4"];
@@ -129,20 +130,41 @@ export default function NewsPostCard({ item }: { item: NewsItem }) {
       headlineHref={item.url}
       snippet={item.snippet}
       fetchDetail={() => fetchNewsItem(item.news_id)}
-      renderDetail={(detail) => (
-        <Typography
-          variant="body2"
-          sx={{
-            whiteSpace: "pre-wrap",
-            lineHeight: 1.65,
-            maxHeight: 520,
-            overflowY: "auto",
-            pr: 1,
-          }}
-        >
-          {detail.content}
-        </Typography>
-      )}
+      renderDetail={(detail) => {
+        // Contents carrying recovered image content render the ````ocr
+        // blocks as the distinct 伪图片 (Pseudo Imagea) panels; everything
+        // else keeps the exact plain pre-wrap rendering as before.
+        const chunks = splitPseudoImageBlocks(detail.content ?? "");
+        if (!chunks.some((chunk) => chunk.kind === "pseudo")) {
+          return (
+            <Typography
+              variant="body2"
+              sx={{
+                whiteSpace: "pre-wrap",
+                lineHeight: 1.65,
+                maxHeight: 520,
+                overflowY: "auto",
+                pr: 1,
+              }}
+            >
+              {detail.content}
+            </Typography>
+          );
+        }
+        return (
+          <Box sx={{ maxHeight: 520, overflowY: "auto", pr: 1 }}>
+            {chunks.map((chunk, i) =>
+              chunk.kind === "pseudo" ? (
+                <PseudoImagea key={i} chunk={chunk} />
+              ) : (
+                <Typography key={i} variant="body2" sx={{ whiteSpace: "pre-wrap", lineHeight: 1.65 }}>
+                  {chunk.text}
+                </Typography>
+              ),
+            )}
+          </Box>
+        );
+      }}
       detailEmptyText="（无正文内容）"
       renderActions={(detail) => {
         const commentCount = detail?.comment_count ?? item.comment_count ?? 0;

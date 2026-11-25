@@ -1,18 +1,28 @@
 /**
  * ForecastSignalsTable — the forecast register as a TRADING-SIGNALS-LIST
  * (the live LiveDataTradingSignalsPage's SignalTable idiom): ONE parent
- * row per CODE — the representative is the code's highest-confidence
- * projected signal — with a Count column (fired cells across the six σ
- * scenarios) and a "+N"-free Signal cell; EVERY parent row is CLICKABLE:
- * clicking toggles an expansion below it listing the code's fired
- * signals in the σ-ladder order (−1σ → +1σ → −2σ → …) plus the muted
- * "no signal" markers of its empty rungs. One row expanded at a time.
+ * row per (SCENARIO, CODE) — the scenario is the σ rung (−kσ / +kσ) —
+ * grouped SCENARIO-major in the σ-ladder order (−1σ → +1σ → −2σ → …),
+ * code ASC inside each scenario (a heavier rule opens every scenario
+ * block). The parent row's representative is the scenario's
+ * highest-confidence projected signal for the code, with a Count column
+ * (the scenario's fired cells for the code) and a "+N"-free Signal cell.
+ * A row holding MORE THAN ONE fired cell is CLICKABLE: clicking toggles
+ * an expansion below it listing every fired cell, trigger_no ASC. One
+ * row expanded at a time. A (scenario, code) that fires nothing is its
+ * own muted "no signal" row (not clickable) — the scenario's trigger_no
+ * 0 summary row carries the projected close.
  *
  * Column set mirrors SignalTable: Scenario | Code | Signal | Action |
  * Signal value | Threshold | Excess | Confidence | regime | exec |
  * Count; the action rides the shared SignalActionChip (confidence =
  * the projected bp / 100) with a "gated" marker when the strategy
- * pickup would NOT execute the sell.
+ * pickup would NOT execute the sell. The expansion ALSO renders the
+ * shared SignalCodeTrendChart (the live expansion's singleton signal
+ * plot) for the code anchored on the scenario's anchor date — the
+ * singleton signal history as buy/sell markers beside the projected
+ * cells; the chart self-fetches and degrades to the plain trend on a
+ * history failure, never blocking the rows.
  */
 import { Fragment, useMemo, useState } from "react";
 import {
@@ -31,73 +41,151 @@ import {
   useTheme,
 } from "@mui/material";
 import { SignalActionChip } from "@/shared/components/signal-action";
+import { SignalCodeTrendChart } from "@/shared/components/signal-code-trend";
 import { regimeAccentColor } from "@/shared/charts/regimeBands";
+import { fmtDate } from "@/shared/datetime";
+import type { CodeTrendSecType } from "@/ui/OhlcChart";
 import type { ForecastNextDayRow } from "@/lib/api-client";
 
-/** The σ rung label (−kσ / +kσ). */
+/** The σ rung label (−kσ / +kσ) — the scenario's name. */
 function rungLabel(direction: string, sigmaMult: number): string {
   return `${direction === "down" ? "−" : "+"}${sigmaMult}σ`;
 }
 
-/** The σ-ladder order inside one code's expansion: sigma_mult ASC
- *  (±1 → ±2 → ±3), down before up, trigger_no ASC. */
-function sortRows(rows: ForecastNextDayRow[]): ForecastNextDayRow[] {
-  return [...rows].sort(
-    (a, b) =>
-      a.code.localeCompare(b.code) ||
-      a.sigma_mult - b.sigma_mult ||
-      (a.direction === b.direction
-        ? a.trigger_no - b.trigger_no
-        : a.direction === "down"
-          ? -1
-          : 1),
+/** The rung's σ-ladder position: sigma_mult ASC (±1 → ±2 → ±3), down
+ *  before up. */
+function rungOrder(direction: string, sigmaMult: number): number {
+  return sigmaMult * 2 + (direction === "down" ? 0 : 1);
+}
+
+/** The Code cell — the code with its display name beside it. */
+function codeCell(code: string, name: string | null) {
+  return (
+    <TableCell sx={{ whiteSpace: "nowrap" }}>
+      {code}
+      {name ? (
+        <Box component="span" sx={{ color: "text.secondary", ml: 1 }}>
+          {name}
+        </Box>
+      ) : null}
+    </TableCell>
   );
 }
 
-/** One parent group per code: its σ-ordered fired signals, the muted
- *  no-signal markers of its empty rungs, and the representative (the
- *  highest-confidence fired signal — or the first summary row when the
- *  code fires nothing at all). */
-interface CodeGroup {
-  code: string;
+/** The table's row order — scenario-major (the σ ladder: −1σ → +1σ →
+ *  −2σ → …), code ASC inside a scenario, trigger_no ASC inside a
+ *  (scenario, code). */
+function sortRows(rows: ForecastNextDayRow[]): ForecastNextDayRow[] {
+  return [...rows].sort(
+    (a, b) =>
+      rungOrder(a.direction, a.sigma_mult) -
+        rungOrder(b.direction, b.sigma_mult) ||
+      a.code.localeCompare(b.code) ||
+      a.trigger_no - b.trigger_no,
+  );
+}
+
+/** One parent group per (scenario, code): the scenario's fired signals
+ *  (trigger_no ASC), its trigger_no 0 summary row (the pipeline
+ *  registers one per scenario — the no-signal group's own row), and the
+ *  representative (the highest-confidence fired signal, else the summary
+ *  row). */
+interface ScenarioCodeGroup {
+  /** (anchor, scenario, code) — the expansion identity. */
+  key: string;
+  /** (anchor, scenario) — the block a new group opens. */
+  scenarioKey: string;
   fired: ForecastNextDayRow[];
-  noSignal: ForecastNextDayRow[];
+  summary: ForecastNextDayRow | null;
   rep: ForecastNextDayRow;
 }
 
-function groupByCode(rows: ForecastNextDayRow[]): CodeGroup[] {
-  const sorted = sortRows(rows);
-  const byCode = new Map<string, { fired: ForecastNextDayRow[]; noSignal: ForecastNextDayRow[] }>();
-  for (const row of sorted) {
-    const g = byCode.get(row.code) ?? { fired: [], noSignal: [] };
-    if (row.trigger_no === 0) g.noSignal.push(row);
+function groupByScenarioCode(
+  rows: ForecastNextDayRow[],
+): ScenarioCodeGroup[] {
+  // insertion-ordered — the scenario-major sort's order
+  const groups = new Map<string, ScenarioCodeGroup>();
+  for (const row of sortRows(rows)) {
+    const scenarioKey =
+      `${row.anchor_date}|${row.direction}|${row.sigma_mult}`;
+    const key = `${scenarioKey}|${row.code}`;
+    let g: ScenarioCodeGroup | undefined = groups.get(key);
+    if (!g) {
+      g = { key, scenarioKey, fired: [], summary: null, rep: row };
+      groups.set(key, g);
+    }
+    if (row.trigger_no === 0) g.summary = row;
     else g.fired.push(row);
-    byCode.set(row.code, g);
   }
-  return [...byCode.entries()].map(([code, g]) => ({
-    code,
-    fired: g.fired,
-    noSignal: g.noSignal,
+  return [...groups.values()].map((g) => ({
+    ...g,
     rep:
       g.fired.length > 0
         ? g.fired.reduce((best, r) =>
             (r.confidence_bp ?? 0) > (best.confidence_bp ?? 0) ? r : best,
           )
-        : g.noSignal[0],
+        : (g.summary ?? g.rep),
   }));
+}
+
+/** The Scenario cell — the σ rung + the projected close, the anchor's
+ *  scenario stats in the tooltip. Indented + regular weight on the
+ *  expansion rows, flush + bold on the parent rows. */
+function scenarioCell(s: ForecastNextDayRow, indented = false) {
+  return (
+    <Tooltip
+      title={[
+        `anchor ${fmtDate(s.anchor_date)}`,
+        `base close ${Number(s.base_close).toFixed(2)}`,
+        `σ20 ${Number(s.sigma_20d_pct).toFixed(3)}%`,
+        `change ${Number(s.forecast_change_pct) >= 0 ? "+" : ""}${Number(s.forecast_change_pct).toFixed(2)}%`,
+      ].join(" · ")}
+      arrow
+    >
+      <TableCell sx={{ whiteSpace: "nowrap", pl: indented ? 6 : 2 }}>
+        <Box component="span" sx={{ fontWeight: indented ? 400 : 600 }}>
+          {rungLabel(s.direction, s.sigma_mult)}
+        </Box>
+        <Box component="span" sx={{ color: "text.secondary", ml: 1 }}>
+          {Number(s.forecast_close).toFixed(2)}
+        </Box>
+      </TableCell>
+    </Tooltip>
+  );
+}
+
+/** The no-signal row's cells — the scenario + the code, then the muted
+ *  marker spanning the signal columns (the caller's Count cell closes
+ *  the row). */
+function summaryCells(s: ForecastNextDayRow) {
+  return (
+    <>
+      {scenarioCell(s)}
+      {codeCell(s.code, s.code_name)}
+      <TableCell
+        colSpan={8}
+        sx={{ color: "text.secondary", fontStyle: "italic" }}
+      >
+        no signal
+      </TableCell>
+    </>
+  );
 }
 
 export function ForecastSignalsTable({
   rows,
   loading,
+  secType,
 }: {
   /** The register rows (the latest anchor per code, or one code's). */
   rows: ForecastNextDayRow[];
   loading: boolean;
+  /** The register's security type — the signal plot's baseline source. */
+  secType: CodeTrendSecType;
 }) {
   const theme = useTheme();
-  const [expandedCode, setExpandedCode] = useState<string | null>(null);
-  const groups = useMemo(() => groupByCode(rows), [rows]);
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const groups = useMemo(() => groupByScenarioCode(rows), [rows]);
 
   if (loading && rows.length === 0) {
     return (
@@ -130,7 +218,7 @@ export function ForecastSignalsTable({
         <TableHead>
           <TableRow>
             <Tooltip
-              title="The representative row's σ rung (base close × (1 ± k·σ20)) — the code's highest-confidence projected signal; expand for every rung −1σ → +1σ → −2σ → …"
+              title="The σ scenario — the next-day close = base close × (1 ± k·σ20). Rows group by scenario, then code; the row shows the scenario's highest-confidence projected signal for the code"
               arrow
             >
               <TableCell>Scenario</TableCell>
@@ -172,7 +260,7 @@ export function ForecastSignalsTable({
               <TableCell align="center">exec</TableCell>
             </Tooltip>
             <Tooltip
-              title="Fired rule cells for the code across the selected σ scenarios — click the row to expand every rung's signals"
+              title="Fired rule cells for this scenario × code — a row holding more than one expands on click"
               arrow
             >
               <TableCell align="right">Count</TableCell>
@@ -180,62 +268,74 @@ export function ForecastSignalsTable({
           </TableRow>
         </TableHead>
         <TableBody>
-          {groups.map((g) => {
-            const expanded = expandedCode === g.code;
+          {groups.map((g, i) => {
+            const expanded = expandedKey === g.key;
+            const noSignal = g.fired.length === 0;
+            // only a multi-signal scenario holds collapsed rows to show
+            const expandable = g.fired.length > 1;
+            // a scenario block's first row opens on a heavier rule
+            const opensScenario =
+              i > 0 && groups[i - 1].scenarioKey !== g.scenarioKey;
             return (
-              <Fragment key={g.code}>
+              <Fragment key={g.key}>
                 <TableRow
-                  hover
-                  onClick={() => setExpandedCode(expanded ? null : g.code)}
+                  hover={expandable}
+                  onClick={
+                    expandable
+                      ? () => setExpandedKey(expanded ? null : g.key)
+                      : undefined
+                  }
                   sx={{
-                    cursor: "pointer",
+                    ...(opensScenario && {
+                      "& .MuiTableCell-root": {
+                        borderTop: "2px solid",
+                        borderColor: "divider",
+                      },
+                    }),
+                    ...(expandable && { cursor: "pointer" }),
                     ...(expanded && { backgroundColor: "action.hover" }),
                   }}
                 >
-                  {repCells(g.rep, theme)}
+                  {noSignal
+                    ? summaryCells(g.rep)
+                    : detailCells(g.rep, theme, false)}
                   <TableCell
                     align="right"
                     sx={{
                       whiteSpace: "nowrap",
-                      fontWeight: g.fired.length > 0 ? 600 : 400,
-                      color: g.fired.length > 0
-                        ? "text.primary"
-                        : "text.secondary",
+                      fontWeight: noSignal ? 400 : 600,
+                      color: noSignal ? "text.secondary" : "text.primary",
                     }}
                   >
                     {g.fired.length}
                   </TableCell>
                 </TableRow>
+                {expanded &&
+                  g.fired.map((row) => (
+                    <TableRow
+                      key={`${g.key}|${row.trigger_no}`}
+                      sx={{ "& td": { bgcolor: "background.default" } }}
+                    >
+                      {detailCells(row, theme)}
+                    </TableRow>
+                  ))}
                 {expanded && (
-                  <>
-                    {g.fired.map((row, i) => (
-                      <TableRow
-                        key={`${row.direction}-${row.sigma_mult}-${row.trigger_no}-${i}`}
-                        sx={{ "& td": { bgcolor: "background.default" } }}
-                      >
-                        {detailCells(row, theme)}
-                      </TableRow>
-                    ))}
-                    {g.noSignal.map((row, i) => (
-                      <TableRow
-                        key={`ns-${row.direction}-${row.sigma_mult}-${i}`}
-                        sx={{ "& td": { bgcolor: "background.default" } }}
-                      >
-                        <TableCell sx={{ pl: 6, whiteSpace: "nowrap" }}>
-                          <Box component="span" sx={{ color: "text.secondary" }}>
-                            {rungLabel(row.direction, row.sigma_mult)}
-                          </Box>
-                          <Box
-                            component="span"
-                            sx={{ color: "text.disabled", ml: 1 }}
-                          >
-                            {Number(row.forecast_close).toFixed(2)}
-                          </Box>
-                        </TableCell>
-                        <TableCell colSpan={9} />
-                      </TableRow>
-                    ))}
-                  </>
+                  <TableRow>
+                    <TableCell
+                      colSpan={11}
+                      sx={{ p: 0, border: "none", bgcolor: "background.default" }}
+                    >
+                      <Box sx={{ px: 1.5, py: 1.5 }}>
+                        <SignalCodeTrendChart
+                          secType={secType}
+                          code={g.rep.code}
+                          name={g.rep.code_name ?? undefined}
+                          anchorDate={g.rep.anchor_date}
+                          height={320}
+                        />
+                      </Box>
+                    </TableCell>
+                  </TableRow>
                 )}
               </Fragment>
             );
@@ -244,35 +344,6 @@ export function ForecastSignalsTable({
       </Table>
     </TableContainer>
   );
-
-  // -- the parent row (the representative's cells + the count rides the
-  //    caller's last cell above) -----------------------------------------
-
-  function repCells(rep: ForecastNextDayRow, th: typeof theme) {
-    if (rep.trigger_no === 0) {
-      // a code whose every scenario fires nothing — the muted marker row
-      return (
-        <>
-          <TableCell sx={{ whiteSpace: "nowrap", pl: 2 }}>
-            <Box component="span" sx={{ fontWeight: 600 }}>
-              {rungLabel(rep.direction, rep.sigma_mult)}
-            </Box>
-            <Box component="span" sx={{ color: "text.secondary", ml: 1 }}>
-              {Number(rep.forecast_close).toFixed(2)}
-            </Box>
-          </TableCell>
-          <TableCell>{rep.code}</TableCell>
-          <TableCell
-            colSpan={8}
-            sx={{ color: "text.secondary", fontStyle: "italic" }}
-          >
-            no signal
-          </TableCell>
-        </>
-      );
-    }
-    return detailCells(rep, th, false);
-  }
 
   // -- the 10 shared data cells (scenario .. exec) ------------------------
 
@@ -283,25 +354,8 @@ export function ForecastSignalsTable({
   ) {
     return (
       <>
-        <Tooltip
-          title={[
-            `anchor ${s.anchor_date}`,
-            `base close ${Number(s.base_close).toFixed(2)}`,
-            `σ20 ${Number(s.sigma_20d_pct).toFixed(3)}%`,
-            `change ${Number(s.forecast_change_pct) >= 0 ? "+" : ""}${Number(s.forecast_change_pct).toFixed(2)}%`,
-          ].join(" · ")}
-          arrow
-        >
-          <TableCell sx={{ whiteSpace: "nowrap", pl: indented ? 6 : 2 }}>
-            <Box component="span" sx={{ fontWeight: indented ? 400 : 600 }}>
-              {rungLabel(s.direction, s.sigma_mult)}
-            </Box>
-            <Box component="span" sx={{ color: "text.secondary", ml: 1 }}>
-              {Number(s.forecast_close).toFixed(2)}
-            </Box>
-          </TableCell>
-        </Tooltip>
-        <TableCell>{s.code}</TableCell>
+        {scenarioCell(s, indented)}
+        {codeCell(s.code, s.code_name)}
         <TableCell sx={{ whiteSpace: "nowrap" }}>
           {s.signal_type} · {s.signal_sub_type}
         </TableCell>

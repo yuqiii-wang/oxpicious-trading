@@ -11,8 +11,13 @@ counterpart of generative System-Two LLMs. This backend serves BOTH:
   answer's token set, softmax → calibrated probabilities:
   ``noul`` → P(yes) over the yes/no tokens; ``choice`` → one
   probability per option (A/B/C/...); ``score`` → the expected level
-  over the ordered level tokens. Text-only (the model is multimodal;
-  ``media`` is rejected until vision preprocessing is wired).
+  over the ordered level tokens. Media (images) ride the SAME
+  per-question forward when the weights carry an image processor
+  (``AutoProcessor`` — the model is multimodal): the request's images
+  become content parts at the ``<image:N>`` placeholder positions of
+  the state text, and the probability read is unchanged on top of the
+  vision-conditioned logits. A tokenizer-only weights dir keeps the
+  text-only serving (``vision_ready`` False → the router 400s media).
 * the generic OpenAI chat surface (:meth:`chat` / :meth:`chat_stream`)
   — a Jev model is still a Qwen text model, and the standard
   completion API stays useful for prose asks; the decision endpoint is
@@ -48,7 +53,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from ..config import ModelBackendSpec
-from .base import ModelBackend
+from .base import DTYPE_MAP, ModelBackend
 
 logger = logging.getLogger(__name__)
 
@@ -56,14 +61,6 @@ logger = logging.getLogger(__name__)
 # would otherwise block a reader forever; the bound only frees a wedged
 # stream — real generation of this size always beats it comfortably.
 _STREAM_TIMEOUT_S = 600.0
-
-_DTYPE_MAP = {
-    "bfloat16": "torch.bfloat16",
-    "float16": "torch.float16",
-    "fp16": "torch.float16",
-    "float32": "torch.float32",
-    "fp32": "torch.float32",
-}
 
 # The System One answer vocabularies: noul reads yes/no, choice/score
 # read lettered options.
@@ -131,6 +128,7 @@ class JevBackend(ModelBackend):
         self._model_dir = Path(model_dir)
         # Resolved at load time (device availability / dtype mapping).
         self._tokenizer = None
+        self._processor = None  # image processor — vision reads only
         self._model = None
         self._resolved_device = "cpu"
         self._resolved_dtype = spec.dtype
@@ -147,11 +145,12 @@ class JevBackend(ModelBackend):
                 "to cpu", self.model_id)
             device = "cpu"
         self._resolved_device = device
-        dtype_name = _DTYPE_MAP.get(self.spec.dtype.lower(), "torch.bfloat16")
+        dtype_name = DTYPE_MAP.get(self.spec.dtype.lower(), "torch.bfloat16")
         dtype = getattr(torch, dtype_name.split(".", 1)[1])
 
         t0 = time.perf_counter()
         self._tokenizer = AutoTokenizer.from_pretrained(self._model_dir)
+        self._processor = self._load_image_processor()
         model = self._load_model_class()
         model = model.to(dtype).to(device).eval()
         self._model = model
@@ -196,6 +195,48 @@ class JevBackend(ModelBackend):
                 " — upgrade transformers or disable this model in "
                 "host_config.json") from exc
 
+    def _load_image_processor(self):
+        """The weights' image processor when present — ``None`` (and a
+        logged note) on a tokenizer-only weights dir, which keeps the
+        serving text-only: media requests are rejected by the router
+        (``vision_ready`` False) instead of failing at forward time.
+        A processor_config.json that FAILS to load is loud (ERROR) —
+        the weights are expected to be vision-capable, and the silent
+        downgrade otherwise hides real breakage (the 2026-11-21 host
+        restart served ~300 text-only 400s before anyone noticed)."""
+        try:
+            from transformers import AutoProcessor
+
+            processor = AutoProcessor.from_pretrained(self._model_dir)
+        except Exception as exc:  # noqa: BLE001 — absence is a mode, not a failure
+            if (self._model_dir / "processor_config.json").is_file():
+                logger.error(
+                    "local model host: %s — processor_config.json "
+                    "PRESENT but AutoProcessor failed (%s); media "
+                    "reads are rejected as text-only until a reload — "
+                    "reload the model",
+                    self.model_id, exc)
+            else:
+                logger.info(
+                    "local model host: %s — no image processor in the "
+                    "weights (%s); media reads are rejected as "
+                    "text-only", self.model_id, exc)
+            return None
+        if not hasattr(processor, "image_processor"):
+            logger.info(
+                "local model host: %s — the loaded processor carries "
+                "no image processor; media reads are rejected as "
+                "text-only", self.model_id)
+            return None
+        return processor
+
+    @property
+    def vision_ready(self) -> bool:
+        """True when media (image) reads can be served — the weights
+        loaded an image processor. The router checks this BEFORE
+        dispatch and 400s media against a text-only backend."""
+        return self._processor is not None
+
     def _offload(self) -> None:
         import torch
 
@@ -211,6 +252,7 @@ class JevBackend(ModelBackend):
 
         self._model = None
         self._tokenizer = None
+        self._processor = None
         gc.collect()
 
     def _warmup(self) -> None:
@@ -275,14 +317,46 @@ class JevBackend(ModelBackend):
                   default=-1)
         return text[:cut] if cut >= 0 else text
 
-    def _prepare_inputs(self, messages, images_not_supported=True):
+    def _prepare_inputs(self, messages, images: Optional[List[Any]] = None):
+        """The templated prompt → the device-resident input dict. Text
+        reads template via the tokenizer as before; image reads fill
+        the ``{"type": "image"}`` content parts with the PIL images (in
+        the part order the decision prompt returned) and template
+        through the processor — the same call shape the OCR backend
+        proves out (the processor expands the parts into the model's
+        image-token slots and adds ``pixel_values``)."""
         import torch
 
         assert self._tokenizer is not None and self._model is not None
-        prompt = self._tokenizer.apply_chat_template(
-            self._messages_dicts(messages),
-            tokenize=True, add_generation_prompt=True, return_dict=True,
-            return_tensors="pt")
+        if images and self._processor is not None:
+            pending = list(images)
+            filled: List[Dict[str, Any]] = []
+            for message in self._messages_dicts(messages):
+                content = message.get("content")
+                if not isinstance(content, list):
+                    filled.append(message)
+                    continue
+                parts: List[Dict[str, Any]] = []
+                for part in content:
+                    if isinstance(part, dict) and \
+                            part.get("type") == "image" and pending:
+                        parts.append({"type": "image",
+                                      "image": pending.pop(0)})
+                    else:
+                        parts.append(part)
+                filled.append({**message, "content": parts})
+            if pending:
+                raise ValueError(
+                    f"{len(pending)} image(s) without an ``<image:N>`` "
+                    "slot in the decision prompt")
+            prompt = self._processor.apply_chat_template(
+                filled, tokenize=True, add_generation_prompt=True,
+                return_dict=True, return_tensors="pt")
+        else:
+            prompt = self._tokenizer.apply_chat_template(
+                self._messages_dicts(messages),
+                tokenize=True, add_generation_prompt=True, return_dict=True,
+                return_tensors="pt")
         prompt = {k: v.to(self._resolved_device)
                   for k, v in prompt.items()}
         input_len = int(prompt["input_ids"].shape[-1])
@@ -399,11 +473,20 @@ class JevBackend(ModelBackend):
     # --------------------------------------------------- system one (jev)
     @staticmethod
     def _decision_prompt(state: Optional[Dict[str, Any]],
-                         questions: Dict[str, Any]) -> List[Dict[str, str]]:
-        """The System One request → one lettered-answer user message (see
-        the module docstring's slot-format caveat). Pure — the unit probe
-        asserts its shape without a model."""
+                         questions: Dict[str, Any],
+                         media_count: int = 0
+                         ) -> Tuple[List[Dict[str, Any]], List[int]]:
+        """The System One request → (one lettered-answer user message,
+        the image order). See the module docstring's slot-format
+        caveat. With media, the state text's ``<image:N>`` placeholders
+        become ``{"type": "image"}`` parts at their positions — the
+        part order IS the returned image order (the caller's images
+        list must follow it); media no placeholder references ride as
+        parts after the text. Out-of-range indexes clamp to the last
+        media entry. Pure — the unit probe asserts its shape without a
+        model."""
         import json as _json
+        import re as _re
 
         lines: List[str] = [
             "You are answering typed decision questions. For each "
@@ -427,16 +510,41 @@ class JevBackend(ModelBackend):
                 lines.append("\n".join(
                     f"{_CHOICE_LETTERS[i]}. {level}"
                     for i, level in enumerate(q.criteria or [])))
-        return [{"role": "user", "content": "\n".join(lines)}]
+        text = "\n".join(lines)
+        if not media_count:
+            return [{"role": "user", "content": text}], []
+        parts: List[Dict[str, Any]] = []
+        image_order: List[int] = []
+        referenced: set = set()
+        cursor = 0
+        for match in _re.finditer(r"<image:(\d+)>", text):
+            head = text[cursor:match.start()]
+            if head:
+                parts.append({"type": "text", "text": head})
+            index = min(int(match.group(1)), media_count - 1)
+            parts.append({"type": "image"})
+            image_order.append(index)
+            referenced.add(index)
+            cursor = match.end()
+        tail = text[cursor:]
+        if tail:
+            parts.append({"type": "text", "text": tail})
+        for index in range(media_count):
+            if index not in referenced:
+                parts.append({"type": "image"})
+                image_order.append(index)
+        return [{"role": "user", "content": parts}], image_order
 
-    def _logits_after_prompt(self, messages: List[Dict[str, str]]
+    def _logits_after_prompt(self, messages: List[Dict[str, Any]],
+                             images: Optional[List[Any]] = None
                              ) -> Tuple[List[float], int]:
         """ONE forward of the templated prompt → (the last-position
         logits, the prompt's token count — the usage block's input for
-        that read). Lock held by caller."""
+        that read). ``images`` ride the same forward (vision-conditioned
+        read). Lock held by caller."""
         import torch
 
-        prompt, input_len = self._prepare_inputs(messages)
+        prompt, input_len = self._prepare_inputs(messages, images)
         with torch.inference_mode():
             out = self._model(**prompt)
         return out.logits[0, -1, :].tolist(), int(input_len)
@@ -447,18 +555,49 @@ class JevBackend(ModelBackend):
                   ) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, int]]:
         """The System One contract: typed questions in, calibrated
         answers out — ``noul`` → ``{noul: p_yes}``, ``choice`` →
-        ``{probabilities: {option: p}}``, ``score`` → ``{score:
-        expected_level}``. ``media`` is rejected by the router
-        (text-only); everything runs under the model lock in ONE
-        forward pass per question. Returns ``(answers, usage)`` — the
+        ``{probabilities: {option: p}}``, ``score`` →
+        ``{score: expected_level}``. ``media`` — (raw bytes, sniffed
+        mime) pairs, decoded by the router — is conditioned on when the
+        weights carry an image processor; a text-only load raises
+        ``ValueError`` (the router maps capability gaps to the 400
+        before dispatch). Everything runs under the model lock in ONE
+        forward pass per question — the images ride EVERY question's
+        forward (each answer's read is its own instructions conditioned
+        on the same media). Returns ``(answers, usage)`` — the
         usage dict is real tokenizer counts (the templated decision
         prompt of each question's forward; one answer-token read per
         question) for the response's usage block."""
+        images = self._decode_media(media)
         return self.run_locked(lambda: self._systemone_locked(
-            state, questions))
+            state, questions, images))
+
+    def _decode_media(self, media: Optional[List[Dict[str, Any]]]
+                      ) -> List[Any]:
+        """The router's (raw bytes, sniffed mime) pairs → PIL RGB
+        images (the processor's input). ``ValueError`` on a
+        non-decodable payload or a text-only load."""
+        if not media:
+            return []
+        if not self.vision_ready:
+            raise ValueError(
+                f"{self.model_id}: media read on a text-only load "
+                "(the weights carry no image processor)")
+        from io import BytesIO
+
+        from PIL import Image
+
+        images: List[Any] = []
+        for raw, _mime in media:
+            try:
+                images.append(Image.open(BytesIO(raw)).convert("RGB"))
+            except Exception as exc:  # noqa: BLE001 — surfaced as a 400
+                raise ValueError(
+                    f"media payload is not a decodable image: {exc}") from exc
+        return images
 
     def _systemone_locked(self, state: Optional[Dict[str, Any]],
-                          questions: Dict[str, Any]
+                          questions: Dict[str, Any],
+                          images: Optional[List[Any]] = None
                           ) -> Tuple[Dict[str, Dict[str, Any]],
                                      Dict[str, int]]:
         """One forward PER QUESTION, the answer read from that
@@ -478,8 +617,12 @@ class JevBackend(ModelBackend):
         answers: Dict[str, Dict[str, Any]] = {}
         prompt_tokens = 0
         for key, q in questions.items():
+            prompt_messages, image_order = self._decision_prompt(
+                state, {key: q}, media_count=len(images or []))
+            question_images = (
+                [images[i] for i in image_order] if images else None)
             logits, input_len = self._logits_after_prompt(
-                self._decision_prompt(state, {key: q}))
+                prompt_messages, question_images or None)
             prompt_tokens += input_len
             if q.type == "noul":
                 labels: List[str] = list(_NOUL_LABELS)
@@ -525,5 +668,6 @@ class JevBackend(ModelBackend):
             "resolved_device": self._resolved_device,
             "resolved_dtype": self._resolved_dtype,
             "loaded": self._model is not None,
+            "vision_ready": self._processor is not None,
         })
         return detail

@@ -29,6 +29,7 @@ import {
   Typography,
 } from "@mui/material";
 import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
+import { fmtDate } from "@/shared/datetime";
 import { INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import { useDocs } from "@/shared/docs";
@@ -121,7 +122,7 @@ export function IndustryEtfPriceChart({
 
   const subtitle = data
     ? `${etfCount} ETF${etfCount === 1 ? "" : "s"} tracking member indices — click any date to set the as-of date` +
-      (selectedDate ? ` · selected: ${selectedDate}` : "") +
+      (selectedDate ? ` · selected: ${fmtDate(selectedDate)}` : "") +
       ` · cascading rebase (each ETF starts at the mean on its first date)` +
       ` · ${viewMode === "price" ? "price prominent" : "trading amt + " + (maMode === "ma20" ? "MA20" : "MA5") + " prominent"} (other lowkey)`
     : "Select industries to see their ETF price chart";

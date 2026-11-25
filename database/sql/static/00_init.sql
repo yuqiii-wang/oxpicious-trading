@@ -8,6 +8,7 @@
 \ir docs/docs.sql
 \ir keyword_maps/keyword_maps.sql
 \ir label_dim/label_dim.sql
+\ir fin_sentiment_dict/fin_sentiment_dict.sql
 \ir portfolio_rules/portfolio_rules_docs.sql
 \ir secrets/secret_config.sql
 \ir signal_rules/signal_rules_docs.sql
@@ -28,6 +29,10 @@
 \ir keyword_maps/statics/07_seed_industry_expansion.sql
 \ir keyword_maps/statics/08_seed_english.sql
 \ir keyword_maps/statics/09_seed_market_expansion2.sql
+\ir keyword_maps/statics/10_seed_global_companies.sql
+\ir fin_sentiment_dict/01_seed_negative.sql
+\ir fin_sentiment_dict/02_seed_positive.sql
+\ir fin_sentiment_dict/03_seed_both.sql
 \ir label_dim/02_market_state.sql
 \ir label_dim/03_industry_aggregation.sql
 \ir label_dim/03_signal_detection.sql

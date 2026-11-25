@@ -305,6 +305,14 @@ export interface CheckExistingResult {
   scenario?: string | null;
   status?: string;
   fault_tolerance?: number | null;
+  /** The code's latest analysis row date (mov_ave_spreads_detail —
+   *  the same horizon the strategy runner trims to). Null when the
+   *  code has no analysis rows. */
+  analysis_latest_date?: string | null;
+  /** True when the run's end_date ends before the code's analysis
+   *  horizon — the run is stale (a rerun extends it); Run Strategy
+   *  force-reruns it directly, without the PK confirmation modal. */
+  stale?: boolean | null;
 }
 
 /**

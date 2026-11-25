@@ -18,7 +18,7 @@ from __future__ import annotations
 from datetime import date, datetime, time, timedelta
 from typing import Dict, List, Optional, Tuple
 
-from downloads.index.csindex.quote import CSINDEX_SKIP_CODES
+from downloads.index.csindex.price import CSINDEX_SKIP_CODES
 from _common.db_commons import bulk_upsert
 from _common.importance import exchange_map_or_empty, szse_downloader_codes
 

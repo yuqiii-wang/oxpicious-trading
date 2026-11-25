@@ -12,7 +12,7 @@ from llm_agents.online_search_summary.core.models import SearchOptions
 class GeoAsk:
     """One daily geopolitics/economy ask: what to search and in which
     language the answer must be written."""
-    scope: str               # GEO_SCOPE_GLOBAL | GEO_SCOPE_CHINA
+    scope: str               # GEO_SCOPE_GLOBAL | GEO_SCOPE_CHINA | GEO_SCOPE_INVESTORS
     lang: str                # answer language — "en" | "zh"
     query: str
     opts: SearchOptions

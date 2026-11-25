@@ -69,6 +69,7 @@ import {
   invalidateCacheForUrl,
 } from "@/lib/api-client";
 import { fmtNum } from "@/lib/series";
+import { fmtDate } from "@/shared/datetime";
 import type { CodeTrendSecType } from "@/ui/OhlcChart";
 import type { LinkedEtfRow, LinkedEtfsResponse, LinkedFeederRow } from "@shared/types";
 import {
@@ -124,7 +125,7 @@ function feederDetail(f: LinkedFeederRow): ReactNode {
   const meta = [
     f.is_initiator ? "发起式" : null,
     f.manager || null,
-    f.inception_date ? `Inception ${f.inception_date}` : null,
+    f.inception_date ? `Inception ${fmtDate(f.inception_date)}` : null,
   ].filter((s): s is string => s != null);
   return (
     <Stack sx={{ gap: 0.25 }}>
@@ -200,7 +201,7 @@ const COLUMNS: ChainColumn[] = [
     cell: (e) => (e.latest_close != null ? <span style={{ fontFamily: "monospace" }}>{fmtNum(e.latest_close)}</span> : "—"),
     feederCell: (f) =>
       f.latest_nav != null ? (
-        <Tooltip title={f.latest_date || undefined} arrow>
+        <Tooltip title={f.latest_date ? fmtDate(f.latest_date) : undefined} arrow>
           <span style={{ fontFamily: "monospace" }}>
             {fmtNum(f.latest_nav)}
             {f.day_pct != null && (
@@ -234,8 +235,8 @@ const COLUMNS: ChainColumn[] = [
   {
     key: "latest_date", label: "Latest Date",
     filter: { key: "latest_date", label: "Latest Date", type: "date", value: (e) => e.latest_date || null },
-    cell: (e) => e.latest_date || "—",
-    feederCell: (f) => f.latest_date || "—",
+    cell: (e) => fmtDate(e.latest_date),
+    feederCell: (f) => fmtDate(f.latest_date),
   },
   {
     key: "n_days", label: "Days",
@@ -761,7 +762,7 @@ function aggCells({
     latest_close: "—",
     trading_amt: sumTradingAmtYi != null ? <span style={{ fontFamily: "monospace" }}>{fmtNum(sumTradingAmtYi)}</span> : "—",
     aum: sumAumYi != null ? <span style={{ fontFamily: "monospace" }}>{fmtNum(sumAumYi)}</span> : "—",
-    latest_date: aggDate || "—",
+    latest_date: fmtDate(aggDate),
     n_days: "—",
     industry: "—",
   };

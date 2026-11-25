@@ -33,6 +33,7 @@ import {
   type SignalFamilyInfo,
   type StrategySelection,
 } from "@/lib/api-client";
+import { fmtDate } from "@/shared/datetime";
 import type { MaSpreadSecType } from "@shared/types";
 
 interface SignalTagsInputProps {
@@ -97,7 +98,7 @@ export default function SignalTagsInput({
   const optionLabel = (name: string): string => {
     const f = byName.get(name);
     if (!f) return name;
-    return `${name} — ${f.n_events.toLocaleString()} events · ${f.n_codes} codes · to ${f.latest_date ?? "—"}`;
+    return `${name} — ${f.n_events.toLocaleString()} events · ${f.n_codes} codes · to ${fmtDate(f.latest_date)}`;
   };
 
   return (

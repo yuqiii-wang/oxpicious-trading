@@ -1,0 +1,17 @@
+{
+  "service": "downloads.etf.sse.trend",
+  "kind": "fetch",
+  "tables": [
+    {
+      "table": "stats.etf_basic_stats",
+      "code_scope": "^5"
+    }
+  ],
+  "csv": [
+    {
+      "dir": "temps/sse_trend",
+      "pattern": "sse_trend_etf_{date}.csv"
+    }
+  ],
+  "notes": "SSE ETF EOD (sse codes start with 5) → builds.etf. Presence = the SSE slice of stats.etf_basic_stats (the build's own gate)."
+}

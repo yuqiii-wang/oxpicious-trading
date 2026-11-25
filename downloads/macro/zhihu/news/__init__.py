@@ -1152,12 +1152,14 @@ def _b64_arg(value: Optional[str]) -> Optional[str]:
 
     The API layer passes question/author this way: runPythonModule joins argv
     with spaces inside a bash -lc command line, so raw free text (spaces,
-    quotes, $) would be mangled by shell parsing.
+    quotes, $) would be mangled by shell parsing. altchars: the route sends
+    the URL-SAFE alphabet (the cluster arg charset forbids '/') — decode
+    both alphabets.
     """
     if not value:
         return None
     import base64
-    return base64.b64decode(value).decode("utf-8")
+    return base64.b64decode(value, altchars=b"-_").decode("utf-8")
 
 
 if __name__ == "__main__":

@@ -24,6 +24,7 @@ export const STATE_CHIP: Record<
   { label: string; color: "success" | "warning" | "error" | "default" }
 > = {
   live: { label: "live", color: "success" },
+  paused: { label: "paused", color: "warning" },
   stale: { label: "stale", color: "warning" },
   stopped: { label: "stopped", color: "default" },
   down: { label: "down", color: "error" },

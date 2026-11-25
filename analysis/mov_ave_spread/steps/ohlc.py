@@ -770,6 +770,7 @@ class OhlcStep(TableStep):
     description = OHLC_DESCRIPTION
     needed_cols = ("sec_type", "code", "date", "price", "open", "high", "low")
     write_flavor = "frame"
+    key_cols = ("sec_type", "code", "date", "period")
     in_skip_gate = True
 
     def compute(self, df: pd.DataFrame) -> pd.DataFrame:

@@ -54,6 +54,7 @@ import numpy as np
 import pandas as pd
 
 from _common.build_commons import (
+    cap_to_closed_sessions,
     find_missing_dates,
     forced_date_scope,
     print_build_header,
@@ -152,6 +153,10 @@ class FuturesBuild(DataBuild):
         if args.end_date:
             end_d = pd.to_datetime(args.end_date).date()
             available_dates = {d for d in available_dates if d <= end_d}
+
+        # Session-close cap: the daily-stats files fetched before the
+        # 15:00 close carry the half-formed session — never load it.
+        available_dates = cap_to_closed_sessions(available_dates)
 
         logger.info(f"    → {len(available_dates)} unique dates available in range")
 

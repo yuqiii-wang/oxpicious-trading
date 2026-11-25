@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 
 from _common.data_pipeline import bootstrap_runtime
 
@@ -216,7 +217,35 @@ async def amain() -> None:
 
 
 def main() -> None:
-    asyncio.run(amain())
+    # The fleet's audit life — DataPipeline.execute()'s boundary,
+    # mirrored for this hand-rolled main (the 2026-10-14 redesign
+    # dropped the base-class wrapper and the orchestrated runs went
+    # INVISIBLE: no monitor.service_heartbeat row, no service_audit
+    # exit, so the arranger's last_success froze at 10-14 and step 9
+    # re-arranged due every pass). Register the heartbeat + run-audit
+    # row, report the Phase 4 progress states around the async body,
+    # and hold any claimed PAUSE at this boundary. Registration is
+    # fail-soft — monitoring never kills a run.
+    from _common.service_heartbeat import autoregister
+
+    try:
+        autoregister()
+    except Exception as e:  # noqa: BLE001 — monitoring never kills a run
+        print(
+            f"[service_heartbeat] registration failed for "
+            f"analysis.analysis_signals: {e}",
+            file=sys.stderr, flush=True,
+        )
+    from _common.post_check import post_check
+    from _common.service_heartbeat import pause_checkpoint, report_progress
+
+    try:
+        report_progress(state="running", force=True)
+        pause_checkpoint()
+        asyncio.run(amain())
+    finally:
+        report_progress(state="done", force=True)
+        post_check()
 
 
 if __name__ == "__main__":

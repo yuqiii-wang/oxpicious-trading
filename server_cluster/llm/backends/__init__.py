@@ -2,20 +2,23 @@
 and the spec→backend factory (:func:`build_backend`).
 
 Kinds: ``dummy`` (the offline provider simulation), ``tokenization``
-(the StructBERT word segmenter) and ``jev`` (a Jev / System One
-decision model — OneJev fine-tunes on transformers)."""
+(the StructBERT word segmenter), ``jev`` (a Jev / System One decision
+model — OneJev fine-tunes on transformers) and ``ocr`` (an OCR /
+vision-language transcription model — PaddleOCR-VL on transformers)."""
 from __future__ import annotations
 
 from ..config import ModelBackendSpec
 from .base import ModelBackend
 from .dummy import DummyChatBackend
 from .jev import JevBackend
+from .ocr import OcrBackend
 from .tokenization import TokenizationBackend
 
 _BACKEND_CLASSES = {
     "dummy": DummyChatBackend,
     "tokenization": TokenizationBackend,
     "jev": JevBackend,
+    "ocr": OcrBackend,
 }
 
 
@@ -34,6 +37,6 @@ def build_backend(spec: ModelBackendSpec,
 
 
 __all__ = [
-    "DummyChatBackend", "JevBackend", "ModelBackend", "TokenizationBackend",
-    "build_backend",
+    "DummyChatBackend", "JevBackend", "ModelBackend", "OcrBackend",
+    "TokenizationBackend", "build_backend",
 ]

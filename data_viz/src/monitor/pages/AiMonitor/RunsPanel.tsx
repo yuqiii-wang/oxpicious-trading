@@ -45,6 +45,7 @@ import {
   AI_EVENTS_FALLBACK_POLL_MS,
 } from "@/lib/api-client/aiEvents";
 import ThreadGraphView from "@/analysis/pages/Ai/ThreadGraph";
+import { fmtStamp } from "@/shared/datetime";
 
 const RUNS_LIMIT = 50;
 
@@ -281,7 +282,7 @@ export default function RunsPanel() {
                   sx={{ cursor: "pointer" }}
                 >
                   <TableCell sx={{ whiteSpace: "nowrap" }}>
-                    {r.first_at.slice(0, 16)}
+                    {fmtStamp(r.first_at.slice(0, 16))}
                   </TableCell>
                   <TableCell>
                     <Typography

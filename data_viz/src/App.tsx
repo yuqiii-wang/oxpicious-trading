@@ -2,6 +2,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-d
 import { Box } from "@mui/material";
 import TopAppBar from "@/components/TopAppBar";
 import DebtPage from "@/dataviz/pages/DebtPage";
+import MacroPage from "@/dataviz/pages/MacroPage";
 import OptionsPage from "@/dataviz/pages/OptionsPage";
 import EtfMarginPage from "@/dataviz/pages/EtfMarginPage";
 import IndexPage from "@/dataviz/pages/IndexPage";
@@ -21,7 +22,9 @@ import CompositesPage from "@/analysis/pages/CompositesPage";
 import OppositeIndustryCorrelationsPage from "@/analysis/pages/Composites/OppositeIndustryCorrelations/OppositeIndustryCorrelationsPage";
 import AiMarketQaPage from "@/analysis/pages/Composites/AiMarketQa/AiMarketQaPage";
 import MarketSentimentNewsPage from "@/analysis/pages/Composites/MarketSentimentNews/MarketSentimentNewsPage";
+import NewsTextStatesPage from "@/analysis/pages/Composites/NewsTextStates/NewsTextStatesPage";
 import NewsAuditPage from "@/analysis/pages/Composites/NewsAudit/NewsAuditPage";
+import SignalRulesAuditPage from "@/analysis/pages/Composites/SignalRulesAudit/SignalRulesAuditPage";
 import MaSpreadPage from "@/analysis/pages/MaSpreadPage";
 import MarketBetaPage from "@/analysis/pages/MarketBetaPage";
 import PePage from "@/analysis/pages/PePage";
@@ -82,6 +85,7 @@ export default function App() {
           <Route path="/live/stock" element={<LiveDataStockPage />} />
           <Route path="/dataviz" element={<Navigate to="/dataviz/debt" replace />} />
           <Route path="/dataviz/debt" element={<DebtPage />} />
+          <Route path="/dataviz/macro" element={<MacroPage />} />
           <Route path="/dataviz/szse-options" element={<OptionsPage />} />
           <Route path="/dataviz/etf-margin" element={<EtfMarginPage />} />
           <Route path="/dataviz/index" element={<IndexPage />} />
@@ -121,6 +125,8 @@ export default function App() {
             element={<MarketSentimentNewsPage />}
           />
           <Route path="/analysis/composites/news-audit" element={<NewsAuditPage />} />
+          <Route path="/analysis/composites/signal-rules-audit" element={<SignalRulesAuditPage />} />
+          <Route path="/analysis/composites/news-text-states" element={<NewsTextStatesPage />} />
           <Route path="/analysis/signals" element={<SignalsPage />} />
           <Route path="/analysis/signals/recent-movements" element={<RecentMovementsPage />} />
           <Route path="/analysis/signals/hedge-pairs" element={<HedgePairsPage />} />

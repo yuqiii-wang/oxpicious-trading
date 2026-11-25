@@ -6,7 +6,7 @@
   "is_resident": false,
   "freq": "quarterly",
   "priority": 140,
-  "schedule": "calendar-quarterly pass — quarter-start refresh on the 1st of Jan/Apr/Jul/Oct (cron-scheduled; no in-script date guard)",
+  "schedule": "calendar-quarterly pass — refresh one week after the quarter start (due the 8th of Jan/Apr/Jul/Oct; cron-scheduled; no in-script date guard)",
   "notes": "E Fund fund-site data: quarterly-report top-10 stock composition snapshot per listed-ETF fund (130 at 2026-11-14); current-quarter cached snapshots skipped; backfill via --backfill-start.",
   "source_ref": "scripts/orchestration/downloads_quarterly.json",
   "updated_at": "2026-11-20T15:25:15.716730+00:00"

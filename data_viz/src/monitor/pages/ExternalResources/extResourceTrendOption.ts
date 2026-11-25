@@ -7,6 +7,7 @@
 import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
 import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
+import { fmtDate } from "@/shared/datetime";
 import {
   axisColors,
   commonDataZoom,
@@ -58,7 +59,7 @@ export function buildExtResourceTrendOption(
             lineStyle: { color: PALETTE_HI, type: "dashed", width: 1.2 },
             label: {
               color: c.textColor,
-              formatter: selectedDate,
+              formatter: fmtDate(selectedDate),
               fontSize: 9,
             },
             data: [{ xAxis: selectedDate }],

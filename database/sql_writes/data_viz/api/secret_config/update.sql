@@ -24,6 +24,9 @@
 --   $10 api_key_hint   TEXT | NULL — the REPLACEMENT masked preview (read only when key_mode = 1)
 --   $11 is_active      BOOLEAN
 --   $12 notes          TEXT | NULL
+--   $13 input_modality SMALLINT label code (static.label_dim 'llm_modality':
+--                      0 text | 1 text+vision | 2 text+image-gen | 3 audio | 99 other)
+--   $14 output_modality SMALLINT — same 'llm_modality' domain (DEFAULT 0 = text)
 --
 -- No row matches an unknown/retired id → empty RETURNING (the caller maps
 -- it to 404). Returns the non-secret columns only.
@@ -33,6 +36,8 @@ UPDATE static.secret_config
        sub_type       = $4::smallint,
        model_name     = $5,
        context_length = $6::int,
+       input_modality  = $13::smallint,
+       output_modality = $14::smallint,
        api_url        = $7,
        api_key_enc    = CASE WHEN $8::int = 1 THEN $9
                              WHEN $8::int = 2 THEN NULL
@@ -50,6 +55,8 @@ RETURNING secret_id,
           sub_type,
           model_name,
           context_length,
+          input_modality,
+          output_modality,
           api_url,
           api_key_hint,
           is_active,

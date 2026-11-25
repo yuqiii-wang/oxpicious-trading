@@ -26,13 +26,16 @@ import csv
 import json
 import re
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import date, datetime, time as dtime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-from _common._holidays_and_weekdays import last_business_day
+from _common._holidays_and_weekdays import (
+    is_trading_day,
+    last_business_day,
+)
 from downloads._common import service_urls
 from downloads._common.filescan import (
     MIN_VALID_BYTES,
@@ -241,6 +244,22 @@ def _parse_snapshot_to_trend_row(
     }
 
 
+# The CN close — an SSE snapshot fetched at/after it carries the day's
+# final values; one fetched before it carries intraday ones.
+SESSION_CLOSE = dtime(15, 0)
+
+
+def _fetched_after_close(out_file: Path, day: date) -> bool:
+    """Whether ``out_file`` was last written at/after ``day``'s close —
+    its rows are then an EOD snapshot, not an intraday one. A missing or
+    unstatable file is never final."""
+    try:
+        written = datetime.fromtimestamp(out_file.stat().st_mtime)
+    except OSError:
+        return False
+    return written >= datetime.combine(day, SESSION_CLOSE)
+
+
 class SseSnapshotDownloader:
     """Downloader for the SSE list-endpoint EOD snapshots (stateless).
 
@@ -385,7 +404,33 @@ class SseSnapshotDownloader:
         """Download one snapshot type (equity / fund / index) and write its CSV."""
         out_file = _get_out_file(out_dir, expected_latest_str, prefix=prefix)
 
-        if not force and is_valid_file(out_file, min_bytes=MIN_VALID_BYTES):
+        # FINALITY GATE — the cached file may only satisfy (skip) the
+        # fetch when its session is CLOSED. This fetcher is the LIVE
+        # snapshot: before the 15:00 close, today's rows carry intraday
+        # values (the "close" is the last price at fetch time), and a
+        # pre-close fetch may even serve the PREVIOUS session under
+        # today's filename (the 2026-11-20 stub's root: the midnight
+        # chain cached 11-19 rows as sse_trend_*_20261120, Friday's
+        # 16:00 run skipped the valid-looking file, and the daily bars
+        # for the SSE side never landed). A post-close fetch therefore
+        # always re-fetches and overwrites today's pre-close file; the
+        # daily builds additionally cap at the latest CLOSED session
+        # (build_commons), so an intraday file can never reach the
+        # daily tables.
+        #
+        # Finality is a property of the FILE, read off its own write
+        # time — never off the clock now: a today-file last written
+        # before the close stays non-final however late the current
+        # fetch is (a now-based "session closed" test would accept the
+        # 2026-11-23 10:31 intraday snapshot as final at 21:00).
+        today = datetime.now().date()
+        cached_is_final = (
+            expected_latest_str != today.isoformat()
+            or not is_trading_day(today)
+            or _fetched_after_close(out_file, today)
+        )
+
+        if not force and cached_is_final and is_valid_file(out_file, min_bytes=MIN_VALID_BYTES):
             try:
                 with open(out_file, encoding=CSV_ENCODING, newline="") as f:
                     reader = csv.DictReader(f)

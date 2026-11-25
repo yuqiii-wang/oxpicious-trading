@@ -18,7 +18,10 @@ import type {
  *  present-but-empty means the pick has no industries and matches NOTHING
  *  (vs. omitting the key entirely = unscoped), else `sector_id` for the
  *  whole L1 (works for BOTH columns — strategy sectors resolve through the
- *  same catalog). `source` and `author` narrow everything to one origin.
+ *  same catalog). `source` and `author` narrow everything to one origin;
+ *  `author: ""` is the PROVIDER-LEVEL sentinel (text.news stores author=''
+ *  for the source's own rows) — it serializes as `author=` and the API
+ *  filters to exactly that grain; null/omitted = no author filter.
  *  `search_mode: "any"` ORs the whitespace terms in `search` (used by the
  *  question bar's tokenized local search); default is AND. */
 export interface NewsScopeParams {
@@ -33,6 +36,12 @@ export interface NewsScopeParams {
    *  on the article's date (text.news.is_big_fluctuation). Pass true or null —
    *  false would serialize as a no-op "false" param. */
   is_big_fluctuation?: boolean | null;
+  /** Opt OUTS from the API's default exclusions (fake-verdict articles and
+   *  blocklisted origins drop out by default — the News page relies on that
+   *  and never sends these). The audit drill-down passes both true so the
+   *  expansion sees exactly what it audits. */
+  include_fake?: boolean | null;
+  include_blocked?: boolean | null;
 }
 
 function qs<T extends object>(params: T): string {
@@ -40,7 +49,9 @@ function qs<T extends object>(params: T): string {
   for (const [k, v] of Object.entries(params)) {
     if (Array.isArray(v)) {
       sp.set(k, v.join(",")); // [] → "k=" — an explicit empty set, kept
-    } else if (v != null && v !== "") {
+    } else if (v != null) {
+      // "" serializes too ("author=" = the provider-level sentinel) — the
+      // route/service treat it as a real exact-match filter, not absence.
       sp.set(k, String(v));
     }
   }
@@ -64,12 +75,26 @@ export function fetchNewsStrategyThemes(
   return fetchJson<NewsThemesResponse>(`/api/news/strategy-themes${qs({ source, author })}`);
 }
 
-/** Top authors for the filter chips (scoped by everything except author). */
+/** Top authors for the filter chips (scoped by everything except author),
+ *  ordered by the curated static.news_prestige rank then count; prestige
+ *  rides along for the chip tooltip. */
 export function fetchNewsAuthors(
   params: Omit<NewsScopeParams, "author">,
-): Promise<Array<{ author: string; count: number }>> {
-  return fetchJson<Array<{ author: string; count: number }>>(
+): Promise<Array<{ author: string; count: number; prestige: Record<string, unknown> | null }>> {
+  return fetchJson<Array<{ author: string; count: number; prestige: Record<string, unknown> | null }>>(
     `/api/news/authors${qs(params)}`,
+  );
+}
+
+/** News providers for the provider chips (scoped by everything except
+ *  source) — every DISTINCT text.news.source with its count, ordered by
+ *  the curated static.news_prestige rank then count; prestige rides
+ *  along for the chip tooltip. */
+export function fetchNewsProviders(
+  params: Omit<NewsScopeParams, "source">,
+): Promise<Array<{ provider: string; count: number; prestige: Record<string, unknown> | null }>> {
+  return fetchJson<Array<{ provider: string; count: number; prestige: Record<string, unknown> | null }>>(
+    `/api/news/providers${qs(params)}`,
   );
 }
 

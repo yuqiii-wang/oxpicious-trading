@@ -129,6 +129,52 @@ class StreamIo:
         if bar_rows:
             bulk_upsert(conn, asset.intraday_table, bar_rows, ["date", "code", "time"])
 
+    @staticmethod
+    def _fetch_progress_row(conn, asset, trade_date) -> dict:
+        """One render of the shared intraday-progress sql_view template
+        (``database/sql_views/downloads/stream/sse/price/_io/
+        intraday_progress.sql`` — the poller's completeness counts in
+        ONE round trip; moved here 2026-11-21 from inline SQL so the
+        area server's process-detail endpoint renders the SAME query,
+        table names riding the args per the SQL-first rule).
+
+        The code column is 'code' on stock/etf/index tables but
+        'contract_code' on the options tables (OptionsStream.code_column);
+        the exchange column exists only on the stock/etf bar tables, so
+        it rides as a fragment reference (literal NULL otherwise) with
+        the value still bound.
+        """
+        from _common.sql_views import frag, render_sql_view
+
+        code_col = getattr(asset, "code_column", "code")
+        exchange = getattr(asset, "exchange", None)
+        rendered = render_sql_view(
+            "downloads/stream/sse/price/_io/intraday_progress",
+            identity_table=frag(asset.identity_table),
+            intraday_table=frag(asset.intraday_table),
+            code_col=frag(code_col),
+            exchange_col=frag("exchange" if exchange is not None else "NULL"),
+            exchange=exchange,
+            close_time=CLOSE_TIME,
+            trade_date=trade_date,
+        )
+        result = {
+            "trade_date": None,
+            "n_identity": 0,
+            "n_total_codes": 0,
+            "max_time": None,
+            "n_codes_done": 0,
+            "close_reached": False,
+        }
+        with conn.cursor() as cur:
+            cur.execute(rendered.sql, rendered.params)
+            row = cur.fetchone()
+        if row is None:
+            return result
+        keys = ("trade_date", "n_identity", "n_total_codes", "max_time",
+                "n_codes_done", "close_reached")
+        return dict(zip(keys, row))
+
     def is_intraday_complete(self, conn, asset: AssetStream, trade_date, threshold: float = 0.95,
                              last_window: Optional[time] = None) -> bool:
         """Check if the intraday table already has sufficient bars up to CLOSE_TIME
@@ -147,40 +193,11 @@ class StreamIo:
         cover far more codes than the stream tracks).
         """
         try:
-            # The code column is 'code' on stock/etf/index tables but
-            # 'contract_code' on the options tables (OptionsStream.code_column).
-            code_col = getattr(asset, "code_column", "code")
-            # Count identity rows for this date
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"SELECT COUNT(DISTINCT {code_col}) FROM {asset.identity_table} WHERE date = %s",
-                    (trade_date,),
-                )
-                n_total = cur.fetchone()[0]
+            row = self._fetch_progress_row(conn, asset, trade_date)
+            n_total = row["n_total_codes"]
             if n_total == 0:
                 return False
-
-            # Count codes that have a CLOSE_TIME bar
-            code_filter = ""
-            params: list = [trade_date, CLOSE_TIME]
-            if asset.exchange is not None:
-                code_filter = " AND exchange = %s"
-                params.append(asset.exchange)
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"SELECT COUNT(DISTINCT {code_col}) FROM {asset.intraday_table} "
-                    f"WHERE date = %s AND time = %s{code_filter}",
-                    tuple(params),
-                )
-                n_done = cur.fetchone()[0]
-
-            # Also verify latest bar time is at least CLOSE_TIME
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"SELECT MAX(time) FROM {asset.intraday_table} WHERE date = %s",
-                    (trade_date,),
-                )
-                max_time = cur.fetchone()[0]
+            max_time = row["max_time"]
             if max_time is None:
                 return False
             if max_time < CLOSE_TIME:
@@ -188,6 +205,7 @@ class StreamIo:
                 # has caught up with the CSV's own last window.
                 return last_window is not None and max_time >= last_window
 
+            n_done = row["n_codes_done"]
             ratio = n_done / n_total if n_total > 0 else 0.0
             return ratio >= threshold
         except Exception as e:
@@ -197,13 +215,15 @@ class StreamIo:
     def get_intraday_progress(self, conn, asset: AssetStream, trade_date) -> dict:
         """Get progress stats for an asset's intraday data for a given date.
 
-        Returns dict with:
+        One render of the shared sql_view template (see
+        ``_fetch_progress_row``); the returned dict shape is unchanged:
+
           - n_identity: number of identity rows
-          - n_bars: number of intraday bars
+          - n_bars: number of intraday bars (at least the close codes)
           - max_time: latest bar time (or None)
           - n_codes_done: number of codes with CLOSE_TIME bar
           - n_total_codes: number of distinct codes in identity table
-          - complete: whether all codes have CLOSE_TIME bar
+          - complete: whether the latest bar has reached CLOSE_TIME
         """
         result = {
             "n_identity": 0,
@@ -214,45 +234,15 @@ class StreamIo:
             "complete": False,
         }
         try:
-            # 'code' on stock/etf/index tables, 'contract_code' on options —
-            # see is_intraday_complete above.
-            code_col = getattr(asset, "code_column", "code")
-            # Count identity rows
-            with conn.cursor() as cur:
-                cur.execute(f"SELECT COUNT(*) FROM {asset.identity_table} WHERE date = %s", (trade_date,))
-                result["n_identity"] = cur.fetchone()[0]
-
+            row = self._fetch_progress_row(conn, asset, trade_date)
+            result["n_identity"] = row["n_identity"]
             if result["n_identity"] == 0:
                 return result
-
-            # Count distinct codes in identity
-            with conn.cursor() as cur:
-                cur.execute(f"SELECT COUNT(DISTINCT {code_col}) FROM {asset.identity_table} WHERE date = %s", (trade_date,))
-                result["n_total_codes"] = cur.fetchone()[0]
-
-            # Get max bar time
-            with conn.cursor() as cur:
-                cur.execute(f"SELECT MAX(time) FROM {asset.intraday_table} WHERE date = %s", (trade_date,))
-                max_t = cur.fetchone()[0]
-                result["max_time"] = max_t
-
-            # Count codes that have a CLOSE_TIME bar
-            code_filter = ""
-            params: list = [trade_date, CLOSE_TIME]
-            if asset.exchange is not None:
-                code_filter = " AND exchange = %s"
-                params.append(asset.exchange)
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"SELECT COUNT(DISTINCT {code_col}) FROM {asset.intraday_table} "
-                    f"WHERE date = %s AND time = %s{code_filter}",
-                    tuple(params),
-                )
-                result["n_codes_done"] = cur.fetchone()[0]
-
+            result["n_total_codes"] = row["n_total_codes"]
+            result["max_time"] = row["max_time"]
+            result["n_codes_done"] = row["n_codes_done"]
             result["n_bars"] = result["n_codes_done"]  # at least
-            result["complete"] = result["max_time"] is not None and result["max_time"] >= CLOSE_TIME
-
+            result["complete"] = row["close_reached"]
         except Exception as e:
             logger.warning("get_intraday_progress(%s) failed: %s", asset.name, e)
 

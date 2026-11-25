@@ -47,6 +47,7 @@ import {
   commonLegend,
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
+import { fmtMonth } from "@/shared/datetime";
 
 export interface PairCurveSeries {
   /** Industry_id (the pair-table code domain, e.g. DIV_GENERAL). */
@@ -269,7 +270,7 @@ export function buildPairCurvesOption(
       axisLabel: {
         color: c.textColor,
         fontSize: 9,
-        formatter: (v: string) => v.slice(0, 7),
+        formatter: (v: string) => fmtMonth(v),
         interval: Math.max(1, Math.floor(n / 6)),
       },
       splitLine: { show: false },

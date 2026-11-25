@@ -16,15 +16,18 @@
  * PBoC operation dates (outright repo / MLF) are shown in the tooltip on hover
  * instead of dense vertical markLines.
  */
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Accordion, AccordionDetails, AccordionSummary, Box, Chip, CircularProgress, Link, Stack, ToggleButton, ToggleButtonGroup, Typography } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ChartCard from "@/shared/components/ChartCard";
 import RefreshButton from "@/components/RefreshButton";
 import { fetchDebtDaily, fetchPbocOmaAnnouncements, invalidateCacheForUrl } from "@/lib/api-client";
 import { BaseChart, useChartData, useChartThemeMode } from "@/shared/charts/base-chart";
+import { useChartWidth } from "@/shared/charts/useChartWidth";
+import { useDateTickGranularity } from "@/shared/charts/useDateTickGranularity";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import { useDocs } from "@/shared/docs";
+import { fmtDate } from "@/shared/datetime";
 import type {
   DebtDailyResponse,
   DebtDailyRow,
@@ -207,7 +210,7 @@ function OmaNewsPanel({ minDate, maxDate }: OmaNewsPanelProps) {
                     }}
                   />
                   <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.7rem" }}>
-                    {selectedRow.date}
+                    {fmtDate(selectedRow.date)}
                   </Typography>
                   {selectedRow.keywords && (
                     <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem", opacity: 0.7 }}>
@@ -289,11 +292,14 @@ function buildMarkerMap(rows: DebtDailyRow[]): Map<string, string[]> {
   return map;
 }
 
-function OutrightRepoPanel({ data, markerMap }: { data: DebtDailyResponse; markerMap: Map<string, string[]> }) {
+function OutrightRepoPanel({ data, markerMap, chartWidth }: { data: DebtDailyResponse; markerMap: Map<string, string[]>; chartWidth?: number }) {
   const themeMode = useChartThemeMode();
+  // Zoom-aware tick granularity: re-densifies year → quarter → month as the
+  // time slider zooms in (see shared/charts/useDateTickGranularity).
+  const dates = useMemo(() => data.rows.map((r) => r.date), [data]);
+  const { granularity, onEvents } = useDateTickGranularity(dates, chartWidth);
   const option = useMemo(() => {
     const rows = data.rows;
-    const dates = rows.map((r) => r.date);
     const lifecycle = computeOutrightRepoLifecycle(rows);
     const cumArr = lifecycle.map((l) => l.outright_cumulative);
     // Split into 4 series: outright injection, MLF injection, outright withdrawal, MLF withdrawal
@@ -302,7 +308,7 @@ function OutrightRepoPanel({ data, markerMap }: { data: DebtDailyResponse; marke
     const outrightEnd = lifecycle.map((l) => l.outright_end);
     const mlfEnd = lifecycle.map((l) => l.mlf_end);
 
-    return buildBaseOption(dates, themeMode, {
+    return buildBaseOption(dates, themeMode, granularity, {
       yAxis: [
         {
           type: "value",
@@ -390,7 +396,7 @@ function OutrightRepoPanel({ data, markerMap }: { data: DebtDailyResponse; marke
         },
       ],
     }, markerMap);
-  }, [data, themeMode, markerMap]);
+  }, [data, dates, themeMode, markerMap, granularity]);
 
   const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
@@ -409,6 +415,7 @@ function OutrightRepoPanel({ data, markerMap }: { data: DebtDailyResponse; marke
       option={option}
       group={CHART_GROUP}
       aiAsk={aiAskSpec}
+      onEvents={onEvents}
     />
   );
 }
@@ -423,12 +430,15 @@ function OutrightRepoPanel({ data, markerMap }: { data: DebtDailyResponse; marke
  */
 type OmoRateMode = "1d" | "7d";
 
-function OmoPanel({ data, markerMap }: { data: DebtDailyResponse; markerMap: Map<string, string[]> }) {
+function OmoPanel({ data, markerMap, chartWidth }: { data: DebtDailyResponse; markerMap: Map<string, string[]>; chartWidth?: number }) {
   const themeMode = useChartThemeMode();
   const [rateMode, setRateMode] = useState<OmoRateMode>("7d");
+  // Zoom-aware tick granularity: re-densifies year → quarter → month as the
+  // time slider zooms in (see shared/charts/useDateTickGranularity).
+  const dates = useMemo(() => data.rows.map((r) => r.date), [data]);
+  const { granularity, onEvents } = useDateTickGranularity(dates, chartWidth);
   const option = useMemo(() => {
     const rows = data.rows;
-    const dates = rows.map((r) => r.date);
     const isOvernight = rateMode === "1d";
     const rate = rows.map((r) => (isOvernight ? r.omo_rate_1d : r.omo_rate));
     const repoStart = rows.map((r) => r.repo_start_quantity);
@@ -446,7 +456,7 @@ function OmoPanel({ data, markerMap }: { data: DebtDailyResponse; markerMap: Map
     const rateMax = rateVals.length ? Math.max(...rateVals) : null;
     const ratePad = rateVals.length ? Math.max((rateMax - rateMin) * 0.05, 0.05) : 0;
 
-    return buildBaseOption(dates, themeMode, {
+    return buildBaseOption(dates, themeMode, granularity, {
       yAxis: [
         {
           type: "value",
@@ -545,7 +555,7 @@ function OmoPanel({ data, markerMap }: { data: DebtDailyResponse; markerMap: Map
         },
       ],
     }, markerMap);
-  }, [data, themeMode, markerMap, rateMode]);
+  }, [data, dates, themeMode, markerMap, rateMode, granularity]);
 
   const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(() => {
@@ -581,17 +591,21 @@ function OmoPanel({ data, markerMap }: { data: DebtDailyResponse; markerMap: Map
       option={option}
       group={CHART_GROUP}
       aiAsk={aiAskSpec}
+      onEvents={onEvents}
     />
   );
 }
 
-function ShiborPanel({ data, markerMap }: { data: DebtDailyResponse; markerMap: Map<string, string[]> }) {
+function ShiborPanel({ data, markerMap, chartWidth }: { data: DebtDailyResponse; markerMap: Map<string, string[]>; chartWidth?: number }) {
   const themeMode = useChartThemeMode();
+  // Zoom-aware tick granularity: re-densifies year → quarter → month as the
+  // time slider zooms in (see shared/charts/useDateTickGranularity).
+  const dates = useMemo(() => data.rows.map((r) => r.date), [data]);
+  const { granularity, onEvents } = useDateTickGranularity(dates, chartWidth);
   const option = useMemo(() => {
     const rows = data.rows;
-    const dates = rows.map((r) => r.date);
 
-    return buildBaseOption(dates, themeMode, {
+    return buildBaseOption(dates, themeMode, granularity, {
       yAxis: [
         {
           type: "value",
@@ -627,7 +641,7 @@ function ShiborPanel({ data, markerMap }: { data: DebtDailyResponse; markerMap: 
         z: 3,
       })),
     }, markerMap);
-  }, [data, themeMode, markerMap]);
+  }, [data, dates, themeMode, markerMap, granularity]);
 
   const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
@@ -648,17 +662,21 @@ function ShiborPanel({ data, markerMap }: { data: DebtDailyResponse; markerMap: 
       option={option}
       group={CHART_GROUP}
       aiAsk={aiAskSpec}
+      onEvents={onEvents}
     />
   );
 }
 
-function ChinaBondPanel({ data, markerMap }: { data: DebtDailyResponse; markerMap: Map<string, string[]> }) {
+function ChinaBondPanel({ data, markerMap, chartWidth }: { data: DebtDailyResponse; markerMap: Map<string, string[]>; chartWidth?: number }) {
   const themeMode = useChartThemeMode();
+  // Zoom-aware tick granularity: re-densifies year → quarter → month as the
+  // time slider zooms in (see shared/charts/useDateTickGranularity).
+  const dates = useMemo(() => data.rows.map((r) => r.date), [data]);
+  const { granularity, onEvents } = useDateTickGranularity(dates, chartWidth);
   const option = useMemo(() => {
     const rows = data.rows;
-    const dates = rows.map((r) => r.date);
 
-    return buildBaseOption(dates, themeMode, {
+    return buildBaseOption(dates, themeMode, granularity, {
       yAxis: [
         {
           type: "value",
@@ -694,7 +712,7 @@ function ChinaBondPanel({ data, markerMap }: { data: DebtDailyResponse; markerMa
         z: 3,
       })),
     }, markerMap);
-  }, [data, themeMode, markerMap]);
+  }, [data, dates, themeMode, markerMap, granularity]);
 
   const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
@@ -715,6 +733,7 @@ function ChinaBondPanel({ data, markerMap }: { data: DebtDailyResponse; markerMa
       option={option}
       group={CHART_GROUP}
       aiAsk={aiAskSpec}
+      onEvents={onEvents}
     />
   );
 }
@@ -727,13 +746,16 @@ function ChinaBondPanel({ data, markerMap }: { data: DebtDailyResponse; markerMa
  * (visualising the policy hold/cut pattern) plus a symbol marker on each
  * announcement date so the user can see exactly when the rate changed.
  */
-function LprPanel({ data, markerMap }: { data: DebtDailyResponse; markerMap: Map<string, string[]> }) {
+function LprPanel({ data, markerMap, chartWidth }: { data: DebtDailyResponse; markerMap: Map<string, string[]>; chartWidth?: number }) {
   const themeMode = useChartThemeMode();
+  // Zoom-aware tick granularity: re-densifies year → quarter → month as the
+  // time slider zooms in (see shared/charts/useDateTickGranularity).
+  const dates = useMemo(() => data.rows.map((r) => r.date), [data]);
+  const { granularity, onEvents } = useDateTickGranularity(dates, chartWidth);
   const option = useMemo(() => {
     const rows = data.rows;
-    const dates = rows.map((r) => r.date);
 
-    return buildBaseOption(dates, themeMode, {
+    return buildBaseOption(dates, themeMode, granularity, {
       yAxis: [
         {
           type: "value",
@@ -784,7 +806,7 @@ function LprPanel({ data, markerMap }: { data: DebtDailyResponse; markerMap: Map
         z: 3,
       })),
     }, markerMap);
-  }, [data, themeMode, markerMap]);
+  }, [data, dates, themeMode, markerMap, granularity]);
 
   const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
@@ -805,6 +827,7 @@ function LprPanel({ data, markerMap }: { data: DebtDailyResponse; markerMap: Map
       option={option}
       group={CHART_GROUP}
       aiAsk={aiAskSpec}
+      onEvents={onEvents}
     />
   );
 }
@@ -817,6 +840,10 @@ export default function DebtPage() {
     () => fetchDebtDaily(undefined, undefined),
     [],
   );
+  // Page content width → the panels' width-adaptive date ticks (quarter
+  // by default, loosened to year-start on a narrower chart).
+  const rootRef = useRef<HTMLDivElement>(null);
+  const chartWidth = useChartWidth(rootRef);
 
   const handleRefresh = useCallback(() => {
     // The 5 main panels all derive from one fetch: /api/debt (no
@@ -835,7 +862,7 @@ export default function DebtPage() {
   }, [fullData]);
 
   return (
-    <Stack spacing={2}>
+    <Stack spacing={2} ref={rootRef}>
       <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 1, flexWrap: "wrap" }}>
         <Box>
           <Typography variant="h5" sx={{ fontWeight: 700 }}>
@@ -877,13 +904,13 @@ export default function DebtPage() {
           ) : (
             <>
               <Typography variant="caption" color="text.secondary">
-                {fullData.rows.length} trading days · {fullData.dates[0]} → {fullData.dates[fullData.dates.length - 1]}
+                {fullData.rows.length} trading days · {fmtDate(fullData.dates[0])} → {fmtDate(fullData.dates[fullData.dates.length - 1])}
               </Typography>
-              <OutrightRepoPanel data={fullData} markerMap={markerMap} />
-              <OmoPanel data={fullData} markerMap={markerMap} />
-              <ShiborPanel data={fullData} markerMap={markerMap} />
-              <ChinaBondPanel data={fullData} markerMap={markerMap} />
-              <LprPanel data={fullData} markerMap={markerMap} />
+              <OutrightRepoPanel data={fullData} markerMap={markerMap} chartWidth={chartWidth} />
+              <OmoPanel data={fullData} markerMap={markerMap} chartWidth={chartWidth} />
+              <ShiborPanel data={fullData} markerMap={markerMap} chartWidth={chartWidth} />
+              <ChinaBondPanel data={fullData} markerMap={markerMap} chartWidth={chartWidth} />
+              <LprPanel data={fullData} markerMap={markerMap} chartWidth={chartWidth} />
             </>
           )}
         </>

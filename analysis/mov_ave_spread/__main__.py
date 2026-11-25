@@ -115,6 +115,17 @@ Default (incremental) mode:
   date check would falsely skip a date for sec_type B just because
   sec_type A already had it.
 
+  Per-code gaps: a date the sec_type already holds is not "missing",
+  but a bar that landed after that date was first computed leaves its
+  code without a row (the date-grain scan cannot see it). Phase 0
+  therefore also flags recent (code, date) pairs the identity table has
+  and the detail / trailing tables lack; the per-sec_type pass keeps the
+  ones the fetched source frame carries and reopens those dates for the
+  WHOLE sec_type. Refreshed rows are upserted over the stored ones, and
+  every same-grain step reopens the same dates (the family moves in
+  lockstep) — so purging a date from the detail table alone now
+  reopens it across the family.
+
 --force mode:
   Full-universe force (no --sec-type): TRUNCATE the detail tables,
   then recompute and insert all rows for the active universe.
@@ -150,6 +161,7 @@ from analysis._common import (
 )
 from _common.pre_check_and_load import find_missing_analysis_dates
 from _common.db_commons import chunked_purge_async
+from _common.df_utils import column_subset, to_dt64
 from _common.labels import SEC_TYPE_CODE
 from analysis.mov_ave_spread.config import (
     ANALYSIS_NAME,
@@ -176,6 +188,10 @@ from analysis.mov_ave_spread._common.steps import (
     INCREMENTAL_RECENT_DATES,
     StepRun,
     TableStep,
+    filter_target_dates,
+    find_core_code_gaps,
+    frame_code_date_pairs,
+    upsert_long_frame_async,
 )
 from analysis.mov_ave_spread.steps import (
     RSI_RANKS_TABLE,
@@ -265,10 +281,13 @@ class MovAveSpreadAnalysis(DataAnalysis):
     # ------------------------------------------------------------------
     # Internal-step plumbing
     # ------------------------------------------------------------------
-    def _make_step_run(self, *, force: bool, code_filter: str | None) -> StepRun:
+    def _make_step_run(
+        self, *, force: bool, code_filter: str | None,
+        core_target_dates: frozenset | None = None,
+    ) -> StepRun:
         """Bundle the per-call execution context the steps used to
         receive as a keyword soup (force/pool/max_concurrent/
-        code_filter/backfill)."""
+        code_filter/backfill/core_target_dates)."""
         return StepRun(
             conn=self.conn,
             pool=self.pool,
@@ -276,56 +295,100 @@ class MovAveSpreadAnalysis(DataAnalysis):
             max_concurrent=self.pool_size,
             code_filter=code_filter,
             backfill=bool(self.args.backfill),
+            core_target_dates=core_target_dates,
         )
 
     async def _run_steps(
         self, df: pd.DataFrame, st: str, *,
         force: bool, code_filter: str | None,
+        core_target_dates: frozenset | None = None,
     ) -> None:
         """Run every internal step on the fetched source DataFrame, in
         STEPS order (was: the 14-call run_* list, written twice)."""
-        run = self._make_step_run(force=force, code_filter=code_filter)
+        run = self._make_step_run(
+            force=force, code_filter=code_filter,
+            core_target_dates=core_target_dates)
         for step in self.STEPS:
             await step.execute(run, df, sec_type=st)
 
+    async def _insert_core_table(
+        self, df: pd.DataFrame, *, force: bool, st: str,
+        sec_types: tuple[str, ...],
+        table: str, build_fn, name: str, refresh_dates: frozenset,
+    ) -> int:
+        """Write ONE core table (detail / trailing) for the sec_type.
+
+        Dates the table lacks take the chunked COPY write (``sec_types``
+        scopes its per-sec_type skip-filter — pass the sec_type CODES, the
+        frame carries codes: the label left the filter a silent no-op
+        until 2026-11-23; ``()`` bypasses it — the single-code mode, whose
+        rows are pre-deleted). A date the table already holds
+        (``refresh_dates`` — a reopened per-code gap) is upserted instead,
+        one date at a time: the skip-filter would DROP those rows (and a
+        COPY has no ON CONFLICT), which is how a per-code gap stayed
+        masked behind a date the sec_type already held."""
+        n = 0
+        if refresh_dates:
+            # ``df`` arrives filtered to the target dates, so the rows
+            # outside the refresh set are exactly the new-dates scope.
+            new_df = df[~df["date"].isin(to_dt64(sorted(refresh_dates)))]
+            new_df = new_df.reset_index(drop=True)
+        else:
+            new_df = df
+        if len(new_df):
+            n += await build_and_insert_chunked_df(
+                self.conn, self.pool, new_df, build_fn,
+                table_name=table,
+                force=force,
+                sec_types=sec_types,
+                chunk_target_rows=100_000,
+                max_concurrent=self.pool_size,
+                label=f"{name}[{st}]",
+            )
+        for d in sorted(refresh_dates):
+            part = filter_target_dates(df, {d})
+            if part.empty:
+                continue
+            n_part = await upsert_long_frame_async(
+                self.conn, table, build_fn(part), ("sec_type", "code", "date"))
+            logger.info(f"  [{st}]   {name} refresh upsert {d}: "
+                        f"{n_part:,} rows")
+            n += n_part
+        return n
+
     async def _insert_detail_tables(
         self, df: pd.DataFrame, st: str, *, force: bool,
-        sec_types: tuple[str, ...], label: str,
+        sec_types: tuple[str, ...],
+        refresh_detail: frozenset = frozenset(),
+        refresh_trailing: frozenset = frozenset(),
     ) -> int:
-        """Build + COPY-insert the SAME source rows into BOTH detail
-        targets — the CORE table (9 gaps + 6 derivatives + 5 σ) and the
-        TRAILING companion (27 per-gap trailing stats; the 2026-11-08
-        split of the former wide frame). Identical date-chunking for
-        both, so the two tables keep the same coverage; each write's
-        incremental skip-filter keys on its own target table.
+        """Build + write the SAME source rows into BOTH detail targets —
+        the CORE table (9 gaps + 6 derivatives + 5 σ) and the TRAILING
+        companion (27 per-gap trailing stats; the 2026-11-08 split of the
+        former wide frame). Identical date-chunking for both, so the two
+        tables keep the same coverage.
+
+        ``refresh_detail`` / ``refresh_trailing`` are target dates each
+        table already holds (reopened per-code gaps): those are upserted
+        (see :meth:`_insert_core_table`), never COPY'd.
 
         Returns the number of CORE detail rows inserted."""
-        n_detail = await build_and_insert_chunked_df(
-            self.conn, self.pool, df,
-            lambda sub: build_detail_frame(sub),
-            table_name=DETAIL_TABLE,
-            force=force,
-            sec_types=sec_types,
-            chunk_target_rows=100_000,
-            max_concurrent=self.pool_size,
-            label=f"detail[{label}]",
-        )
+        n_detail = await self._insert_core_table(
+            df, force=force, st=st, sec_types=sec_types, table=DETAIL_TABLE,
+            name="detail", build_fn=build_detail_frame,
+            refresh_dates=refresh_detail)
         logger.info(f"  [{st}]   inserted {n_detail:,} detail rows")
-        n_trailing = await build_and_insert_chunked_df(
-            self.conn, self.pool, df,
-            lambda sub: build_trailing_frame(sub),
-            table_name=TRAILING_TABLE,
-            force=force,
-            sec_types=sec_types,
-            chunk_target_rows=100_000,
-            max_concurrent=self.pool_size,
-            label=f"trailing[{label}]",
-        )
+        n_trailing = await self._insert_core_table(
+            df, force=force, st=st, sec_types=sec_types, table=TRAILING_TABLE,
+            name="trailing", build_fn=build_trailing_frame,
+            refresh_dates=refresh_trailing)
         logger.info(f"  [{st}]   inserted {n_trailing:,} trailing rows")
         return n_detail
 
     async def _process_one_sec_type(
-        self, st: str, target_dates_st, force: bool,
+        self, st: str, target_dates_st, force: bool, *,
+        code_gaps: dict | None = None, steps_pending: bool = False,
+        core_missing: tuple | None = None,
     ) -> int:
         """Process a single sec_type end-to-end.
 
@@ -335,6 +398,16 @@ class MovAveSpreadAnalysis(DataAnalysis):
         data. The source DataFrame is freed before returning so the
         caller can process the next sec_type without cumulative memory
         growth.
+
+        ``code_gaps`` (phase 0's date -> {code} per-code gaps of the
+        core tables) is refined against the fetched frame: only codes
+        the source actually carries reopen their date. ``steps_pending``
+        is phase 0's verdict that an internal step has work for this
+        sec_type — it decides whether a sec_type with no computable gap
+        and no missing date can be skipped without further work.
+        ``core_missing`` — phase 0's (detail missing, trailing missing)
+        date sets — tells which target dates each core table already
+        holds: those are refreshed by upsert rather than COPY'd.
 
         Splitting per-sec_type is essential for the stock universe: 11K+
         codes × 1.6K dates = ~17M rows (~6 GB in pandas). Loading all 3
@@ -351,13 +424,52 @@ class MovAveSpreadAnalysis(DataAnalysis):
             logger.info(f"  [{st}]   no source data; skipping.")
             return 0
 
+        # ---- Per-code gaps: keep only the codes the fetch carries ---------
+        # Phase 0 flagged recent (code, date) pairs the identity table has
+        # and the core tables lack. An identity row the fetch drops (no
+        # joined basic/tech stats) is not a computable gap — left in, it
+        # would reopen its date on every run.
+        if code_gaps:
+            # The (code, date) pairs the fetched source carries on the
+            # flagged dates — PAIR grain, not code grain: a code can be
+            # fetchable in general yet lack THIS date's joined stats row.
+            pairs = filter_target_dates(
+                df[column_subset(df, ["code", "date"])], set(code_gaps))
+            carried = frame_code_date_pairs(pairs)
+            real_gaps: dict = {}
+            for d, codes in code_gaps.items():
+                kept = {c for c in codes if (c, d) in carried}
+                if kept:
+                    real_gaps[d] = kept
+            n_flagged = sum(len(c) for c in code_gaps.values())
+            n_real = sum(len(c) for c in real_gaps.values())
+            logger.info(f"  [{st}]   per-code gaps: {n_real:,} of "
+                        f"{n_flagged:,} flagged code-date pairs are in the "
+                        f"source frame -> {len(real_gaps)} date(s) reopened")
+            if real_gaps:
+                target_dates_st = set(target_dates_st or ()) | set(real_gaps)
+            elif (not force and not steps_pending
+                  and not target_dates_st):
+                logger.info(f"  [{st}]   no computable gap and nothing "
+                            f"pending; skipping.")
+                del df
+                return 0
+
+        # Target dates each core table already holds are refreshed by
+        # upsert (phase 0 kept each table's own missing set).
+        refresh_detail: frozenset = frozenset()
+        refresh_trailing: frozenset = frozenset()
+        if core_missing is not None and target_dates_st:
+            refresh_detail = frozenset(target_dates_st - core_missing[0])
+            refresh_trailing = frozenset(target_dates_st - core_missing[1])
+
         # ---- Build + insert detail (chunked by date) -----------------------
         if target_dates_st is not None and len(target_dates_st) == 0:
             # Empty set means force mode — compute ALL dates (no filtering).
             logger.info(f"\n  [{st}] Computing + inserting detail rows "
                         f"(FORCE mode, all dates)...")
             n_detail = await self._insert_detail_tables(
-                df, st, force=force, sec_types=(st,), label=st)
+                df, st, force=force, sec_types=(SEC_TYPE_CODE[st],))
         elif target_dates_st is None:
             logger.info(f"\n  [{st}] Detail up-to-date; skipping detail "
                   f"computation.")
@@ -382,12 +494,21 @@ class MovAveSpreadAnalysis(DataAnalysis):
                   f"(COPY per chunk)")
 
             n_detail = await self._insert_detail_tables(
-                detail_df, st, force=force, sec_types=(st,), label=st)
+                detail_df, st, force=force, sec_types=(SEC_TYPE_CODE[st],),
+                refresh_detail=refresh_detail,
+                refresh_trailing=refresh_trailing)
 
             del detail_df
 
         # ---- Internal steps (reuses same source DataFrame) -----------------
-        await self._run_steps(df, st, force=force, code_filter=None)
+        # The core's dates ride along: the family moves in lockstep, so
+        # every same-grain step reopens them too (refresh-upserting the
+        # dates its own table already holds).
+        core_for_steps = (
+            frozenset(target_dates_st)
+            if target_dates_st and not force else None)
+        await self._run_steps(df, st, force=force, code_filter=None,
+                              core_target_dates=core_for_steps)
 
         # Free the source DataFrame — full history no longer needed.
         del df
@@ -454,7 +575,6 @@ class MovAveSpreadAnalysis(DataAnalysis):
         n_detail = await self._insert_detail_tables(
             df, st, force=False,
             sec_types=(),  # bypass per-sec_type skip-filter (rows pre-deleted)
-            label=f"{st}:{code}",
         )
 
         await self._run_steps(df, st, force=False, code_filter=code)
@@ -527,13 +647,21 @@ class MovAveSpreadAnalysis(DataAnalysis):
                 st: {step: False for step in self.STEPS if step.in_skip_gate}
                 for st in sec_types
             }
+            code_gaps_per_st: dict = {st: {} for st in sec_types}
+            core_missing_per_st: dict = {st: None for st in sec_types}
         else:
             logger.info("\n[0/4] Detecting missing dates PER-sec_type "
-                  "(etf_identity vs detail[etf], index_identity vs "
-                  "detail[index], stock_identity vs detail[stock])...")
+                        "(etf_identity vs detail[etf], index_identity vs "
+                        "detail[index], stock_identity vs detail[stock])...")
             gate_steps = tuple(s for s in self.STEPS if s.in_skip_gate)
             target_dates_per_st: dict = {}
             pending_per_st: dict = {}
+            # date -> {code} per sec_type: recent identity bars a code has
+            # but the core tables lack (a bar that landed after its date
+            # was first computed — masked by the date-grain scan below).
+            code_gaps_per_st: dict = {}
+            # (detail missing, trailing missing) per sec_type.
+            core_missing_per_st: dict = {}
             for st in sec_types:
                 src_tbl = SEC_TYPE_IDENTITY_TABLE[st]
                 td_st = await find_missing_analysis_dates(
@@ -549,10 +677,23 @@ class MovAveSpreadAnalysis(DataAnalysis):
                     conn, TRAILING_TABLE, [src_tbl],
                     sec_type=SEC_TYPE_CODE[st],
                 )
+                # Each table's own missing set: the per-sec_type pass
+                # derives from it which target dates the table already
+                # holds (those are refreshed by upsert, never COPY'd).
+                core_missing_per_st[st] = (td_st, td_trailing)
                 td_st = td_st | td_trailing
                 target_dates_per_st[st] = td_st
                 logger.info(f"    -> {st}: detail+trailing "
                             f"{len(td_st)} missing dates")
+                # Reopen those dates for the WHOLE sec_type; the
+                # per-sec_type pass keeps only the codes the fetched
+                # source frame carries.
+                code_gaps_per_st[st] = await find_core_code_gaps(conn, st)
+                n_pairs = sum(len(c) for c in code_gaps_per_st[st].values())
+                if n_pairs:
+                    logger.info(f"    -> {st}: per-code gaps on "
+                                f"{len(code_gaps_per_st[st])} recent "
+                                f"date(s) ({n_pairs:,} code-date pairs)")
                 # Each gate step reports whether IT has work for this
                 # sec_type (missing dates / repair dates / pair-keyed
                 # bands / wholesale empty checks — per-step granularity
@@ -571,7 +712,8 @@ class MovAveSpreadAnalysis(DataAnalysis):
             any_pending = any(
                 any(p.values()) for p in pending_per_st.values()
             )
-            if total_missing == 0 and not any_pending:
+            any_gaps = any(code_gaps_per_st.values())
+            if total_missing == 0 and not any_pending and not any_gaps:
                 logger.info("    -> DB is up to date; nothing to do.")
                 return
             # For sec_types where only the internal steps (not the
@@ -593,11 +735,16 @@ class MovAveSpreadAnalysis(DataAnalysis):
         total_detail = 0
         for st in sec_types:
             td_st = target_dates_per_st.get(st)
+            gaps_st = code_gaps_per_st.get(st) or {}
+            steps_pending = any(pending_per_st[st].values())
             if td_st is not None and len(td_st) == 0 and not force:
-                if not any(pending_per_st[st].values()):
+                if not steps_pending and not gaps_st:
                     logger.info(f"\n  [{st}] up to date; skipping.")
                     continue
-            n_detail = await self._process_one_sec_type(st, td_st, force)
+            n_detail = await self._process_one_sec_type(
+                st, td_st, force, code_gaps=gaps_st,
+                steps_pending=steps_pending,
+                core_missing=core_missing_per_st.get(st))
             # Refresh this sec_type's per-code summary (DELETE + INSERT —
             # vanished codes never linger as stale rows).
             await refresh_codes_summary(conn, [st])

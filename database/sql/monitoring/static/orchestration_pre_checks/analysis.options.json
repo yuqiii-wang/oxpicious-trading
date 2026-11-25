@@ -1,0 +1,16 @@
+{
+  "service": "analysis.options",
+  "kind": "derive",
+  "tables": [
+    {
+      "table": "analysis.options_spot_daily"
+    },
+    {
+      "table": "analysis.options_bands"
+    },
+    {
+      "table": "analysis.options_vol_index"
+    }
+  ],
+  "notes": "Presence = the session in the spot / bands / vol-index tables (the expiry-keyed satellites stay out)."
+}

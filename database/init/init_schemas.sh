@@ -68,6 +68,10 @@ psql -U postgres -d "oxpicious-stats" -f /docker-entrypoint-sql.d/static/label_d
 psql -U postgres -d "oxpicious-stats" -f /docker-entrypoint-sql.d/static/label_dim/07_text_llm.sql
 psql -U postgres -d "oxpicious-stats" -f /docker-entrypoint-sql.d/static/label_dim/08_keyword_maps.sql
 
+# static news provider prestige (the curated chip ordering for the News page)
+psql -U postgres -d "oxpicious-stats" -f /docker-entrypoint-sql.d/static/news_prestige/news_prestige.sql
+psql -U postgres -d "oxpicious-stats" -f /docker-entrypoint-sql.d/static/news_prestige/01_seed_prestige.sql
+
 # analysis schema (identity registry + per-analysis result tables)
 psql -U postgres -d "oxpicious-stats" -f /docker-entrypoint-sql.d/analysis/00_init.sql
 

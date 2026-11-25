@@ -1,16 +1,17 @@
 /**
  * The Signal Amplification page's amplifier registry — the display
  * metadata for the TWO-LEVEL amplifier axis (2026-11-20): the PARENT
- * TYPE (static.label_dim 'signal_amplifier_type': ohlcv / margin — the
- * data domain the anatomy comes from) + each type's SUB TYPES
- * ('signal_amplifier' when ohlcv, 'signal_amplifier_margin' when
- * margin; mirrored from _common/labels.py + label-codes.ts). The
- * Python side owns the bars/sides; this file owns the page's
- * presentation words.
+ * TYPE (static.label_dim 'signal_amplifier_type': ohlcv / margin /
+ * news — the data domain the anatomy comes from) + each type's SUB
+ * TYPES ('signal_amplifier' when ohlcv, 'signal_amplifier_margin'
+ * when margin, 'signal_amplifier_news' when news; mirrored from
+ * _common/labels.py + label-codes.ts). The Python side owns the
+ * bars/sides; this file owns the page's presentation words.
  */
 export interface AmplifierMeta {
   /** The SUB-TYPE label (the wire value; static.label_dim
-   *  'signal_amplifier' / 'signal_amplifier_margin'). */
+   *  'signal_amplifier' / 'signal_amplifier_margin' /
+   *  'signal_amplifier_news'). */
   key: string;
   /** The sub-type's code in its parent's domain (the evidence-map key
    *  — resolve together with the parent type code). */
@@ -23,14 +24,14 @@ export interface AmplifierMeta {
   side: "buy" | "sell" | "discount";
   /** One-line meaning (the anatomy shape + what it does). */
   description: string;
-  /** The parent type key ("ohlcv" / "margin"). */
+  /** The parent type key ("ohlcv" / "margin" / "news"). */
   typeKey: string;
 }
 
 export interface AmplifierTypeMeta {
   /** The PARENT TYPE label (static.label_dim 'signal_amplifier_type'). */
   key: string;
-  /** The parent type code (0 ohlcv / 1 margin). */
+  /** The parent type code (0 ohlcv / 1 margin / 2 news). */
   code: number;
   /** Short English display word for the type. */
   label: string;
@@ -147,6 +148,167 @@ export const AMPLIFIER_TYPES: AmplifierTypeMeta[] = [
           "bar — leverage crowding and fragility; amplifies the exit-timing " +
           "families' SELL.",
         typeKey: "margin",
+      },
+    ],
+  },
+  {
+    key: "news",
+    code: 2,
+    label: "News State",
+    zh: "新闻情绪",
+    subs: [
+      {
+        key: "sent_shock",
+        code: 0,
+        label: "Sent Shock",
+        zh: "情绪冲击",
+        side: "buy",
+        description:
+          "The blended sentiment's trailing z at or below −2.0 on the " +
+          "code's own drop leg — the deep capitulation shock; amplifies " +
+          "the reversion families' BUY.",
+        typeKey: "news",
+      },
+      {
+        key: "tone_panic",
+        code: 1,
+        label: "Tone Panic",
+        zh: "关键词情绪恐慌",
+        side: "buy",
+        description:
+          "The keyword-tone z at or below −1.5 on the drop leg — the " +
+          "down-family mention balance surging; amplifies the reversion " +
+          "families' BUY.",
+        typeKey: "news",
+      },
+      {
+        key: "neg_wave",
+        code: 2,
+        label: "Neg Wave",
+        zh: "负面报道浪潮",
+        side: "buy",
+        description:
+          "The day's strongly-negative-article count at or above 5 on the " +
+          "drop leg — the measured strongest single state; amplifies the " +
+          "reversion families' BUY.",
+        typeKey: "news",
+      },
+      {
+        key: "quiet_cov",
+        code: 3,
+        label: "Quiet Coverage",
+        zh: "报道异常冷清",
+        side: "buy",
+        description:
+          "Abnormally quiet coverage (flow_af at or below −1.0) on the " +
+          "drop leg — the honest marginal candidate; a weak BUY " +
+          "amplification.",
+        typeKey: "news",
+      },
+      {
+        key: "sent_euphoria",
+        code: 4,
+        label: "Sent Euphoria Divergence",
+        zh: "情绪亢奋背离",
+        side: "buy",
+        description:
+          "The sentiment z at or above +1.5 while the code's own curve " +
+          "falls — \"good news can't lift a falling market\"; the " +
+          "divergence amplifies BUY (the evidence judges).",
+        typeKey: "news",
+      },
+      {
+        key: "tone_euphoria",
+        code: 5,
+        label: "Tone Euphoria Divergence",
+        zh: "关键词亢奋背离",
+        side: "buy",
+        description:
+          "The keyword-tone z at or above +1.5 on the drop leg — the " +
+          "divergence pair's tone leg; amplifies BUY.",
+        typeKey: "news",
+      },
+      {
+        key: "week_neg_wave",
+        code: 6,
+        label: "Weekly Neg Wave",
+        zh: "周度负面浪潮",
+        side: "buy",
+        description:
+          "The week's strongly-negative-article count (5-row sum) at or " +
+          "above 10 — the persistent weekly wave; amplifies the reversion " +
+          "families' BUY.",
+        typeKey: "news",
+      },
+      {
+        key: "week_tone",
+        code: 7,
+        label: "Weekly Tone Panic",
+        zh: "周度情绪恐慌",
+        side: "buy",
+        description:
+          "The week's mean keyword-tone z at or below −1.0 — the quarter " +
+          "drift's strongest carrier (stress +5.90%, hit 78%); amplifies " +
+          "the reversion families' BUY.",
+        typeKey: "news",
+      },
+      {
+        key: "week_shock",
+        code: 8,
+        label: "Weekly Sent Shock",
+        zh: "周度情绪冲击",
+        side: "buy",
+        description:
+          "The week's mean sentiment z at or below −1.0 — the persistent " +
+          "weekly shock; amplifies the reversion families' BUY.",
+        typeKey: "news",
+      },
+      {
+        key: "shock_wave",
+        code: 9,
+        label: "Shock × Wave",
+        zh: "情绪冲击浪潮",
+        side: "buy",
+        description:
+          "The sentiment shock (z ≤ −1.5) confirmed by the negative-article " +
+          "wave (≥ 3) on the drop leg — the interaction beats either leg " +
+          "alone; amplifies BUY.",
+        typeKey: "news",
+      },
+      {
+        key: "wave_disagree",
+        code: 10,
+        label: "Wave × Disagreement",
+        zh: "情绪冲击分歧",
+        side: "buy",
+        description:
+          "The shock + wave confirmed again by cross-origin disagreement " +
+          "(disp_z ≥ 1.0) — the deeper nested claim; amplifies BUY.",
+        typeKey: "news",
+      },
+      {
+        key: "tone_disagree",
+        code: 11,
+        label: "Tone × Disagreement",
+        zh: "负面声浪分歧",
+        side: "buy",
+        description:
+          "The keyword-tone panic with high cross-origin disagreement — " +
+          "the measured strongest news population (+1.90%, t=7.09, hit " +
+          "73%); amplifies BUY.",
+        typeKey: "news",
+      },
+      {
+        key: "week_tone_recovery",
+        code: 12,
+        label: "Weekly Tone Recovery",
+        zh: "周度情绪修复",
+        side: "sell",
+        description:
+          "The weekly tone crosses up through 0 after a deep episode " +
+          "within the lookback — the one sell side that cleared the bar; " +
+          "amplifies the exit-timing families' SELL.",
+        typeKey: "news",
       },
     ],
   },

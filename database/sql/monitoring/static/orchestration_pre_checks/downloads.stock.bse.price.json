@@ -1,0 +1,17 @@
+{
+  "service": "downloads.stock.bse.price",
+  "kind": "fetch",
+  "tables": [
+    {
+      "table": "stats.stock_basic_stats",
+      "code_scope": "\\.BJ$"
+    }
+  ],
+  "csv": [
+    {
+      "dir": "temps/bse_trend",
+      "pattern": "bse_trend_stock_{date}.csv"
+    }
+  ],
+  "notes": "BSE stock EOD → builds.stock. Presence = the BSE slice of stats.stock_basic_stats (.BJ suffix)."
+}

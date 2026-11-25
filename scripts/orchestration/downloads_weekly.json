@@ -1,8 +1,14 @@
 {
  "1": {
-  "script": "downloads.stock.sse.trend_pe",
+  "script": "downloads.stock.sse.pe",
   "src_host": "sse",
   "can_be_parallel": false,
-  "note": "weekly PE anchor crawl for the IMPORTANT SSE stocks only (curated importance rank 0-1 of the importance_rules stock JSONs, via the _common.importance rank map — the archive module's former PE half, migrated to the trend side 2026-11-20): per stock the still-missing quarterly snapshot dates + trailing-window (>21d) big-jump dates + the latest missing trading date, appended to temps/sse_archive/{code}_pe.csv. WEEKLY tier: the task's own weekly gate (>= 6 days since its last normal exit in monitor.service_audit) makes the nightly fires no-ops (--force/--code bypass) — the analysis_weekly precedent. pe_latest (downloads_daily step 30) keeps the daily tail over the same important universe; the archive crawl itself is now OHLCV-only"
+  "note": "weekly PE anchor crawl for the IMPORTANT SSE stocks only (curated importance rank 0-1 of the importance_rules stock JSONs, via the _common.importance rank map — the archive module's former PE half, its own downloads.stock.sse.pe service since 2026-11-23): per stock the still-missing quarterly snapshot dates + trailing-window (>21d) big-jump dates + the latest missing trading date, appended to temps/sse_archive/{code}_pe.csv. WEEKLY tier: the task's own weekly gate (>= 6 days since its last normal exit in monitor.service_audit) makes the nightly fires no-ops (--force/--code bypass). pe_latest (downloads_daily step 29) keeps the daily tail over the same important universe; the archive crawl itself is now OHLCV-only"
+ },
+ "2": {
+  "script": "downloads.index.csindex.pe",
+  "src_host": "csindex",
+  "can_be_parallel": false,
+  "note": "weekly CSIndex index-PE fetch (service split 2026-11-23 out of the nightly downloads.index.csindex.quote --pe-only step that ran 2026-11-20..22): per code ONLY the incremental PE (peg) series fetch + the {code}_history.csv merge — the PE series has no other source (stats.index_valuation.pe folds it in via builds CSINDEX DAILY; it went NULL from 2026-10-27 under the old skip-by-default gate, hence the dedicated step). WEEKLY tier: the task's own weekly gate (>= 6 days since its last normal exit) makes the nightly fires no-ops (--force bypass); the first run after the split self-baselines (no audit history proceeds by design). Different src_host from step 1, so the wave scheduler may run the two PE sweeps concurrently"
  }
 }

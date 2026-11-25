@@ -651,8 +651,10 @@ class SseEtfCompositionDownload(DownloadJob):
         out_dir = resolve_out_dir(str(Path(__file__).resolve()), "sse_etf_composition", out_root)
         today = date.today()
 
-        # Quarter-start trigger: on the 1st of a quarter-start month (Jan/Apr/Jul/Oct,
-        # or when forced), bypass the cache and stamp output files with today's date
+        # Quarter-start trigger: inside the quarter-start refresh window
+        # (Jan/Apr/Jul/Oct up to QUARTER_REFRESH_LAST_DAY — the tier fires one
+        # week after the quarter start; see downloads._common.monthly, or when
+        # forced), bypass the cache and stamp output files with today's date
         # so a fresh quarterly snapshot flows to prod even if the XML still reports
         # the previous biz day.
         quarter_start = force_quarter_start or is_quarter_start(today)

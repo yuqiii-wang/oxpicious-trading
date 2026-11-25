@@ -10,6 +10,8 @@ can hold one cheaply). Callers:
 * the deep-agent decision submodule — typed decision questions to the
   jev models via :meth:`systemone` (calibrated probabilities, the
   validated ``/v1/systemone`` contract),
+* OCR consumers — image files to the PaddleOCR-VL transcription model
+  via :meth:`ocr` (images → text, the validated ``/v1/ocr`` contract),
 * harness HTTP-sim runs — ZhipuChatProvider talks the OpenAI wire
   format itself (the URL is all it needs); this client's
   :meth:`chat_completion` is the direct-call convenience,
@@ -22,6 +24,7 @@ never stop a pipeline.
 """
 from __future__ import annotations
 
+import base64
 import os
 import time
 from pathlib import Path
@@ -49,7 +52,7 @@ def resolve_base_url(base_url: Optional[str] = None) -> str:
 # The serving paths whose traffic belongs in llm.llm_requests (admin /
 # health / stats / control traffic stays unlogged noise).
 _LOGGED_PATH_PREFIXES = (
-    "/v1/systemone", "/v1/tokenization/",
+    "/v1/systemone", "/v1/tokenization/", "/v1/ocr",
     "/v1/chat/completions", "/api/paas/v4/chat/completions")
 
 # The provider name these rows carry (transport rows use e.g.
@@ -244,6 +247,7 @@ class LocalModelHostClient:
         self, *, questions: Dict[str, Dict[str, Any]],
         state: Optional[Dict[str, Any]] = None,
         model: Optional[str] = None,
+        media: Optional[List[Any]] = None,
         read_timeout_s: float = 600.0,
     ) -> Any:
         """``POST /v1/systemone`` — typed questions in, CALIBRATED
@@ -251,7 +255,12 @@ class LocalModelHostClient:
         ``{probabilities: {label: p}}``, ``score`` → ``{score,
         level_probabilities}``. questions follows the request
         vocabulary (``{"key": {"type": ..., "instructions": ...,
-        "criteria": ...}}``). The answer is validated against THIS
+        "criteria": ...}}``). ``media`` accepts, per entry, the same
+        image inputs as :meth:`ocr` (path / bytes / data URL / bare
+        base64) — the read conditions on the images when the served
+        backend is vision-capable (a text-only backend answers 400);
+        ``state`` text may reference them with ``<image:N>``
+        placeholders. The answer is validated against THIS
         request's contract (one answer per key, labels == criteria,
         calibrated distributions, expected score in range) and returned
         as the typed :class:`~.data_definitions.jev_api.SystemOneResponse`;
@@ -260,7 +269,8 @@ class LocalModelHostClient:
         from .data_definitions.jev_api import SystemOneRequest
 
         request = SystemOneRequest(
-            state=state, questions=questions, model=model)
+            state=state, questions=questions, model=model,
+            media=self._encoded_image_inputs(media) if media else None)
         data = self._request(
             "POST", "/v1/systemone",
             json_body=request.model_dump(exclude_none=True),
@@ -277,6 +287,91 @@ class LocalModelHostClient:
             raise LocalModelHostError(
                 f"local model host broke the systemone contract: "
                 f"{exc}") from exc
+
+    def ocr(
+        self, *, images: List[Any],
+        prompt: str = "OCR:", model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        layout: bool = False,
+        read_timeout_s: float = 600.0,
+    ) -> Any:
+        """``POST /v1/ocr`` — IMAGE FILES in, the extracted TEXT out
+        (one transcription per image, submission order preserved).
+
+        ``images`` accepts, per entry: a local file path (``str`` /
+        ``Path`` — read and base64-encoded here), raw ``bytes`` of one
+        of the supported raster formats, or an already-encoded data
+        URL / base64 string (passed through). ``layout`` switches to
+        the model's text-spotting read: each result carries
+        ``elements`` — ``{bbox: (x1, y1, x2, y2), text}`` per spotted
+        line in ORIGINAL pixel space (``text`` stays the clean
+        reading-order transcription). Returns the typed
+        :class:`~.data_definitions.ocr_api.OcrResponse` after the
+        wire-shape check (one text per image, summed usage); a host
+        that breaks the contract raises :class:`LocalModelHostError`
+        like any other failure. Transcription is greedy by default
+        (the host applies the OCR model's deterministic temp-0
+        discipline when ``temperature`` is omitted)."""
+        from .data_definitions.ocr_api import OcrRequest, OcrResponse
+
+        request = OcrRequest(
+            images=self._encoded_image_inputs(images), prompt=prompt, model=model,
+            temperature=temperature, max_tokens=max_tokens, layout=layout)
+        data = self._request(
+            "POST", "/v1/ocr",
+            json_body=request.model_dump(exclude_none=True),
+            read_timeout_s=read_timeout_s)
+        if not isinstance(data, dict) or \
+                "model" not in data or "texts" not in data:
+            raise LocalModelHostError(
+                f"local model host broke the ocr contract — expected "
+                f"{{model, texts, usage}}, got: {data!r}")
+        try:
+            response = OcrResponse.model_validate(data)
+            request.validate_response(
+                response.model, list(response.texts), response.usage)
+        except ValueError as exc:  # includes pydantic ValidationError
+            raise LocalModelHostError(
+                f"local model host broke the ocr contract: {exc}") from exc
+        return response
+
+    @staticmethod
+    def _encoded_image_inputs(images: List[Any]) -> List[Dict[str, Any]]:
+        """The shared image-input encode: entries of path (``str`` /
+        ``Path``, read and base64-encoded here) / raw ``bytes`` /
+        already-encoded data URL or bare base64 (passed through) →
+        ``OcrImageInput``-shaped dicts — the OCR and systemone ``media``
+        payloads share this exact shape."""
+        inputs: List[Dict[str, Any]] = []
+        for image in images:
+            if isinstance(image, (bytes, bytearray)):
+                encoded = base64.b64encode(bytes(image)).decode("ascii")
+            elif isinstance(image, (str, Path)):
+                as_str = str(image)
+                if as_str.lower().startswith("data:") or \
+                        LocalModelHostClient._is_b64_text(as_str):
+                    encoded = as_str
+                else:
+                    encoded = base64.b64encode(
+                        Path(as_str).read_bytes()).decode("ascii")
+            else:
+                raise TypeError(
+                    f"unsupported image input {type(image).__name__} "
+                    "(expected a path, bytes, or an encoded string)")
+            inputs.append({"data": encoded})
+        return inputs
+
+    @staticmethod
+    def _is_b64_text(value: str) -> bool:
+        """The pre-encoded-image heuristic: no path separator, no
+        extension, and a base64 charset (a data URL already matched;
+        anything else is treated as a file path)."""
+        import re
+
+        if "/" in value or "\\" in value or "." in value:
+            return False
+        return bool(re.fullmatch(r"[A-Za-z0-9+/=\s]+", value))
 
     def chat_completion(
         self, *, model: str, messages: List[Dict[str, Any]],

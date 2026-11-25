@@ -75,10 +75,45 @@ from _common.pre_check_and_load import (
     find_missing_keys,
     filter_rows_to_missing_dates_async,
 )
-from _common._holidays_and_weekdays import recent_trading_day_cutoff
+from _common._holidays_and_weekdays import (
+    expected_publish_session,
+    recent_trading_day_cutoff,
+)
 
 import logging
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Session-close cap — daily bars may only load CLOSED sessions
+# ============================================================================
+def cap_to_closed_sessions(
+    dates: Set[datetime.date], *, eod_hour: int = 15,
+) -> Set[datetime.date]:
+    """Drop source dates AFTER the latest CLOSED trading session.
+
+    The daily-bar builds consume per-day snapshot files (sse/szse/bse
+    trend, cffex daily stats). A snapshot fetched BEFORE the 15:00
+    close — under that day's filename — carries intraday values (the
+    "close" is the price at fetch time) and must never reach the daily
+    tables (the 2026-11-23 midday files would have written a half-day
+    OHLC as final bars). Capping at
+    :func:`_common._holidays_and_weekdays.expected_publish_session`
+    keeps tonight's post-close chain loading the just-closed session
+    while a midday/manual run stops at the previous session.
+
+    Morning-published non-session sources (debt / shibor / macro —
+    values final at publish time) intentionally bypass this cap.
+    """
+    cap = expected_publish_session(eod_hour=eod_hour)
+    capped = {d for d in dates if d <= cap}
+    dropped = len(dates) - len(capped)
+    if dropped:
+        logger.info(
+            "session-close cap (%s): dropped %d source date(s) after it "
+            "(live/pre-close session data never loads to daily)",
+            cap, dropped)
+    return capped
 
 
 # ============================================================================

@@ -95,3 +95,74 @@ export function parseMixReason(reason: string | null | undefined): {
 export function stripMixPrefix(reason: string | null | undefined): string {
   return parseMixReason(reason).human;
 }
+
+/**
+ * Split one decision reason's human text into the tooltip's SUB-ROWS —
+ * along the shared reason grammar's own markers, never a blind character
+ * wrap:
+ *
+ *  • trailing `[scale …]` / `[amp …]` bracket disclosures (the oracle's
+ *    confidence-scaling / amplification notes) peel off the end, one row
+ *    each, brackets stripped;
+ *  • the body splits at the depth-0 ` — ` / ` -> ` segment markers — the
+ *    phrasing convention of the oracle (`_oracle/algo.py`) and the
+ *    analysis-source / macd reason builders — paren-aware, so the
+ *    oracle's grading parenthetical stays with its conf clause;
+ *  • a segment whose tail is a LONG parenthetical (>= 25 chars, the lead
+ *    ending in a word character — `conf 12.2/100 (the oracle's …)`,
+ *    `ADHOC TRIM: sell 46% … (lots …)`) breaks it onto its own row; a
+ *    short or mid-string group (`swing unknown (frontier pivot)`, the
+ *    LAST DAY SELL math) stays inline.
+ *
+ * A reason carrying none of the markers comes back as ONE row — the
+ * caller renders it unchanged (the mix/forecast/LDS voices stay compact).
+ */
+export function splitReasonRows(reason: string): string[] {
+  const notes: string[] = [];
+  let body = reason.trim();
+  // Trailing bracket notes ([scale …] / [amp …]) — peel from the end.
+  for (;;) {
+    const m = /(?:^| )\[[^[\]]+\]$/.exec(body);
+    if (!m) break;
+    notes.unshift(m[0].trim().slice(1, -1));
+    body = body.slice(0, m.index).trim();
+  }
+  // Depth-0 split on the " — " / " -> " segment markers.
+  const segs: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < body.length; ) {
+    const ch = body[i];
+    if (ch === "(") {
+      depth += 1;
+      i += 1;
+    } else if (ch === ")") {
+      depth = Math.max(0, depth - 1);
+      i += 1;
+    } else if (
+      depth === 0
+      && (body.startsWith(" — ", i) || body.startsWith(" -> ", i))
+    ) {
+      const seg = body.slice(start, i).trim();
+      if (seg) segs.push(seg);
+      i += 3;
+      start = i;
+    } else {
+      i += 1;
+    }
+  }
+  const tail = body.slice(start).trim();
+  if (tail) segs.push(tail);
+  // A segment ending in a long parenthetical breaks it onto its own row.
+  const rows: string[] = [];
+  for (const seg of segs) {
+    const m = /^(.+?[A-Za-z0-9%]) \(([^()]{25,})\)$/.exec(seg);
+    if (m) {
+      rows.push(m[1], `(${m[2]})`);
+    } else {
+      rows.push(seg);
+    }
+  }
+  if (rows.length === 0) return [...notes];
+  return [...rows, ...notes];
+}

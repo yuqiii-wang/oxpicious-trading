@@ -5,6 +5,7 @@
  * them), a goal tail, and a running marker while the thread is unsettled
  * (steps outstanding beyond completed/failed/skipped).
  */
+import { fmtDate } from "@/shared/datetime";
 import type { AiSummaryRun } from "@/lib/api-client/aiThreads";
 
 export function runLabel(run: AiSummaryRun): string {
@@ -13,5 +14,5 @@ export function runLabel(run: AiSummaryRun): string {
     : " · market-wide";
   const goal = run.goal ? ` · ${run.goal.slice(0, 52)}${run.goal.length > 52 ? "…" : ""}` : "";
   const active = run.steps_total > run.steps_completed + run.steps_failed + run.steps_skipped;
-  return `${run.run_date} ${run.first_at.slice(11, 16)}${scope}${goal}${active ? " · running" : ""}`;
+  return `${fmtDate(run.run_date)} ${run.first_at.slice(11, 16)}${scope}${goal}${active ? " · running" : ""}`;
 }

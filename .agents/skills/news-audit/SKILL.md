@@ -3,7 +3,11 @@ name: news-audit
 description: >
   The news provider/content audit feature (2026-11-17): the origin
   registry text.news_providers (one row per (source, author); author ''
-  is the provider-level sentinel; the manual is_blocked blocklist flag)
+  is the provider-level sentinel; the is_blocked blocklist flag — AUTO-set
+  by the pipeline's ProviderAutoBlockStep once the origin's audit history
+  carries more than one fake item (SUM(num_fake) > 1, one-way), manual
+  curation otherwise; the news API's default feeds exclude fake articles
+  AND blocked origins — include_fake / include_blocked opt out)
   and the two 5-day-window audit tables — text.news_provider_audit (per
   window per origin: num_items / num_digested / num_fake / fake_pct /
   avg_sentiment / avg_word_count / num_industries) and
@@ -83,7 +87,12 @@ description: >
   (upsert origins via the `database/sql_writes` action
   `analysis/news_audit/steps/news_providers/upsert_origin.sql` — its
   conflict arm updates ONLY the seen-date span + `updated_at`, never
-  `is_blocked`), `ProviderAuditStep`, `ContentAuditStep` (both grains
+  `is_blocked`), `ProviderAutoBlockStep` (after the window audits:
+  `is_blocked = true` for origins with `SUM(num_fake) > 1` over
+  `text.news_provider_audit` — one-way, via
+  `.../news_providers/block_fake_origins.sql`; runs on the
+  nothing-to-compute path too),
+  `ProviderAuditStep`, `ContentAuditStep` (both grains
   compute from ONE shared article frame + the keyword frame; per-window
   DELETE via `.../purge_window.sql` then `bulk_upsert_async`).
 - Reads render `database/sql_views/analysis/news_audit/steps/*.sql`
@@ -140,8 +149,12 @@ contract).
    zero verdicts — never 0-fill them.
 3. `window_start` values sit on the anchor grid; `window_end` =
    start + 4 days.
-4. The registry sync never DELETEs origins and never writes `is_blocked`
-   (manual curation only).
+4. The registry sync never DELETEs origins and never writes `is_blocked`;
+   the flag's pipeline writer is `ProviderAutoBlockStep` only (>1 lifetime
+   fake item → `true`, ONE-WAY — a manual unblock of a >1-fake origin
+   re-blocks on the next run). The news API's list endpoints exclude fake
+   articles + blocked origins by DEFAULT (`include_fake` /
+   `include_blocked` opt out; the NewsAudit drill-down sends both).
 5. Incremental targeting must keep the news-empty-window exclusion (or
    accept full-history refetches every run).
 6. Recomputed windows are purged per `window_start` before upsert — the
@@ -158,7 +171,7 @@ database/sql/text/news_provider_audit.sql     DDL (KG banner payload)
 database/sql/text/news_content_audit.sql      DDL (KG banner payload)
 analysis/news_audit/                          pipeline (config/windows/steps/__main__)
 database/sql_views/analysis/news_audit/steps/ read templates
-database/sql_writes/analysis/news_audit/steps/registry upsert + window purges
+database/sql_writes/analysis/news_audit/steps/registry upsert + auto-block + window purges
 database/sql_views/data_viz/api/services/analysis/news-audit/  API SELECT templates
 data_viz/api/routes/analysis/news-audit.ts    endpoints + NEWS_AUDIT_RUN_TAG
 data_viz/api/services/analysis/news-audit.ts  service

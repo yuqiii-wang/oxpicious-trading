@@ -13,6 +13,7 @@ import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
 import { axisColors, commonDataZoom, commonGrid, commonLegend } from "@/theme/chart-palette";
 import { baseChartOption } from "@/shared/charts/base-chart";
+import { fmtMonth } from "@/shared/datetime/display";
 import { buildGroupColorScheme, variantColorOf } from "@/theme/group-colors";
 import { fmtNum } from "@/lib/series";
 import type { CodeTrendIndustryData } from "./codeTrendTypes";
@@ -64,7 +65,7 @@ export function buildIndustryTrendOption(
       axisLabel: {
         color: c.textColor,
         fontSize: 9,
-        formatter: (v: string) => v.slice(0, 7),
+        formatter: (v: string) => fmtMonth(v),
       },
       splitLine: { show: false },
     },

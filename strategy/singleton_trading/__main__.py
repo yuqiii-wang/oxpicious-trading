@@ -86,6 +86,12 @@ def _parse_algo_arg(raw: str) -> dict:
     ("macd:0.5") is tolerated and IGNORED (stripped) so stale callers
     don't crash. Names may be any analysis signal family (see
     ``registry.get_algo``).
+
+    ORACLE is SOLO-ONLY (2026-11-21, user-directed "the optimization
+    only optimizes on oracle only if on oracle mode, not to load other
+    signals"): any multi-name selection carrying "oracle" is rejected —
+    the hindsight replay never loads or blends other families (the UI's
+    oracle mode toggle already forces this; this guards the CLI).
     """
     selection: dict = {}
     for part in raw.split(","):
@@ -95,6 +101,12 @@ def _parse_algo_arg(raw: str) -> dict:
         selection[name] = 1.0
     if not selection:
         raise ValueError(f"--algo '{raw}' parsed to an empty selection")
+    if "oracle" in selection and len(selection) > 1:
+        raise SystemExit(
+            "oracle is solo-only (oracle mode): the hindsight replay "
+            "never loads other signal families — "
+            f"got '--algo {raw}'"
+        )
     return selection
 
 

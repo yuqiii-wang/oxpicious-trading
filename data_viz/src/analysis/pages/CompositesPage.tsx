@@ -59,6 +59,36 @@ export const COMPOSITE_ANALYSES: CompositeAnalysis[] = [
       "the same metrics plus the keyword hit rollup (distinct keywords, " +
       "mentions, articles hit).",
   },
+  {
+    slug: "signal-rules-audit",
+    title: "Signal Rules Audit (信号规则审计)",
+    description:
+      "The signal rules audit over the standalone families' history: " +
+      "per year per family — signal-day counts, buy/sell split, " +
+      "universe share; per year per ORDERED family pair — the overlap " +
+      "(of A's signal days, the fraction B also fired on) judged " +
+      "against the chance expectation (lift) with Jaccard and the " +
+      "same/opposite-action conflict splits. The heatmap is the " +
+      "co-firing matrix; the pair table ranks genuine co-movers.",
+  },
+  {
+    slug: "news-text-states",
+    title: "News Text States (新闻文本状态)",
+    description:
+      "The validated daily news-text state panel (text.news_text_daily, " +
+      "built by analysis.news_text_daily): the CFSD-lexicon-blended " +
+      "sentiment level with the shock (ewm halflife-3) and persistent " +
+      "(halflife-10) state lines, the abnormal-news-flow risk flag " +
+      "(63d median/IQR), sign-split article counts, and the kw_market " +
+      "tone cross-check — per market scope and per-industry event days. " +
+      "Fifth panel (the 2026-11-22 merge of the former Text Sentiment " +
+      "Metrics page): the raw LLM-only mood layer (analysis." +
+      "text_metrics_daily) — Tetlock abnormal-sentiment z + ma5, the " +
+      "abnormal flow z, and the lexicon tone overlay. Validated on this " +
+      "corpus: levels are state not direction; the persistent line is " +
+      "contrarian at the monthly tail (+0.33% vs +2.14% after bottom-20% " +
+      "mood months); abnormal coverage precedes lower forward returns.",
+  },
 ];
 
 export default function CompositesPage() {

@@ -1,0 +1,11 @@
+{
+  "service": "downloads.index.cnindex.archive",
+  "kind": "fetch",
+  "tables": [
+    {
+      "table": "stats.index_basic_stats",
+      "code_scope": "^399(00[2-57-9]|0[1-9][0-9]|[1-9][0-9]{2})$"
+    }
+  ],
+  "notes": "CNI index per-code history files (no date in the file name). DB slice only: the 399xxx codes of stats.index_basic_stats EXCLUDING 399001 / 399006 / 399346 / 399348, which the szse_trend_index file also loads — a session that file populated must not count as present here."
+}

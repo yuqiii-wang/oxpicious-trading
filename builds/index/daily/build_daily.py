@@ -55,6 +55,7 @@ import pandas as pd
 from downloads._common import read_csv_gpu_safe
 
 from _common.importance import order_codes_or_sorted
+from _common._holidays_and_weekdays import expected_publish_session
 
 from builds._commons.safe_parse import safe_to_datetime, safe_to_numeric
 from _common.df_utils import (
@@ -532,6 +533,21 @@ class DailyFrameBuilder:
 
         combined = pd.concat(dfs, ignore_index=True)
         combined["code"] = combined["code"].astype(str).str.strip()
+
+        # Session-close cap — drop rows dated after the latest CLOSED
+        # trading session (one host-array mask, no per-row Python): a
+        # snapshot fetched before the 15:00 close carries intraday values
+        # under its day's name and must never reach the daily tables.
+        session_cap = expected_publish_session(eod_hour=15)
+        cap_mask = (np.asarray(combined["date"]).astype("datetime64[D]")
+                    <= np.datetime64(session_cap))
+        n_pre_cap = len(combined)
+        combined = combined[pd.Series(cap_mask, index=combined.index)]
+        combined = combined.reset_index(drop=True)
+        if verbose and len(combined) != n_pre_cap:
+            logger.info(f"    [DAILY] session-close cap ({session_cap}): dropped "
+                  f"{n_pre_cap - len(combined):,} pre-close/live row(s)")
+
         combined = combined.sort_values(["code", "date"]).reset_index(drop=True)
 
         # Composite "YYYY-MM-DD|code" keys — ONE numpy transfer per column plus a

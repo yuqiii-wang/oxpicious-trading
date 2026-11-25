@@ -6,7 +6,7 @@
   "is_resident": false,
   "freq": "quarterly",
   "priority": 140,
-  "schedule": "calendar-quarterly pass — quarter-start refresh on the 1st of Jan/Apr/Jul/Oct (cron-scheduled; no in-script date guard)",
+  "schedule": "calendar-quarterly pass — refresh one week after the quarter start (due the 8th of Jan/Apr/Jul/Oct; cron-scheduled; no in-script date guard)",
   "notes": "huatai-pb.com fund-site data (510880 红利ETF): quarterly PCF composition snapshot.",
   "source_ref": "scripts/orchestration/downloads_quarterly.json",
   "updated_at": "2026-11-20T15:25:15.716730+00:00"

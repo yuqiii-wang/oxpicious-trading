@@ -1,0 +1,18 @@
+{
+  "service": "downloads.options.szse.trend",
+  "kind": "fetch",
+  "tables": [
+    {
+      "table": "stats.options_terms",
+      "exchange": "SZSE",
+      "code_column": "contract_code"
+    }
+  ],
+  "csv": [
+    {
+      "dir": "temps/szse_trend",
+      "pattern": "szse_trend_option_{date}.csv"
+    }
+  ],
+  "notes": "SZSE options EOD → builds.options. Presence = the SZSE slice of the shared stats.options_terms."
+}

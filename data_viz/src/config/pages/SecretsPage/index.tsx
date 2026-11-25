@@ -69,6 +69,7 @@ import {
   fetchSecrets,
   testSecret,
   updateSecret,
+  type LlmModality,
   type SecretEntry,
   type SecretSaveBody,
   type SecretSubType,
@@ -109,6 +110,10 @@ const PROVIDER_OPTIONS: Record<SecretType, Array<{ code: number; label: string }
     { code: 2, label: "local" },
     { code: 99, label: "other" },
   ],
+  ocr: [
+    { code: 2, label: "local" },
+    { code: 99, label: "other" },
+  ],
   web_search: [
     { code: 15, label: "zhipu" },
     { code: 13, label: "zhihu" },
@@ -121,6 +126,7 @@ const TYPE_OPTIONS: Array<{ value: SecretType; hint: string }> = [
   { value: "llm", hint: "chat credentials (deep agent, Ask AI)" },
   { value: "jev", hint: "decision-model credentials (the local host's System One surface)" },
   { value: "tokenization", hint: "segmenter credentials (the local host's word segmenter)" },
+  { value: "ocr", hint: "image-transcription credentials (the local host's PaddleOCR-VL)" },
   { value: "web_search", hint: "search credentials (online search providers)" },
 ];
 
@@ -132,13 +138,23 @@ const isLlmHostType = (t: SecretType): boolean => t !== "web_search";
  *  jev's systemone `model` routing). tokenization resolves the host's
  *  single segmenter without one, web_search rows carry an engine. */
 const isModelRequiredType = (t: SecretType): boolean =>
-  t === "llm" || t === "jev";
+  t === "llm" || t === "jev" || t === "ocr";
 
 /** The sub-type-select's options ('secret_sub_type' mirror — the
  *  credential service tier). */
 const SUB_TYPE_OPTIONS: Array<{ value: SecretSubType; hint: string }> = [
   { value: "general", hint: "standard tier (glm flash, dummy, generic search)" },
   { value: "pro", hint: "paid-pro tier (the search_pro engine)" },
+];
+
+/** The modality profiles (static.label_dim 'llm_modality') — what the
+ *  model accepts (input) / produces (output). */
+const MODALITY_OPTIONS = [
+  { value: "text", hint: "plain text in/out" },
+  { value: "text+vision", hint: "also accepts images (the VLM case — glm-5.3-flash)" },
+  { value: "text+image-gen", hint: "also generates images" },
+  { value: "audio", hint: "audio in/out" },
+  { value: "other", hint: "other modality profile" },
 ];
 
 /** The edit field's DISPLAY value while a key is stored — pure mask,
@@ -155,6 +171,8 @@ interface SecretForm {
   subType: SecretSubType;
   modelName: string;
   contextLength: string;
+  inputModality: LlmModality;
+  outputModality: LlmModality;
   apiUrl: string;
   apiKey: string;
   isActive: boolean;
@@ -168,6 +186,8 @@ function emptyForm(type: SecretType): SecretForm {
     subType: "general",
     modelName: "",
     contextLength: "",
+    inputModality: "text",
+    outputModality: "text",
     apiUrl: "",
     apiKey: "",
     isActive: true,
@@ -182,6 +202,8 @@ function toForm(e: SecretEntry): SecretForm {
     subType: e.subType,
     modelName: e.modelName ?? "",
     contextLength: e.contextLength == null ? "" : String(e.contextLength),
+    inputModality: e.inputModality,
+    outputModality: e.outputModality,
     apiUrl: e.apiUrl ?? "",
     apiKey: e.hasApiKey ? API_KEY_MASK : "",
     isActive: e.isActive,
@@ -306,6 +328,8 @@ export default function SecretsPage() {
       subType: form.subType,
       modelName: form.modelName.trim() === "" ? null : form.modelName.trim(),
       contextLength: numOrNull(form.contextLength),
+      inputModality: form.inputModality,
+      outputModality: form.outputModality,
       apiUrl: urlOrNull(form.apiUrl),
       apiKey,
       isActive: form.isActive,
@@ -410,7 +434,7 @@ export default function SecretsPage() {
       <ConfigServiceTable
         name="Credentials"
         rows={tableRows}
-        searchText={(r) => `${r.secretType} ${r.provider} ${r.subType} ${r.modelName ?? ""} ${r.apiUrl ?? ""}`}
+        searchText={(r) => `${r.secretType} ${r.provider} ${r.subType} ${r.inputModality} ${r.outputModality} ${r.modelName ?? ""} ${r.apiUrl ?? ""}`}
         filters={[
           { label: "Type", rowValue: (r) => r.secretType },
           { label: "Provider", rowValue: (r) => r.provider },
@@ -428,6 +452,8 @@ export default function SecretsPage() {
                 <TableCell>Sub type</TableCell>
                 <TableCell>Model / engine</TableCell>
                 <TableCell align="right">Context length</TableCell>
+                <TableCell>Input modality</TableCell>
+                <TableCell>Output modality</TableCell>
                 <TableCell>API URL</TableCell>
                 <TableCell>API key</TableCell>
                 <TableCell>Active</TableCell>
@@ -464,6 +490,22 @@ export default function SecretsPage() {
                     sx={{ color: r.contextLength == null ? "text.disabled" : undefined }}
                   >
                     {r.contextLength ?? "—"}
+                  </TableCell>
+                  <TableCell>
+                    <Chip
+                      size="small"
+                      label={r.inputModality}
+                      color={r.inputModality === "text" ? "default" : "info"}
+                      variant="outlined"
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <Chip
+                      size="small"
+                      label={r.outputModality}
+                      color={r.outputModality === "text" ? "default" : "info"}
+                      variant="outlined"
+                    />
                   </TableCell>
                   <TableCell sx={{ fontFamily: "monospace", fontSize: "0.75rem" }}>
                     {r.apiUrl ?? "—"}
@@ -609,6 +651,38 @@ export default function SecretsPage() {
                 </MenuItem>
               ))}
             </TextField>
+            <TextField
+              select
+              label="Input modality"
+              value={form?.inputModality ?? "text"}
+              onChange={(e) =>
+                setForm((f) => (f == null ? f : { ...f, inputModality: e.target.value as LlmModality }))
+              }
+              helperText={MODALITY_OPTIONS.find((m) => m.value === form?.inputModality)?.hint}
+              sx={{ width: 190 }}
+            >
+              {MODALITY_OPTIONS.map((m) => (
+                <MenuItem key={m.value} value={m.value}>
+                  {m.value}
+                </MenuItem>
+              ))}
+            </TextField>
+            <TextField
+              select
+              label="Output modality"
+              value={form?.outputModality ?? "text"}
+              onChange={(e) =>
+                setForm((f) => (f == null ? f : { ...f, outputModality: e.target.value as LlmModality }))
+              }
+              helperText={MODALITY_OPTIONS.find((m) => m.value === form?.outputModality)?.hint}
+              sx={{ width: 190 }}
+            >
+              {MODALITY_OPTIONS.map((m) => (
+                <MenuItem key={m.value} value={m.value}>
+                  {m.value}
+                </MenuItem>
+              ))}
+            </TextField>
             <RuleTextField
               rule={isModelRequiredType(form?.secretType ?? "llm") ? REQUIRED_TEXT : FREE_TEXT_OR_NULL}
               label={form?.secretType === "web_search" ? "Search engine" : "Model name"}
@@ -619,9 +693,11 @@ export default function SecretsPage() {
                   ? "the provider's model id, e.g. glm-5.3-flash"
                   : form?.secretType === "jev"
                     ? "the host's registered model id, e.g. onejev-1.6-4b"
-                    : form?.secretType === "tokenization"
-                      ? "the host's model id, e.g. word-segmenter-zh · blank ok (the endpoint serves one segmenter)"
-                      : "the search engine, e.g. search_pro · blank = none (zhihu names none)"
+                    : form?.secretType === "ocr"
+                      ? "the host's registered model id, e.g. paddleocr-vl-1.6"
+                      : form?.secretType === "tokenization"
+                        ? "the host's model id, e.g. word-segmenter-zh · blank ok (the endpoint serves one segmenter)"
+                        : "the search engine, e.g. search_pro · blank = none (zhihu names none)"
               }
               disabled={!isNew || (form?.secretType === "web_search" && form.provider === "zhihu")}
               sx={{ width: 220, fontFamily: "monospace" }}

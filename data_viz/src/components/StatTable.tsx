@@ -14,6 +14,7 @@ import {
 } from "@mui/material";
 import type { SnapshotStats } from "@/lib/options-stats";
 import { fmtNum, fmtPct, fmtMil } from "@/lib/series";
+import { fmtDate } from "@/shared/datetime";
 import { PRICE_SCALE } from "@/theme/chart-palette";
 
 interface StatTableProps {
@@ -175,7 +176,7 @@ export default function StatTable({ statsList }: StatTableProps) {
                 {row.label}
               </TableCell>
               <TableCell sx={{ fontSize: "0.75rem", color: "text.secondary" }}>
-                {row.date || "—"}
+                {fmtDate(row.date)}
               </TableCell>
               {COLS.slice(2).map((c, i) => (
                 <TableCell

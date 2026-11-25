@@ -12,6 +12,7 @@ import React from "react";
 import { DOWN_COLOR, SPOT_COLOR, UP_COLOR } from "@/theme/chart-palette";
 import { fmtMil, fmtNum } from "@/lib/series";
 import { renderReactElement } from "@/lib/react-tooltip-renderer";
+import { fmtDate } from "@/shared/datetime";
 import { EXPIRY_MARKERS_SERIES_NAME, ExpiryInfoBlock, type TooltipColors } from "./expiryTooltip";
 import { mixHex } from "./bandTexture";
 import {
@@ -187,7 +188,7 @@ export function makeBandsTooltipFormatter(
     entries.sort((a, b) => b.price - a.price);
 
     const children: React.ReactNode[] = [
-      React.createElement("b", null, dateStr),
+      React.createElement("b", null, fmtDate(dateStr)),
     ];
 
     if (expiryItem && expiryItem.data && typeof expiryItem.data === "object" && "marker" in expiryItem.data) {

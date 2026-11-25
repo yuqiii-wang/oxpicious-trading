@@ -19,6 +19,7 @@ from .arrangement import OrchestrationArranger
 from .fleet import FleetOps
 from .non_daily import NonDailyOps
 from .orchestration import OrchestrationRunner
+from .step_router import StepRouter
 
 logger = logging.getLogger(__name__)
 
@@ -36,10 +37,15 @@ def create_monitor_app(config: Optional[AreaConfig] = None) -> FastAPI:
 
     app.state.fleet = FleetOps(
         config, app.state.processes, app.state.supervisor)
-    app.state.orchestration = OrchestrationRunner(app.state.registry)
+    # The chain's step execution is scope-owned (2026-11-21): every step
+    # submits at its OWNING server — the StepRouter maps module → area
+    # from the same ClusterConfig.areas[*].module_prefixes table the
+    # jobs surface's owns() guard enforces.
+    app.state.step_router = StepRouter()
+    app.state.orchestration = OrchestrationRunner(app.state.step_router)
     app.state.arrangement = OrchestrationArranger()
     app.state.non_daily = NonDailyOps(
-        app.state.registry, app.state.orchestration)
+        app.state.step_router, app.state.orchestration)
 
     app.include_router(fleet.router)
     app.include_router(orchestration.router)

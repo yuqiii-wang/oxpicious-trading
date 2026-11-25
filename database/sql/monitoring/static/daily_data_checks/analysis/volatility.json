@@ -1,0 +1,4 @@
+{
+  "view": "server_cluster/maintainer/daily_check/analysis/volatility",
+  "notes": "analysis_daily step 8 (analysis.volatility): analysis.volatility (sec_type=index) per study-10 code vs the index bars frontier — the panel is study-index scoped (config.STUDY_INDEX_CODES mirrors the codes) and STRICT (0-day): the volatility signal family reads it and running it a day behind left that family one bar behind (the 2026-11-18 reordering)."
+}

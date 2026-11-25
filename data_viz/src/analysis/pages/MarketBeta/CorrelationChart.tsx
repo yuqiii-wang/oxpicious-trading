@@ -51,6 +51,7 @@ import {
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
+import { fmtDate, fmtMonth } from "@/shared/datetime";
 import type { CorrelationChartProps, CorrWindow } from "./types";
 import { CORR_WINDOWS } from "./constants";
 
@@ -278,7 +279,7 @@ export function CorrelationChart({
             return (v >= 0 ? "+" : "") + fmtNum(v, 3);
           };
           const children: React.ReactNode[] = [];
-          children.push(React.createElement(tooltipComponents.Header, null, dateStr));
+          children.push(React.createElement(tooltipComponents.Header, null, fmtDate(dateStr)));
           children.push(React.createElement("div", {
             style: { marginTop: 2, opacity: 0.7 },
           }, "Pairwise Pearson correlation of MA curves (window starts every 20 trading days)"));
@@ -343,7 +344,7 @@ export function CorrelationChart({
         axisLabel: {
           color: c.textColor,
           fontSize: 9,
-          formatter: (v: string) => v.slice(0, 7),
+          formatter: (v: string) => fmtMonth(v),
         },
         splitLine: { show: false },
       },

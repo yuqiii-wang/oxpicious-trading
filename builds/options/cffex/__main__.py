@@ -56,6 +56,8 @@ from typing import List, Optional
 import pandas as pd
 
 from _common.build_commons import (
+    bulk_upsert_async,
+    cap_to_closed_sessions,
     find_missing_dates,
     truncate_table_async,
     print_build_header,
@@ -63,7 +65,6 @@ from _common.build_commons import (
     rec_cols,
     TODAY_STR,
     forced_date_scope,
-    bulk_upsert_async,
 )
 from _common.df_utils import epoch_col_to_dt64
 from _common.log_setup import setup_logging
@@ -274,6 +275,10 @@ class CffexOptionsBuild(OptionsBuild):
         if args.end_date:
             end_d = date.fromisoformat(args.end_date)
             available_dates = {d for d in available_dates if d <= end_d}
+
+        # Session-close cap: the daily-stats files fetched before the
+        # 15:00 close carry the half-formed session — never load it.
+        available_dates = cap_to_closed_sessions(available_dates)
 
         logger.info(f"    → {len(available_dates)} unique dates available in range")
 

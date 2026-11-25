@@ -917,7 +917,8 @@ class PbocLprNewsDownload(DownloadJob):
                     # pub_date (from the adjacent <span> or the URL's 8-digit
                     # date pattern), check cached_dates / out-of-range BEFORE
                     # making the HTTP detail request so already-downloaded
-                    # dates are not re-requested.
+                    # dates are not re-requested. Neither skip sleeps — no
+                    # request was made, so there is nothing to pace.
                     pre_d: Optional[date] = None
                     if item.pub_date:
                         try:
@@ -933,7 +934,6 @@ class PbocLprNewsDownload(DownloadJob):
                                 "  [skip-cached %s] %s (no HTTP request)",
                                 pre_d, item.title[:45],
                             )
-                            proxy.sleep(max(0.1, sleep_sec * 0.3))
                             continue
                         if pre_d < _start:
                             skipped_oob += 1
@@ -943,7 +943,6 @@ class PbocLprNewsDownload(DownloadJob):
                             break
                         if pre_d > _end:
                             skipped_oob += 1
-                            proxy.sleep(max(0.1, sleep_sec * 0.3))
                             continue
 
                     ok = self.fetch_detail(session, item, proxy)

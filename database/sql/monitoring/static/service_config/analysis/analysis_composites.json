@@ -1,0 +1,13 @@
+{
+  "service": "analysis.analysis_composites",
+  "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
+  "is_resident": false,
+  "freq": "daily",
+  "priority": 70,
+  "schedule": "every A-share trading date, after builds_daily in the 16:00 nightly chain (analysis_daily step 7 — after market_beta, before analysis_signals which reads this table for hedge_pairs)",
+  "notes": "Opposite industry correlations by benchmark offset (analysis_composites.industry_corr_benchmark_offsets): pairwise Pearson of the industries' MA-20/60/252 mean_close curves, RAW (overall_corr_*) and after the common benchmark move is removed (offset_sub_corr_* — the consolidated stats.cross_stats code_price_with_benchmark_offset primitive averaged over each industry's member indices per pool bucket, plus the derived opposite_score_* = (1 - offset)/2). Frozen stride-20 windows + a live trailing window per W recomputed every run; incremental at window-end granularity + the per-industry coverage heal; --force truncates + full recompute. Must run after builds.industry + builds.cross_stats — without a nightly run the table went stale silently after the 2026-10-05 smallint migration recreated it. Serves the Composites Opposite Industry Correlations page (GET /api/analysis/industry-corr-offsets*).",
+  "source_ref": "scripts/orchestration/analysis_daily.json",
+  "updated_at": "2026-11-21T00:00:00.000000+00:00"
+}

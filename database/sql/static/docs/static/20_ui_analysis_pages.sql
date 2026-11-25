@@ -189,11 +189,23 @@ INSERT INTO static.docs (doc_id, title, intro, series, notes, ordinal) VALUES
 (
   'ui.composites.news-audit.page',
   NULL,
-  'The 新闻审计 (News Audit) tables — the 5-day windows built by analysis.news_audit. PROVIDER view: one row per window per origin (a provider''s own rows carry an empty Author; zhihu/gov authors get their own), with items published, share digested, average sentiment in [-5, +5], the fake-news share, average word count, industry spread, and the registry''s blocked flag with the origin''s seen-date span. CONTENT view: the same window metrics per industry, plus the keyword rollup — how many DIFFERENT market/industry keywords the window''s content hit, total affirmative mentions (negated readings never count), and how many articles hit any keyword at all. Read the two views against each other: a provider spiking items on flat sentiment and thin keyword breadth is chatter, not information; a rising fake share concentrated in one author is the blocklist signal (is_blocked lives in text.news_providers).',
+  'The 新闻审计 (News Audit) tables — the 5-day windows built by analysis.news_audit. PROVIDER view: one row per window per origin (a provider''s own rows carry an empty Author; zhihu/gov authors get their own), with the origin''s TYPE (news article — news portals and gov; financial report — PBoC releases; social media — zhihu, xueqiu, 股吧; AI digest — ai_daily), items published, share digested, average sentiment in [-5, +5], the fake-news share, average word count, industry spread, and the registry''s blocked flag with the origin''s seen-date span. CONTENT view: the same window metrics per industry, plus the keyword rollup — how many DIFFERENT market/industry keywords the window''s content hit, total affirmative mentions (negated readings never count), and how many articles hit any keyword at all. Read the two views against each other: a provider spiking items on flat sentiment and thin keyword breadth is chatter, not information; a rising fake share concentrated in one author is the blocklist signal (is_blocked lives in text.news_providers), and the same share read BY TYPE separates the expected social-media noise from an alarm in the financial_report origins.',
   NULL,
   '[
     {"key": "windows", "text": "Windows are 5-calendar-day non-overlapping tiles (stride 5d); the newest window is PARTIAL (recomputed every run) — expect its numbers to move until the 5 days are past."},
     {"key": "fakeDenominator", "text": "fake pct and avg sentiment are over DIGESTED rows only — verdicts exist only where the LLM digestion ran; num_items counts every article."}
+  ]'::jsonb,
+  0
+),
+(
+  'ui.composites.signal-rules-audit.page',
+  NULL,
+  'The 信号规则审计 (Signal Rules Audit) — how much the standalone signal families'' histories coincide, per year and overall. The census table: per family, its DISTINCT (code, date) signal days, the buy/sell split, code/day spread, and its share of the period''s signal universe (every family''s days over all distinct signal days). The overlap MATRIX: row = base family A, column = other family B — of A''s signal days, the fraction B ALSO fired on (asymmetric: the mirror pair B→A carries its own row and reads differently for rare vs dense families). Read the cell against its LIFT, not alone: overlap measures co-firing, lift = overlap / the chance expectation (B''s base rate over the signal universe) — above 1 means A''s days are genuinely ENRICHED in B (the wash families co-firing on crash days; sparse option families reaching huge lifts on a single shared day), at or below 1 means the co-firing is what chance already gives. The pair table''s same/opposite-action split is the conflict audit: opposite-action shared days are one family''s buy landing on another''s sell the same day — the veto-style combinations the combination study measures. Population: history_signals standalone trading tier (buy/sell, confidence ≥ 0, no portfolio-sourced rows), events collapsed to distinct (code, date) per family; periods are calendar years — All history sums the stored years (counts additive, ratios re-derived) and the newest year is PARTIAL.',
+  NULL,
+  '[
+    {"key": "asymmetry", "text": "The matrix is ASYMMETRIC by design: a rare family''s row shows a high overlap (its few days mostly land on dense families'' days) while its column shows the mirror-image low share — read rows as ''of this family''s days, how much is shared''."},
+    {"key": "liftCap", "text": "The Lift color saturates at 5× so one sparse pair''s 300× day cannot drown the scale — the tooltip always carries the raw lift."},
+    {"key": "diagonal", "text": "The diagonal is the trivial self-overlap (100%) and is left blank; pairs exist only where both families fired in the period."}
   ]'::jsonb,
   0
 ),

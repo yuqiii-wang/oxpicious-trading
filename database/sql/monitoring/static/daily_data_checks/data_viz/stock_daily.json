@@ -1,0 +1,4 @@
+{
+  "view": "server_cluster/maintainer/daily_check/data_viz/stock_daily",
+  "notes": "data_viz UI source stock_daily (stats.stock_identity, the UI latest-dates probe) vs the bars frontier (stats.stock_basic_stats close IS NOT NULL). Two verdicts: (1) frontier-day COVERAGE vs the previous trading day's (0.9) — a partial frontier stub is invisible to MAX-date comparisons; (2) per-code identity lag vs the code's bars frontier, STRICT."
+}

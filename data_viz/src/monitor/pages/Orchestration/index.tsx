@@ -17,6 +17,16 @@
  * arrange=true, so not-due steps are skipped (state skipped_not_due)
  * instead of spawning them to internally no-op off-cadence.
  *
+ * A service that declares a DATA PRE-CHECK (the git-reviewed tree
+ * database/sql/monitoring/static/orchestration_pre_checks/) is arranged
+ * by its data instead: the latest closed sessions absent from its data
+ * table, and whether their source csv is staged (a final, post-close
+ * file). A download runs when a session is absent and not staged, a
+ * build when it is absent and staged, an analysis / strategy when its
+ * result table lacks the session — data present skips the step. The
+ * board shows the reading (the queue's why-due chip, the no-need
+ * reason) with the sessions in the tooltip.
+ *
  * Every row expands into the monitor-scope shared ServiceRunTrend (the
  * service's daily run-count curve; click a day for its run list, a run
  * click opens its log in the page-level LogViewerDialog).
@@ -49,7 +59,7 @@ import {
   Typography,
 } from "@mui/material";
 import { PlayArrow, Refresh, Search, Clear } from "@mui/icons-material";
-import { fmtTimeShanghai, shanghaiDate } from "@/shared/datetime";
+import { fmtDate, fmtTimeShanghai, shanghaiDate } from "@/shared/datetime";
 import ValueFilterSelect, {
   type ValueFilterOption,
 } from "@/shared/components/ValueFilterSelect";
@@ -74,6 +84,30 @@ import BoardRow, { type BoardSection } from "./BoardRow";
 /** Board auto-refresh cadence (the running section is a live-heartbeat
  *  join; the verdicts change with every arrange pass). */
 const REFRESH_MS = 30_000;
+
+/** The arrange note's pre-check tally: services per reading, in the
+ *  order the verdicts read (the calendar rule's count last). */
+const BASIS_ORDER = [
+  "data_present",
+  "db_missing",
+  "csv_present",
+  "csv_missing",
+  "check_failed",
+  "calendar",
+] as const;
+
+function preCheckSummary(
+  byBasis: Record<string, number>,
+  checkFailed: string[],
+): string {
+  const parts = BASIS_ORDER.filter((basis) => (byBasis[basis] ?? 0) > 0).map(
+    (basis) => `${byBasis[basis]} ${basis.replace(/_/g, " ")}`,
+  );
+  if (checkFailed.length > 0) {
+    parts.push(`failed: ${checkFailed.join(", ")}`);
+  }
+  return parts.length > 0 ? parts.join(", ") : "none";
+}
 
 export default function OrchestrationPage() {
   const [board, setBoard] = useState<OrchestrationBoardResponse | null>(null);
@@ -120,7 +154,7 @@ export default function OrchestrationPage() {
         noNeed: res.noNeed,
       });
       setActionNote(
-        `arrange: ${res.arranged.services} service(s) over ${res.arranged.tiers} tier(s) — ${res.arranged.due} due, ${res.arranged.notDue} not due`,
+        `arrange: ${res.arranged.services} service(s) over ${res.arranged.tiers} tier(s) — ${res.arranged.due} due, ${res.arranged.notDue} not due · pre-check: ${preCheckSummary(res.arranged.byBasis, res.arranged.checkFailedServices)}`,
       );
     } catch (err) {
       setError(formatFetchError(err));
@@ -343,7 +377,7 @@ export default function OrchestrationPage() {
               <Refresh fontSize="small" />
             </IconButton>
           </Tooltip>
-          <Tooltip title="One arrangement pass over every orchestration tier file — the freq-window run/don't-run verdicts (what the nightly chain does per tier before running it)">
+          <Tooltip title="One arrangement pass over every orchestration tier file — the run/don't-run verdicts (what the nightly chain does per tier before running it): each service's data pre-check where one is declared, else the freq-window rule">
             <span>
               <Button
                 size="small"
@@ -432,21 +466,21 @@ export default function OrchestrationPage() {
         "Live running",
         "heartbeat-live services of the arrangement universe",
         sections.running,
-        ["Service", "Tier", "Freq", "PID", "Started", "Last beat"],
+        ["Service", "Tier", "Freq", "p95 run", "PID", "Started", "Last beat"],
       )}
       {sectionPaper(
         "queue",
         "To-run queue",
-        "arranged due — the next chain pass's charge, priority first",
+        "arranged due — the next chain pass's charge, priority first (why: the data pre-check's reading, or the calendar boundary)",
         sections.queue,
-        ["Service", "Tier", "#", "Freq", "P", "Last success", "Due since", "Non-daily"],
+        ["Service", "Tier", "#", "Freq", "p95 run", "P", "Last success", "Why due", "Non-daily"],
       )}
       {sectionPaper(
         "noNeed",
         "Recently no need",
-        "the freq window holds (or once done / ran since arranged)",
+        "data present / csv staged or awaited (pre-check), the freq window holds, once done, or ran since arranged",
         sections.noNeed,
-        ["Service", "Tier", "Freq", "Last success", "Next due", "Reason"],
+        ["Service", "Tier", "Freq", "p95 run", "Last success", "Next due", "Reason"],
       )}
 
       <LogViewerDialog
@@ -455,7 +489,7 @@ export default function OrchestrationPage() {
         title={
           logRun == null
             ? ""
-            : `${logRun.service} — run log ${shanghaiDate(new Date(logRun.startedAt))}`
+            : `${logRun.service} — run log ${fmtDate(shanghaiDate(new Date(logRun.startedAt)))}`
         }
         subtitle={
           logRun == null

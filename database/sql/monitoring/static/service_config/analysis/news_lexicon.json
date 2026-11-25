@@ -1,0 +1,13 @@
+{
+  "service": "analysis.news_lexicon",
+  "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
+  "is_resident": false,
+  "freq": "daily",
+  "priority": 70,
+  "schedule": "every A-share trading date, after builds_daily (builds.text digestions) and BEFORE analysis.news_text_daily in the 16:00 nightly chain (analysis_daily loop order, step 15; after step 14's news_audit coverage)",
+  "notes": "CFSD lexicon scoring: every digested article's text (title + body, StructBERT segmentation, 3000-char cap) scored against static.fin_sentiment_dict with the CFSD paper's unit rule — SUM((-1)^negators * polarity * degree_multiplier) / n_units rescaled onto [-5,+5]; negators 不/无/没/未/别/难以/尚未/并非/未必…, degree tiers 极其/大幅 x2, 很/明显 x1.5, 略微/稍微 x0.5; the 21 both-polarity words carry 0.5 weight either sign. Each row stores the unit counters and the disagreement flag vs the LLM digestion score (sign mismatch AND |llm-lex| >= 2) — the flag halves the article's weight in analysis.news_text_daily's blend. dict_version pins the fin_sentiment_dict seed state, engine_version the scorer; a dictionary edit or recalibration re-scores --force. Incremental by the missing-score anti-join; zero-cost no-op when builds.text digested nothing new.",
+  "source_ref": "scripts/orchestration/analysis_daily.json",
+  "updated_at": "2026-11-22T00:00:00+00:00"
+}

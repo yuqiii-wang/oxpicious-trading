@@ -1,0 +1,4 @@
+{
+  "view": "server_cluster/maintainer/daily_check/analysis/market_beta",
+  "notes": "analysis_daily step 1 (analysis.market_beta): the industry attribution dates vs the stats.cross_stats (sec_type='industry') frontier — the module's own find_missing_attribution_dates frontier. A missing date means the nightly producer/fill pass stopped writing."
+}

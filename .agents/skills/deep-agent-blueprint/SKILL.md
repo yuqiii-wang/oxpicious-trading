@@ -548,7 +548,37 @@ Claude Code / DeepSeek Harness / WorkBuddy (design notes in
   packing carries a JOIN-HINT tier — the chosen nodes' strongest
   outward edges (ns0 `joins_on` seeds
   `db_semantics/17_sql_join_paths.sql`: the repo's own SQL join
-  paths, every edge citing its file); `service.py`
+  paths, every edge citing its file); 2026-11-23 the LEXICAL ROUND on
+  the same engine (`graph/vocabulary.py` + `graph/engine.py`; every
+  number below is measured on the frozen golden set
+  `temp_scripts/kg_lexical_golden.py` — 186 grounded queries, the
+  pre-round engine snapshotted under `temp_scripts/kg_baseline_head/`
+  as the baseline): (a) the seed rung's FUZZY LANE — a query token
+  with NO exact bucket resolves through the English plural strip
+  (`labels` → `label`, similarity 1.0; `KnowledgeGraph.plural_stem`)
+  or the closest index token by CHARACTER-TRIGRAM similarity
+  (`fuzzy_match`, the pg_trgm shape; latin words of 4+ chars carrying
+  a letter — pure digits are identifiers and never take part), at
+  `FUZZY_DAMP` 0.5 × the similarity — strictly below the exact hit —
+  and marked `token[face≈matched]` in the provenance line;
+  `FUZZY_SIMILARITY_MIN` 0.58 is the measured cut (true misspellings
+  cluster 0.58–0.77, the false attachments sit ≤ 0.571): misspelling /
+  plural recall@10 0.045 → 0.818 with ZERO added false hits on true
+  no-matches and the location metrics unchanged; (b) the WALK SCALE
+  fix — propagated rows were normalized by the max activation over
+  SEEDS too (a seed's activation IS its raw lexical score, tens),
+  flattening every walk score to 0.02–0.27, so `_WALK_FLOOR` × the
+  raw seed top pruned EVERY propagated row to the 2-row minimum in
+  100% of measured queries (the spreading-activation rung contributed
+  exactly two nodes whatever the ask); the scale is now the propagated
+  rows' own (the strongest scores `ACT_BLEND`), seeds structurally
+  PRECEDE propagated rows, and the floor grades as designed — a
+  strongly named ask stays focused, a vague one surfaces more of its
+  neighborhood (mean full-render chars +1.5% on multi-word asks, the
+  largest result unchanged); (c) tried and DROPPED on the same
+  evidence: per-entity query-coverage and BM25-style face-count
+  normalization (both lowered MRR / recall@4 with expected-name
+  regressions); `service.py`
   `KnowledgeGraphService` (the process-wide `KNOWLEDGE_GRAPHS`
   singleton) — the TTL-cached per-namespace loader + the search /
   expand flows; `tools/kg_tools/kit.py` keeps only the THIN ADAPTERS
@@ -612,7 +642,18 @@ Claude Code / DeepSeek Harness / WorkBuddy (design notes in
   max_results are NOT identity, an exact query match copies the
   chain); stub-tested `temp_scripts/test_kg_search.py`, live-probed
   `temp_scripts/probe_kg_search_live.py` and
-  `temp_scripts/probe_kg_query_log.py` (the two-hit contract)); since
+  `temp_scripts/probe_kg_query_log.py` (the two-hit contract));
+  2026-11-23 the per-call SEARCH LEDGER `llm.kg_search_stats`
+  (`database/sql/llm/kg_search_stats.sql`, `kg/search_stats.py::
+  SearchStatsLog` / `KgSearchStatRow`): ONE fail-soft row per ANSWERED
+  kg_search call on every return path — a replay, a live match, a
+  no-match, a gate-rejected result (the chain tables only ever saw
+  successful non-empty traversals, so a miss was invisible) — carrying
+  the ranked node names + scores, the rung counters
+  (`graph.SearchTrace`: seeds / walk rows scored, kept and pruned by
+  the relevance floors), the replay / gate / promotion facts and the
+  latency; a pure side ledger (nothing reads it in the search path),
+  live-probed `temp_scripts/probe_kg_search_stats.py`; since
   2026-11-07 the hotpaths have a THIRD consumer beside the kg_search
   replay lane + the hit_count bumps — the prompt loader's hotpath
   corroboration rung (`planning/kg_prompts.py::HotpathPromptProbe`,
@@ -839,7 +880,13 @@ Claude Code / DeepSeek Harness / WorkBuddy (design notes in
   (Chinese AND English trader terms, e.g. 间距→spread→乖离,
   排列→alignment) and kg_search them again before listing schemas
   blind (exact-token matching makes vocabulary iteration THE
-  refinement mechanism);
+  refinement mechanism) — NOTE 2026-11-23: the seed rung now also
+  resolves English plurals and close misspellings (the fuzzy lane in
+  the KgToolSet bullet), so the loop is only needed for TRUE
+  vocabulary gaps; the surfaces' own texts (the kit's
+  `DEFAULT_DESCRIPTION` + the seeded `10_tool_prompts.sql` row) still
+  say exact-token and were deliberately NOT re-worded in that round —
+  a pending doc follow-up;
   2026-11-08: the KG tools' retrieved TABLE hits carry their exact
   COLUMN names + comments auto-loaded from pg_catalog
   (`llm_agents/kg/columns.py::TableColumnCatalog`, template

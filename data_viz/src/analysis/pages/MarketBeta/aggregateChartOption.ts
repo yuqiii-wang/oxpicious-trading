@@ -18,6 +18,7 @@ import type { MarketBetaChartResponse } from "@shared/types";
 import { axisColors, commonLegend, commonGrid } from "@/theme/chart-palette";
 import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
 import { fmtNum } from "@/lib/series";
+import { fmtDate, fmtMonth } from "@/shared/datetime";
 import type { PoolSize, PerIndustryAggregation } from "./types";
 import { MEAN_PALETTE, POOL_COLORS } from "./constants";
 import { renderReactElement } from "@/lib/react-tooltip-renderer";
@@ -149,7 +150,7 @@ export function buildAggregateChartOption(
             );
           });
         return renderReactElement(React.createElement(React.Fragment, null,
-          React.createElement("div", { style: { fontWeight: 600 } }, dateStr),
+          React.createElement("div", { style: { fontWeight: 600 } }, fmtDate(dateStr)),
           React.createElement("div", { style: { marginTop: 2, opacity: 0.7 } }, yAxisName),
           React.createElement("div", { style: { marginTop: 4 } }, ...rowElements)
         ));
@@ -162,7 +163,7 @@ export function buildAggregateChartOption(
       axisLabel: {
         color: c.textColor,
         fontSize: 9,
-        formatter: (v: string) => v.slice(0, 7),
+        formatter: (v: string) => fmtMonth(v),
       },
       splitLine: { show: false },
     },

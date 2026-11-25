@@ -49,6 +49,7 @@ import type { AiAskSpec } from "@/shared/ai-ask";
 import { useDocs, compactDefined } from "@/shared/docs";
 import type { ECharts } from "echarts";
 import { fetchQuarterlyComposition, invalidateCacheForUrl } from "@/lib/api-client";
+import { fmtDate } from "@/shared/datetime";
 import { axisColors, commonGrid, expiryBlueColor } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
 import type {
@@ -331,7 +332,7 @@ export default function QuarterlyCompositionBars({ code, name }: Props) {
               ? `<div style="opacity:0.7;margin-top:2px">… +${entries.length - TOOLTIP_MAX_ROWS} more</div>`
               : "";
           return (
-            `<div style="font-weight:600;margin-bottom:4px">${q.quarter} · snapshot ${q.snapshot_date}</div>` +
+            `<div style="font-weight:600;margin-bottom:4px">${q.quarter} · snapshot ${fmtDate(q.snapshot_date)}</div>` +
             `<div style="opacity:0.8;margin-bottom:4px">${q.n_holdings} holdings · ${q.industries.length} industries · absent = last available</div>` +
             rows.join("<br/>") +
             extra +
@@ -519,7 +520,7 @@ export default function QuarterlyCompositionBars({ code, name }: Props) {
                 sx={{ fontSize: "0.75rem", fontWeight: 600, display: "block", mb: 0.5 }}
                 color="text.secondary"
               >
-                {selectedQuarter.quarter} composition (snapshot {selectedQuarter.snapshot_date})
+                {selectedQuarter.quarter} composition (snapshot {fmtDate(selectedQuarter.snapshot_date)})
               </Typography>
               <CompositionPieChart
                 code={code}

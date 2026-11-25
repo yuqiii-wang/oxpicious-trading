@@ -124,8 +124,11 @@ router.get("/singleton/run-history", wrapAsync(async (req: Request, res: Respons
 
 // Check if a strategy run already exists for the natural key.
 // GET /api/strategy/singleton/check?sec_type=index&code=000970&strategy_name=macd
-// Returns { exists: true, seq_id, seq_no, start_date, end_date, status }
-// or { exists: false } if no run exists yet.
+// Returns { exists: true, seq_id, seq_no, start_date, end_date, status,
+//           analysis_latest_date, stale }
+// or { exists: false } if no run exists yet. stale = the run's end_date
+// ends before the code's analysis horizon (a rerun extends it) — the UI
+// force-reruns it without asking; a fresh run still confirms first.
 router.get("/singleton/check", wrapAsync(async (req: Request, res: Response) => {
   const { code, rawSecType, strategyName } = parseParams(req);
   if (!code) throw HttpError.missingParam("code");

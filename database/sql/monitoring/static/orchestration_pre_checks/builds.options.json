@@ -1,0 +1,22 @@
+{
+  "service": "builds.options",
+  "kind": "derive",
+  "tables": [
+    {
+      "table": "stats.options_terms",
+      "exchange": "SSE",
+      "code_column": "contract_code"
+    },
+    {
+      "table": "stats.options_terms",
+      "exchange": "SZSE",
+      "code_column": "contract_code"
+    },
+    {
+      "table": "stats.options_terms",
+      "exchange": "CFFEX",
+      "code_column": "contract_code"
+    }
+  ],
+  "notes": "Presence = the session in the SSE AND SZSE AND CFFEX slices of stats.options_terms (the build's own per-exchange gates) — one exchange behind keeps the build in the queue. The SSE slice also covers the CFFEX monthly archive inputs, so no csv stage."
+}

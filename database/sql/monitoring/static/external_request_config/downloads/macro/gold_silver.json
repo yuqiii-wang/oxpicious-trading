@@ -1,0 +1,28 @@
+[
+  {
+    "service": "downloads.macro.gold_silver",
+    "request_type": "default",
+    "resource_type": 0,
+    "sleep_sec": 5,
+    "sleep_jitter": 0.5,
+    "poll_interval_sec": null,
+    "max_retries": null,
+    "retry_backoff_sec": null,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 120,
+    "rotate_browser_profile": true,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": 600,
+    "settle_sleep_sec": null,
+    "urls": {
+      "sge_dailyhq": "https://www.sge.com.cn/graph/Dailyhq",
+      "sge_quote_page": "https://www.sge.com.cn/sjzx/mrhq",
+      "sina_global_kline": "https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20_S{today}=/GlobalFuturesService.getGlobalFuturesDailyKLine",
+      "sina_future_page": "https://finance.sina.com.cn/money/future/hf.html"
+    },
+    "notes": "Macro precious-metal daily bars (gold/silver): SGE 上海黄金交易所 spot daily OHLC (POST graph/Dailyhq body instid=Au99.99|Ag99.99 — full history per instrument, one call) + COMEX GC/SI main-continuous daily klines via the sina 外盘期货 GlobalFuturesService.getGlobalFuturesDailyKLine jsonp GET (akshare futures_foreign_hist_sina's endpoint). Pacing mirrors downloads.bond.shibor (4 requests per run total); host_block_cooldown 600s per the efunds family convention.",
+    "source_ref": "downloads/macro/gold_silver/__main__.py; downloads/macro/gold_silver/_endpoints.py",
+    "updated_at": "2026-11-21T00:00:00.000000+00:00"
+  }
+]

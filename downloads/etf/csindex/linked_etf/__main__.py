@@ -477,9 +477,10 @@ class CsindexLinkedEtfDownload(DownloadJob):
           4. Filter by AUM > min_aum, save ``etf_index_map_<today>.csv`` (the deliverable).
 
         On non-quarter-start days, if today's deliverable CSV already exists it
-        is reused (skip re-download). On the 1st of a quarter-start month
-        Jan/Apr/Jul/Oct (or when *force_quarter_start* is set) the cache is
-        bypassed.
+        is reused (skip re-download). Inside the quarter-start refresh window
+        (Jan/Apr/Jul/Oct up to QUARTER_REFRESH_LAST_DAY — the tier fires one
+        week after the quarter start; see downloads._common.monthly) or when
+        *force_quarter_start* is set the cache is bypassed.
         """
         out_dir = resolve_out_dir(str(Path(__file__).resolve()), "csindex_linked_etf", out_root)
 

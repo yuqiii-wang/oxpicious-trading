@@ -12,10 +12,10 @@ action.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 from asyncpg import Connection
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from _common.labels import (
     ACTION_CODE,
@@ -65,6 +65,12 @@ class ForecastRow(BaseModel):
     position_open: bool | None = None
     would_execute: bool | None = None
     strategy_name: str
+    # the run-time stamp — carried in the payload so the shared upsert's
+    # DO UPDATE refreshes it on every re-registration of the anchor
+    # (created_at stays the DB default: the FIRST registration only)
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
 
     @classmethod
     def summary(

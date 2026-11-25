@@ -6,6 +6,8 @@
 --   state: value text — 'open' | 'resolved' | 'all' (the working-set default is 'open')
 --   source: value int — caution_source code filter, NULL = any
 --   severity: value int — caution_severity code filter, NULL = any
+--   date: value date — the caution's own day (the generated `date`
+--         column, GMT day of created_at) to show, NULL = any day
 --   limit: value int — max rows (clamped 1-500)
 --   source_label: fragment — labelDecodeSql('caution_source', ...) decode (API boundary)
 --   severity_label: fragment — labelDecodeSql('caution_severity', ...) decode (API boundary)
@@ -20,6 +22,7 @@ WHERE ({{state}}::text = 'all'
        OR ({{state}}::text = 'open') = (NOT is_resolved))
   AND ({{source}}::smallint IS NULL OR source = {{source}}::smallint)
   AND ({{severity}}::smallint IS NULL OR severity_level = {{severity}}::smallint)
+  AND ({{date}}::date IS NULL OR caution_log.date = {{date}}::date)
 ORDER BY is_resolved,                -- open rows first (false sorts first)
          severity_level DESC,        -- worst first
          last_seen_at DESC,          -- still-live issues on top

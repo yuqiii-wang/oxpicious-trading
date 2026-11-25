@@ -33,6 +33,7 @@ import {
   TOOLTIP_CARD_TEXT,
 } from "@/theme/chart-palette";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
+import { fmtDate } from "@/shared/datetime";
 import type { FuturesCombinedResponse } from "@shared/types";
 import { computeFuturesContractStyles } from "./contractStyles";
 import { buildExpiryDotsSeriesData } from "./expiryDots";
@@ -165,7 +166,7 @@ export function buildBasisConvergenceChartOption(
           return true;
         });
         const children: React.ReactNode[] = [];
-        children.push(React.createElement(tooltipComponents.Header, null, dateStr));
+        children.push(React.createElement(tooltipComponents.Header, null, fmtDate(dateStr)));
         for (const p of filtered) {
           const signed = p.data?.signed;
           const dte = p.data?.dte;

@@ -1,0 +1,16 @@
+{
+  "service": "analysis.margins",
+  "kind": "derive",
+  "tables": [
+    {
+      "table": "analysis.margin_tech_stats"
+    },
+    {
+      "table": "analysis.margin_index_series"
+    },
+    {
+      "table": "analysis.margin_industry_stats"
+    }
+  ],
+  "notes": "Presence = the session in the per-code, per-index and per-industry margin tables (margin_changes is window-keyed and stays out)."
+}

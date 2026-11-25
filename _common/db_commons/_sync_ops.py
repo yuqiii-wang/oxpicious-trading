@@ -24,6 +24,7 @@ from ._async_ops import (
 from ._helpers import (
     _parse_table_name,
     _build_commit_chunks,
+    _notify_write_progress,
     _resolve_partition_key,
     DEFAULT_COMMIT_CHUNK_ROWS,
     PARTITION_KEY_AUTO,
@@ -250,7 +251,10 @@ def bulk_upsert(
     commit_chunks = _build_commit_chunks(rows, effective_key, commit_chunk_rows)
 
     try:
-        for chunk in commit_chunks:
+        for chunk_index, chunk in enumerate(commit_chunks, start=1):
+            # The chunk-commit boundary's progress callback (Phase 4;
+            # default off — set_write_progress_hook installs it).
+            _notify_write_progress(chunk_index, len(commit_chunks))
             # Before each commit chunk (no transaction open, no locks
             # held): cool-down pause, then wait out standby replay lag so
             # the primary does not pile WAL up faster than the replica

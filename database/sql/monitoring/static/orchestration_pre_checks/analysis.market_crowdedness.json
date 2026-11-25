@@ -1,0 +1,10 @@
+{
+  "service": "analysis.market_crowdedness",
+  "kind": "derive",
+  "tables": [
+    {
+      "table": "analysis.market_crowdedness"
+    }
+  ],
+  "notes": "Presence = the session in analysis.market_crowdedness."
+}

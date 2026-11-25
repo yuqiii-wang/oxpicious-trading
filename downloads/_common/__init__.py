@@ -152,6 +152,9 @@ from downloads._common.plans import (
 # --- cross-process single-instance locks -------------------------------------
 from downloads._common.locking import single_instance_lock
 
+# --- scheduled-run cadence gates (weekly PE sweeps) ---------------------------
+from downloads._common.gating import days_since_last_normal_exit
+
 # --- entry-point lifecycle (the downloads.* DataPipeline counterpart) --------
 from downloads._common.job import DownloadJob
 

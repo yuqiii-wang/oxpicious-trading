@@ -147,10 +147,11 @@ CONF_FULL_MOVE = 0.10        # fraction: at/above this confidence = 100
 #  +1.9% out), 2025-05-14 (+9.9% in, +1.9% out). v5 mirrors the
 #  forward window BACKWARD: the pivot's favorable excursion is
 #  measured on EITHER side — a sell by the biggest RISE within the
-#  LOOKBACK_DAYS (60) traded rows BEFORE it, a buy by the biggest
-#  DROP — and the pivot acts when EITHER leg clears the no-action
-#  floor (a realized-forward pivot whose both legs miss the floor
-#  omits; the backward leg rescues a real top whose drop fell short).
+#  LOOKBACK_DAYS (20 since 2026-11-21; the v5 calibration ran 60)
+#  traded rows BEFORE it, a buy by the biggest DROP — and the pivot
+#  acts when EITHER leg clears the no-action floor (a realized-forward
+#  pivot whose both legs miss the floor omits; the backward leg
+#  rescues a real top whose drop fell short).
 #
 #  THE 30/70 CONFIDENCE WEIGHTS (same day, user-directed "let
 #  rises/drops before action date with confidence weighted 30%, while
@@ -170,8 +171,18 @@ CONF_FULL_MOVE = 0.10        # fraction: at/above this confidence = 100
 #  pivot keeps confidence NULL (unknown is not small). The v4
 #  motivating case survives: the 2020-01 small-gap chop's legs are
 #  dust on both sides, so its buys still omit.
+#
+#  THE BACKWARD WINDOW UNIFIED AT 20 (2026-11-21, user-directed
+#  "also only look back 20d not 60d" — the v5 2026-11-19 calibration
+#  ran 60): the backward leg now reads the SAME 20 traded rows the
+#  forward leg does — EVERY window in the grammar is 20, both
+#  directions (the 2026-11-20 "only 20d" doctrine, completed). A
+#  shorter backward window weakens the run-up rescue (the max over
+#  20 rows is <= the max over 60), so fewer pivot rows survive on
+#  their backward leg alone and confidences shift DOWN on average;
+#  the full recompute re-measures all history.
 # ---------------------------------------------------------------------------
-LOOKBACK_DAYS = 60
+LOOKBACK_DAYS = 20
 CONF_BACK_WEIGHT = 0.3        # the pre-action leg's confidence share
 CONF_FWD_WEIGHT = 0.7         # the forward leg's confidence share
 
@@ -248,11 +259,9 @@ SELL_HIGH_MARGIN = 0.05       # the high bar (both sell legs)
 # (the frontier's last action). The legs stay PLACED-level (v4): they
 # point at the next opposite PLACED pivot even when that pivot's own
 # row was omitted by the grading floor — the swing is a fact about
-# the price path, not about the tradable action.
-# The weekly orchestration gate: the scheduled incremental run no-ops
-# unless the last build (max created_at on the target table) is at
-# least this many calendar days old (the nightly chain fires every
-# trading day; the weekly tier's own guard makes off-cadence fires
-# no-ops — the builds_monthly month-guard precedent). --force and
-# --code bypass the gate (explicit rebuilds).
-WEEKLY_GATE_DAYS = 6
+# the price path, not about the tradable action. The DAILY
+# incremental's diff closes a row's NULL legs at any depth of history
+# the moment its opposite pivot is placed (user-directed 2026-11-21
+# "the incremental daily run should be able to update last 20d
+# signals to add/remove signals since local max/min are known" — the
+# former weekly tier + WEEKLY_GATE_DAYS gate are retired).

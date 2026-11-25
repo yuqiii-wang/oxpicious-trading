@@ -15,6 +15,7 @@ import {
   type BaseChartProps,
 } from "@/shared/charts/base-chart";
 import { buildServiceRunTrendOption } from "./serviceRunTrendOption";
+import { fmtDate } from "@/shared/datetime";
 
 const NO_COUNTS: number[] = [];
 const NO_DATES: string[] = [];
@@ -58,7 +59,7 @@ export default function ServiceRunTrendChart({
       title="Daily runs"
       subtitle={`${
         dates.length > 0
-          ? `${service} · ${dates[0]} → ${dates[dates.length - 1]} · ${totalRuns.toLocaleString()} runs`
+          ? `${service} · ${fmtDate(dates[0])} → ${fmtDate(dates[dates.length - 1])} · ${totalRuns.toLocaleString()} runs`
           : service
       } · click a day to list its runs`}
       option={option}

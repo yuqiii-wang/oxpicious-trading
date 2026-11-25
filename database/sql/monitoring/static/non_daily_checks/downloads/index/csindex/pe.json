@@ -1,0 +1,10 @@
+{
+  "service": "downloads.index.csindex.pe",
+  "check": "db_source_freshness",
+  "params": {
+    "view": "server_cluster/monitor/non_daily/csindex_pe_last_success",
+    "max_age_days": 9
+  },
+  "rerun_args": [],
+  "notes": "The weekly CSIndex index-PE sweep's own last success (monitor.service_audit) — the same clock the task's in-task weekly gate reads, so the weekly re-run only actually fires when the sweep is genuinely stale (fires missed for over a week; max_age_days 9 = weekly cadence + grace). Added with the price/PE service split 2026-11-23: the nightly --pe-only step it replaced never had its own check, so PE staleness was invisible to the Cautions tab. File-mtime freshness cannot serve: the PE cache/history files update on the price sweep's merges too."
+}

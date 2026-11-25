@@ -13,10 +13,13 @@ vocabulary):
               → ``{score: expected_level}`` (+ ``level_probabilities``)
 
 The wire shape mirrors the OneJev/Flide examples: ``state`` (task
-context), ``media`` (rejected here — text-only), ``questions`` (the
-typed map). Our host serves several jev models, so the request carries
-an OPTIONAL ``model`` extension field routing to a registered model id
-(omitted → the single registered jev model; ambiguous → error).
+context, its ``<image:N>`` placeholders reference the ``media``
+entries by index), ``media`` (optional images — decoded and
+conditioned on when the served backend is vision-capable, rejected
+400 otherwise), ``questions`` (the typed map). Our host serves
+several jev models, so the request carries an OPTIONAL ``model``
+extension field routing to a registered model id (omitted → the
+single registered jev model; ambiguous → error).
 
 The RESPONSE is always the same envelope — ``{"model": <served id>,
 "answers": {question_key: answer}}`` — and every answer obeys the
@@ -36,12 +39,19 @@ from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import (BaseModel, ConfigDict, Field, field_validator,
                       model_validator)
 
+from .ocr_api import OcrImageInput
+
 # Float64 softmax output sums to 1 within ~1e-12; the tolerance only
 # absorbs serialization round-trips.
 PROB_SUM_TOL = 1e-6
 
 # The prompt letters options A..Z — both option counts are capped by it.
 MAX_OPTIONS = 26
+
+# Media cap per read — the decision read conditions on at most this
+# many images (each rides EVERY question's forward; more would multiply
+# the vision preprocessing cost for no read benefit).
+MAX_MEDIA = 4
 
 
 def _check_distribution(where: str, dist: Dict[str, float]) -> None:
@@ -114,10 +124,14 @@ class SystemOneRequest(BaseModel):
     state: Optional[Dict[str, Any]] = Field(
         default=None, description="Task context the questions are "
         "about (arbitrary JSON; ``<image:N>`` placeholders reference "
-        "media on multimodal servers).")
-    media: Optional[List[Dict[str, Any]]] = Field(
-        default=None, description="Images/video — REJECTED by this "
-        "host for now (text-only serving).")
+        "the ``media`` entries by index — each placeholder becomes an "
+        "image slot at its position in the decision prompt).")
+    media: Optional[List[OcrImageInput]] = Field(
+        default=None, max_length=MAX_MEDIA,
+        description=f"0..{MAX_MEDIA} images (data URL / bare base64, "
+        "same payload shape as the OCR contract) the read conditions "
+        "on — served only by vision-capable jev backends, rejected "
+        "400 as text-only otherwise.")
     questions: Dict[str, SystemOneQuestion] = Field(
         min_length=1, description="The typed questions to answer.")
     model: Optional[str] = Field(

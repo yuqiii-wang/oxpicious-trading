@@ -1,0 +1,13 @@
+{
+  "service": "builds.macro",
+  "kind": "derive",
+  "tables": [
+    {
+      "table": "stats.macro_identity"
+    },
+    {
+      "table": "stats.macro_basic_stats"
+    }
+  ],
+  "notes": "Reads four full-history files overwritten each run, so no csv stage. Presence = the session in both macro tables."
+}

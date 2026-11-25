@@ -1,0 +1,27 @@
+{
+  "service": "builds.stock",
+  "kind": "load",
+  "tables": [
+    {
+      "table": "stats.stock_basic_stats"
+    },
+    {
+      "table": "stats.stock_tech_stats"
+    }
+  ],
+  "csv": [
+    {
+      "dir": "temps/szse_trend",
+      "pattern": "szse_trend_stock_{date}.csv"
+    },
+    {
+      "dir": "temps/sse_trend",
+      "pattern": "sse_trend_stock_{date}.csv"
+    },
+    {
+      "dir": "temps/bse_trend",
+      "pattern": "bse_trend_stock_{date}.csv"
+    }
+  ],
+  "notes": "Loads the three exchange trend files. Presence = the session in stock_basic_stats AND stock_tech_stats (the build's final internal step) — never stock_identity, which the streams pre-write. A staged, FINAL (post-close) file of any exchange means there is EOD data to load; a pre-close SSE snapshot is not staged."
+}

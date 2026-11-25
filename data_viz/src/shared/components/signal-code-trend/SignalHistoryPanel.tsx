@@ -41,6 +41,7 @@ import { signalRecordName } from "./families";
 import { tickDotItem } from "./tickDotItem";
 import { regimeAccentColor } from "@/shared/charts/regimeBands";
 import { SignalRecordsTable } from "@/shared/components/signal-code-trend";
+import { fmtDate } from "@/shared/datetime";
 import type { TradingSignal } from "@/lib/api-client";
 
 export interface SignalHistoryPanelProps {
@@ -74,7 +75,7 @@ function dateRecords(g: DateGroupRow): ReactNode {
   return (
     <Box sx={{ p: 1 }}>
       <SignalRecordsTable
-        caption={`All signals on ${g.date} · ${g.group.length} record${g.group.length === 1 ? "" : "s"}`}
+        caption={`All signals on ${fmtDate(g.date)} · ${g.group.length} record${g.group.length === 1 ? "" : "s"}`}
         rows={g.group}
         showTime
       />
@@ -124,7 +125,7 @@ export default function SignalHistoryPanel({
       {
         key: "date",
         label: "Date",
-        render: (g) => g.date,
+        render: (g) => fmtDate(g.date),
         filter: { type: "date", value: (g) => g.date },
       },
       {

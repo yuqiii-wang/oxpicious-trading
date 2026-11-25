@@ -1,0 +1,11 @@
+{
+  "service": "downloads.index.sse.trend",
+  "kind": "fetch",
+  "csv": [
+    {
+      "dir": "temps/sse_trend",
+      "pattern": "sse_trend_index_{date}.csv"
+    }
+  ],
+  "notes": "SSE-native index EOD snapshot (~200 codes). csv stage alone: the same index codes are loaded by other sources, so no DB slice isolates this download. The file is final only when written at/after the close (the downloader's own _fetched_after_close rule — a today-file written pre-close is an intraday snapshot)."
+}

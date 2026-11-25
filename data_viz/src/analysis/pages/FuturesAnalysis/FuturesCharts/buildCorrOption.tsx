@@ -20,6 +20,7 @@ import {
   TOOLTIP_CARD_TEXT,
 } from "@/theme/chart-palette";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
+import { fmtDate } from "@/shared/datetime";
 
 type CorrMap = Map<string, Map<string, number | null>>;
 
@@ -99,7 +100,7 @@ export function buildCorrelationChartOption(
           return true;
         });
         const children: React.ReactNode[] = [];
-        children.push(React.createElement(tooltipComponents.Header, null, dateStr));
+        children.push(React.createElement(tooltipComponents.Header, null, fmtDate(dateStr)));
         for (const p of filtered) {
           const v = (Array.isArray(p.value) ? p.value[1] : p.value) as number;
           const valStr = (v >= 0 ? "+" : "") + v.toFixed(4);

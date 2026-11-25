@@ -16,6 +16,7 @@ import {
   TOOLTIP_CARD_TEXT,
 } from "@/theme/chart-palette";
 import FuturesTooltip, { type TooltipItem } from "@/dataviz/features/futures/FuturesTooltip";
+import { fmtDate } from "@/shared/datetime";
 import type { FuturesCombinedResponse } from "@shared/types";
 import { buildExpiryDotsSeriesData, expiryDateFromDte } from "./expiryDots";
 import { computeFuturesContractStyles } from "./contractStyles";
@@ -197,7 +198,7 @@ export function buildFuturesChartOption(
         formatter: (p: unknown) => {
           const dot = (p as { data?: ExpiryDotDataItem }).data?.dot;
           if (!dot) return "";
-          return `${displayByCode.get(dot.code) ?? dot.code}\n${dot.expiryDate}`;
+          return `${displayByCode.get(dot.code) ?? dot.code}\n${fmtDate(dot.expiryDate)}`;
         },
       },
       z: 30,

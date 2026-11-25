@@ -37,6 +37,7 @@ import {
   commonDataZoom,
 } from "@/theme/chart-palette";
 import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
+import { fmtDate } from "@/shared/datetime/display";
 import {
   signalEventScatterSeries,
   type SignalEventPoint,
@@ -186,7 +187,7 @@ export function buildCrowdednessCurveOption(
         const amt = amts[idx];
         const children = [
           `${data.name || data.code} (${data.code})`,
-          dates[idx] ?? "—",
+          fmtDate(dates[idx] ?? "—"),
           `Close: ${close == null || !Number.isFinite(close) ? "—" : fmtNum(close, 2)}`,
           `Trading Amt: ${amt == null || !Number.isFinite(amt) ? "—" : fmtNum(amt / 1e8, 2) + "亿"}`,
         ];
@@ -267,7 +268,7 @@ export function buildCrowdednessCurveOption(
       data: dates,
       boundaryGap: true, // bars need a gap so they center on ticks
       axisLine: { lineStyle: { color: c.axisLineColor } },
-      axisLabel: { color: c.textColor, fontSize: 9 },
+      axisLabel: { color: c.textColor, fontSize: 9, formatter: (v: string) => fmtDate(v) },
       splitLine: { show: false },
     },
     yAxis: [

@@ -1,5 +1,6 @@
 import React from "react";
 import { fmtNum, fmtPct } from "@/lib/series";
+import { fmtMonth } from "@/shared/datetime";
 import { renderTooltip } from "./renderTooltip";
 import type { SmileTooltipParam } from "./types";
 
@@ -56,7 +57,7 @@ function SmileTooltipContent({ params }: { params: SmileTooltipParam[] }) {
 
     children.push(<div key={`${k}-spacer`} style={{ marginTop: "8px" }} />);
     children.push(
-      <b key={`${k}-title`}>{expiry} · K={fmtNum(strike as number)}</b>,
+      <b key={`${k}-title`}>{fmtMonth(expiry)} · K={fmtNum(strike as number)}</b>,
     );
 
     if (g.call) {

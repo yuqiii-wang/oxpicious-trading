@@ -43,15 +43,17 @@ Four phases per run:
 
 1. **General summary** — the broad-market daily question above, loaded
    by builds.text under the broad-market industry tag by default.
-2. **Daily geopolitics/economy asks** (skip with ``--no-geo``) — the
-   two questions besides the broad-market summary, from the ``daily``
-   preset's ``daily_geo_asks``: the day's major GLOBAL
+2. **Daily geopolitics/economy + investor-focus asks** (skip with
+   ``--no-geo``) — the questions besides the broad-market summary, from
+   the ``daily`` preset's ``daily_geo_asks``: the day's major GLOBAL
    geopolitics/politics/economy news and its financial-market
    implications (asked and answered in ENGLISH) and the same for CHINA
-   (asked and answered in CHINESE). Broad-market asks like the general
-   summary — no gate, no cooldown, every run; loaded by builds.text
-   under the broad-market tag with per-ask language stored on
-   llm.llm_qa.
+   (asked and answered in CHINESE), plus the investor-focus pair —
+   which areas, factors, events and concerns investors care about most
+   in recent trading — asked once in ENGLISH and once in CHINESE.
+   Broad-market asks like the general summary — no gate, no cooldown,
+   every run; loaded by builds.text under the broad-market tag with
+   per-ask language stored on llm.llm_qa.
 3. **Industry movers** (``movers.py``; skip with ``--no-movers``) — from
    the LATEST daily ``stats.cross_stats`` industry grain (benchmark
    930903 = 中证A股): the top-3 rises and top-3 drops by
@@ -195,9 +197,12 @@ class AiDailyDownload(DownloadJob):
                                  "rise/drop sector asks driven by the latest "
                                  "daily cross_stats).")
         parser.add_argument("--no-geo", action="store_true",
-                            help="Skip the daily geopolitics/economy asks (the "
-                                 "global-English and China-Chinese news + "
-                                 "market-implications questions).")
+                            help="Skip the daily geopolitics/economy + "
+                                 "investor-focus asks (the global-English and "
+                                 "China-Chinese news + market-implications "
+                                 "questions, plus the areas/factors/events/"
+                                 "concerns investor-attention question asked "
+                                 "in English and Chinese).")
         parser.add_argument("--movers-benchmark", default=movers.MOVERS_BENCHMARK,
                             help=f"Benchmark of the industry-grain offsets "
                                  f"(default {movers.MOVERS_BENCHMARK} = 中证A股).")
@@ -282,12 +287,14 @@ class AiDailyDownload(DownloadJob):
         model: Optional[str] = None,
         count: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Ask the two daily geopolitics/economy questions; return the envelope.
+        """Ask the daily broad-market questions; return the envelope.
 
         One search+summary ask per :class:`GeoAsk` of the ``daily`` preset's
         ``daily_geo_asks`` — GLOBAL news asked and answered in English,
         CHINA news in Chinese, each asking for the day's news and its
-        financial-market implications. A failed ask never kills the pair —
+        financial-market implications, plus the investor-focus pair (the
+        areas/factors/events/concerns attention question) asked once in
+        English and once in Chinese. A failed ask never kills the batch —
         its outcome lands in ``failed`` with the error. The envelope embeds
         in the general artifact under ``geo``; builds.text loads each ask's
         Q&A into llm.llm_qa (broad-market tag, per-ask language) and the

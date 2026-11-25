@@ -35,7 +35,7 @@ router.get("/sec-alloc-live/attribution", wrapAsync(async (req: Request, res: Re
 //        • "ref" — the FULL yday-ref chain, run sequentially and deduped
 //          by process-id-tag (a second POST while ANY phase runs resolves
 //          immediately with already_running: true):
-//            1. downloads.index.csindex.quote --ensure-prev-trading-day
+//            1. downloads.index.csindex.price --ensure-prev-trading-day
 //               (tag "…:ref:dl") — TARGETED refresh: skip all network
 //               for codes whose local CSVs already contain the prev
 //               trading day; only laggards fetch the 1m window (PE /
@@ -131,9 +131,10 @@ router.post("/sec-alloc-live/run", wrapAsync(async (req: Request, res: Response)
     // Step 1: refresh the local CSIndex CSVs (prev-day EOD source).
     // Targeted mode: only codes whose CSVs lack the prev trading day
     // hit the network. Non-fatal on failure — the chain continues with
-    // the CSVs on disk.
+    // the CSVs on disk. (The price service — the former
+    // downloads.index.csindex.quote, split 2026-11-23.)
     const dl = await runPythonModule(
-      "downloads.index.csindex.quote",
+      "downloads.index.csindex.price",
       ["--ensure-prev-trading-day"],
       { processIdTag: `${tag}:dl` },
     );

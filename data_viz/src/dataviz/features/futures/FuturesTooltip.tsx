@@ -14,6 +14,7 @@ import {
   TOOLTIP_CARD_HEADER_STYLE,
   TOOLTIP_CARD_TEXT_MUTED,
 } from "@/theme/chart-palette";
+import { fmtDate } from "@/shared/datetime";
 
 export interface TooltipItem {
   seriesName: string;
@@ -38,7 +39,7 @@ export const FuturesTooltip: React.FC<FuturesTooltipProps> = ({ date, items }) =
 
   return (
     <div style={{ ...TOOLTIP_CARD_STYLE, minWidth: 140 }}>
-      <div style={TOOLTIP_CARD_HEADER_STYLE}>{date}</div>
+      <div style={TOOLTIP_CARD_HEADER_STYLE}>{fmtDate(date)}</div>
       {validItems.map((item) => (
         <div
           key={item.seriesName}
@@ -72,7 +73,7 @@ export const FuturesTooltip: React.FC<FuturesTooltipProps> = ({ date, items }) =
                   color: TOOLTIP_CARD_TEXT_MUTED,
                 }}
               >
-                exp {item.expiryDate}
+                exp {fmtDate(item.expiryDate)}
               </span>
             )}
           </span>

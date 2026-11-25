@@ -48,11 +48,11 @@ def main() -> None:
     parser.add_argument("--idle-offload-s", type=float, default=None,
                         help="Override the tier-1 idle-offload age in "
                         "seconds, GPU -> CPU (default: the config's, "
-                        "1800).")
+                        "600).")
     parser.add_argument("--idle-unload-s", type=float, default=None,
                         help="Override the tier-2 idle age in seconds "
                         "on top of the offload, CPU RAM weights drop "
-                        "(default: the config's, 3600).")
+                        "(default: the config's, 1200).")
     parser.add_argument("--no-warmup", action="store_true",
                         help="Skip the startup warm-up pass (models load "
                         "on first use / admin load instead).")

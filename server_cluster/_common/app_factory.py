@@ -40,11 +40,12 @@ def create_app(config: Optional[AreaConfig] = None) -> FastAPI:
 
     processes = ProcessManager(config)
     registry = RunRegistry(config, processes)
-    # The detection/execution split (2026-11-13): an area flagged
-    # restart_via_maintainer hands its resident restarts to the
-    # maintainer server over HTTP and keeps only the DETECTION here
-    # (desired state, adoption, backoff, staleness) — None on any
-    # failure falls back to the in-process spawn below.
+    # 2026-11-21 executor demotion (control unification plan Phase 2):
+    # supervisors spawn their residents IN PROCESS (whoever configures
+    # a child also spawns it); the maintainer keeps only the emergency
+    # spawn. The restart_via_maintainer delegate wiring below is
+    # deprecated and false for every area — it goes away with the
+    # config field after the observation window.
     delegate = None
     if config.restart_via_maintainer:
         from .maintainer_client import restart_via_maintainer

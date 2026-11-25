@@ -31,6 +31,7 @@ import {
 } from "@/theme/chart-palette";
 import { baseChartOption, commonTooltip, useChartThemeMode } from "@/shared/charts/base-chart";
 import { renderReactElement } from "@/lib/react-tooltip-renderer";
+import { fmtDate, fmtMonth } from "@/shared/datetime/display";
 
 /** One marker on the strip. */
 export interface DateEvent {
@@ -216,7 +217,7 @@ export default function DateEventStrip({
           }, e.title ?? e._label));
           children.push(React.createElement("div", {
             style: { fontSize: 10, opacity: 0.7, marginTop: 2 },
-          }, `${e.date} · ${e._label}`));
+          }, `${fmtDate(e.date)} · ${e._label}`));
           if (e.detail) {
             children.push(React.createElement("div", {
               style: { fontSize: 10, opacity: 0.8, marginTop: 2 },
@@ -233,12 +234,8 @@ export default function DateEventStrip({
         axisLabel: {
           color: c.textColor,
           fontSize: 10,
-          formatter: (v: number) => {
-            const d = new Date(v);
-            const yyyy = d.getFullYear();
-            const mm = String(d.getMonth() + 1).padStart(2, "0");
-            return `${yyyy}-${mm}`;
-          },
+          // Time-axis ticks arrive as ms — month-level display labels.
+          formatter: (v: number) => fmtMonth(v),
         },
         axisTick: { show: false },
         splitLine: { show: false },
@@ -251,10 +248,8 @@ export default function DateEventStrip({
         ? commonDataZoom(
             {
               labelFormatter: (val: string | number) => {
-                const d = new Date(Number(val));
-                return Number.isNaN(d.getTime())
-                  ? String(val)
-                  : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+                // Slider labels are ms timestamps on this TIME axis.
+                return fmtDate(Number(val));
               },
             },
             zoomStartPct,
@@ -359,7 +354,7 @@ export default function DateEventStrip({
             />
           ))}
           <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem", alignSelf: "center" }}>
-            {events.length} events · {events[0].date} → {events[events.length - 1].date}
+            {events.length} events · {fmtDate(events[0].date)} → {fmtDate(events[events.length - 1].date)}
           </Typography>
         </Stack>
       )}

@@ -54,7 +54,6 @@ const TIER_RUN_ORDER = [
   "builds_once",
   "builds_monthly",
   "analysis_daily",
-  "analysis_weekly",
   "strategy_daily",
   "strategy_once",
 ];
@@ -91,7 +90,10 @@ export interface OrchestrationStep {
    *  entry (explicit ``priority`` else derived from freq + domain —
    *  same chain as the monitor runner's priority_for; higher = wins
    *  conflicts: a strictly lower-priority step holds back / stops
-   *  while a higher one runs). */
+   *  while a higher one runs, and a step also holds back / stops while
+   *  another run's child claims the same src_host — same-src never
+   *  overlaps regardless of rank, the equal-rank case the rank alone
+   *  cannot order). */
   priority: number;
   /** Ordering/dependency comment, ignored by the runner (null when
    *  absent). */

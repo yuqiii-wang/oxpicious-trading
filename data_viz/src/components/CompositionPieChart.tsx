@@ -45,6 +45,7 @@ import { useAiAskAddon } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import { useDocs } from "@/shared/docs";
 import { fmtNum, fmtPct } from "@/lib/series";
+import { fmtDate } from "@/shared/datetime";
 import type { SecCompositionResponse } from "@shared/types";
 import type { ECharts, EChartsOption } from "echarts";
 
@@ -384,7 +385,7 @@ export default function CompositionPieChart({
               {/* Top-level summary: holdings count + date + source badge */}
               <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }} flexWrap="wrap" useFlexGap>
                 <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.7rem" }}>
-                  {data!.holdings.length} holdings ({data!.snapshot_date}
+                  {data!.holdings.length} holdings ({fmtDate(data!.snapshot_date)}
                   {data!.quarter ? ` · ${data!.quarter}` : ""})
                 </Typography>
                 <Chip

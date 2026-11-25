@@ -41,7 +41,7 @@ from ..data_definitions.chat_api import (
     new_completion_id,
 )
 from ..manager import ModelManager
-from .deps import find_dummy_backend
+from .deps import check_bearer
 from .errors import model_load_failed, not_found_model, openai_error
 
 logger = logging.getLogger(__name__)
@@ -51,27 +51,6 @@ router = APIRouter(tags=["chat"])
 # The OpenAI-style path and the ZhiPu mirror (ZhipuChatProvider.CHAT_URL's
 # path) — one handler serves both.
 CHAT_PATHS = ("/v1/chat/completions", "/api/paas/v4/chat/completions")
-
-
-# ------------------------------------------------------------- auth
-def _check_bearer(request: Request, manager: ModelManager,
-                  auth_token: Optional[str]) -> Optional[JSONResponse]:
-    """The former dummy-llm contract: a missing/malformed Bearer is 401
-    code 1002; any non-empty value passes unless ``auth_token`` pins the
-    config. The dummy backend's auth counter books every rejection (the
-    /stats surface)."""
-    auth = request.headers.get("authorization") or ""
-    ok = auth.startswith("Bearer ") and len(auth) > 7
-    if ok and auth_token:
-        ok = auth[7:].strip() == auth_token
-    if ok:
-        return None
-    dummy = find_dummy_backend(manager)
-    if dummy is not None:
-        dummy.note_auth_rejected()
-    return openai_error(
-        401, "local model host: missing or malformed "
-        "Authorization bearer header", code="1002")
 
 
 # --------------------------------------------------- generation calls
@@ -167,7 +146,7 @@ async def chat_completions(request: Request) -> Any:
     # AUTH FIRST (the old dummy-llm contract — a real endpoint rejects
     # an unauthenticated call regardless of any load or body state),
     # then manual body validation in the OpenAI error envelope.
-    denied = _check_bearer(request, manager, config.auth_token)
+    denied = check_bearer(request, config, manager)
     if denied is not None:
         return denied
     try:

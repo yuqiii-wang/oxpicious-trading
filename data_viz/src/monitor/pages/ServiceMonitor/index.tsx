@@ -111,7 +111,7 @@ import {
 } from "@mui/material";
 import { Clear, PlayArrow, Refresh, Search } from "@mui/icons-material";
 import { fetchAnalysisRunStatus } from "@/lib/api-client/analysis-run";
-import { fmtTimeShanghai, shanghaiDate } from "@/shared/datetime";
+import { fmtDate, fmtTimeShanghai, shanghaiDate } from "@/shared/datetime";
 import ValueFilterSelect, {
   type ValueFilterOption,
 } from "@/shared/components/ValueFilterSelect";
@@ -119,18 +119,23 @@ import LogViewerDialog, {
   type LogFileView,
 } from "@/shared/components/LogViewerDialog";
 import {
+  fetchMonitorFleet,
   fetchProcessRuns,
   fetchRunLog,
   fetchStreamMonitor,
   runHealthCheck,
+  sendServiceCommand,
   serviceRunTag,
   startStreamAlways,
+  type FleetProcessDetail,
   type HealthCheckResponse,
+  type MonitorFleetResponse,
   type MonitorStreamResponse,
   type ProcessStatus,
   type ResidentProcessStatus,
   type RunLog,
   type ServiceAuditEntry,
+  type ServiceCommandLabel,
   type StreamAlwaysResponse,
 } from "@/lib/api-client/monitor";
 import {
@@ -157,6 +162,13 @@ type LogSource =
 export default function ServiceMonitorPage() {
   const [data, setData] = useState<MonitorStreamResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The fleet fold (2026-11-21 control unification Phase 3): the ONE
+  // aggregated progress query (UI → Express /fleet → monitor /residents
+  // → per-area /processes?detail=1, all server-side — never a
+  // per-process call). Fails SOFT: a fold outage must not break the
+  // liveness table (the rows lose their derived progress, that is all).
+  const [fleet, setFleet] = useState<MonitorFleetResponse | null>(null);
+  const [fleetError, setFleetError] = useState<string | null>(null);
   const [scopeFilter, setScopeFilter] = useState<string>(ALL);
   const [subFilter, setSubFilter] = useState<string>(ALL);
   // Pipeline processes: live-only by default; the Live / History toggle
@@ -187,6 +199,12 @@ export default function ServiceMonitorPage() {
       setError(null);
     } catch (e) {
       setError(String(e));
+    }
+    try {
+      setFleet(await fetchMonitorFleet());
+      setFleetError(null);
+    } catch (e) {
+      setFleetError(String(e));
     }
   }, []);
 
@@ -333,6 +351,57 @@ export default function ServiceMonitorPage() {
     };
   }, [spawning, load]);
 
+  // ---- Downward signals (Phase 4 command mailbox) ----------------------
+  // One menu action per row (flush_now / pause / resume): the POST
+  // enqueues at the OWNING area server; the child claims it within ~5s
+  // and acts at its next safe checkpoint. The verdict (enqueued / the
+  // class gate's refusal verbatim) shows as a dismissible alert; the
+  // refresh pulls the posted progress state (pausing / paused /
+  // running) into the rows.
+  const [cmdBusy, setCmdBusy] = useState<ReadonlySet<string>>(new Set());
+  const [cmdResult, setCmdResult] = useState<{
+    at: number;
+    service: string;
+    command: ServiceCommandLabel;
+    ok: boolean;
+    message: string;
+  } | null>(null);
+
+  const runServiceCommand = useCallback(
+    async (service: string, command: ServiceCommandLabel) => {
+      setCmdBusy((prev) => new Set(prev).add(service));
+      setCmdResult(null);
+      try {
+        const resp = await sendServiceCommand(service, command);
+        setCmdResult({
+          at: Date.now(),
+          service,
+          command,
+          ok: true,
+          message: resp.message,
+        });
+      } catch (e) {
+        setCmdResult({
+          at: Date.now(),
+          service,
+          command,
+          ok: false,
+          message: String(e),
+        });
+      } finally {
+        setCmdBusy((prev) => {
+          const next = new Set(prev);
+          next.delete(service);
+          return next;
+        });
+        // The dispatch posts its "pausing" state and the claim lands
+        // within ~5s — refresh so the rows show it.
+        load();
+      }
+    },
+    [load],
+  );
+
   // ---- Run-log viewer (clickable history-run rows + stream rows) -------
   // `logSource` says what the dialog title / subtitle describe: a
   // pipeline history run or a resident process's current life (its row
@@ -421,6 +490,27 @@ export default function ServiceMonitorPage() {
         : [],
     [data],
   );
+  // The fold's unified detail payloads, keyed by the ROW's service (the
+  // area rows keep their own fields; the payload bag may or may not
+  // carry its own service copy). A fold detail is a ProcessDetail dump
+  // when it carries the heartbeat/derived blocks.
+  const fleetDetailByService = useMemo(() => {
+    const map = new Map<string, FleetProcessDetail>();
+    if (!fleet) return map;
+    for (const area of fleet.fleet.areas) {
+      for (const row of area.residents) {
+        const d = row.detail as FleetProcessDetail | undefined;
+        if (
+          d != null &&
+          typeof d === "object" &&
+          ("heartbeat" in d || "derived_progress" in d)
+        ) {
+          map.set(row.service, d);
+        }
+      }
+    }
+    return map;
+  }, [fleet]);
   const processRows = useMemo(() => data?.processes ?? [], [data]);
   // Freq dropdown options: distinct freqs over ALL loaded process rows
   // (both modes), each with its row count — like the Service Config table.
@@ -489,10 +579,15 @@ export default function ServiceMonitorPage() {
           <Typography variant="caption" color="text.secondary">
             updated {fmtTimeShanghai(data.generatedAt)} · stale threshold{" "}
             {Math.round(data.staleAfterS / 60)}m · beats ~60s · ages tick 1s ·
-            data refresh 30s
+            data refresh 30s · progress via the fleet fold
           </Typography>
         )}
         {error && <CircularProgress size={16} />}
+        {fleetError && (
+          <Typography variant="caption" color="warning.main">
+            fleet fold unreachable — derived progress unavailable ({fleetError})
+          </Typography>
+        )}
         <Tooltip
           title={
             "Force health check — replica sync · slot & WAL disk · stream " +
@@ -625,6 +720,16 @@ export default function ServiceMonitorPage() {
           Start stream always failed: {saError}
         </Alert>
       )}
+      {cmdResult && (
+        <Alert
+          severity={cmdResult.ok ? "success" : "error"}
+          onClose={() => setCmdResult(null)}
+        >
+          {cmdResult.ok
+            ? `${cmdResult.command} → ${cmdResult.service} at ${fmtTimeShanghai(cmdResult.at)} — ${cmdResult.message}`
+            : `${cmdResult.command} → ${cmdResult.service} refused: ${cmdResult.message}`}
+        </Alert>
+      )}
       {saResult && (
         <Alert
           severity={saResult.resp.success ? "success" : "error"}
@@ -651,7 +756,8 @@ export default function ServiceMonitorPage() {
           <Typography variant="subtitle2">Resident processes</Typography>
           <Typography variant="caption" color="text.secondary">
             always-on resident processes · click a row for its current log ·
-            chevron for the restart trail
+            chevron for progress + restart trail · ⋮ sends flush / pause /
+            resume down to the child
           </Typography>
         </Box>
         <Table size="small">
@@ -665,6 +771,7 @@ export default function ServiceMonitorPage() {
               <TableCell>Started</TableCell>
               <TableCell>Last beat</TableCell>
               <TableCell>Restarts 24h</TableCell>
+              <TableCell>Signals</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -679,11 +786,14 @@ export default function ServiceMonitorPage() {
                 restarts={(data?.recentRestarts ?? []).filter(
                   (r) => r.service === svc.service,
                 )}
+                detail={fleetDetailByService.get(svc.service) ?? null}
+                cmdBusy={cmdBusy.has(svc.service)}
+                onCommand={(command) => void runServiceCommand(svc.service, command)}
               />
             ))}
             {!data && !error && (
               <TableRow>
-                <TableCell colSpan={8} align="center">
+                <TableCell colSpan={9} align="center">
                   <CircularProgress size={20} sx={{ my: 2 }} />
                 </TableCell>
               </TableRow>
@@ -789,6 +899,8 @@ export default function ServiceMonitorPage() {
                     openLog({ kind: "run", service: proc.service, run })
                   }
                   runs={runsByService.get(proc.service) ?? NO_RUNS}
+                  cmdBusy={cmdBusy.has(proc.service)}
+                  onCommand={(command) => void runServiceCommand(proc.service, command)}
                 />
               ))}
               {processes.length === 0 && (
@@ -826,8 +938,8 @@ export default function ServiceMonitorPage() {
           logSource == null
             ? ""
             : logSource.kind === "run"
-              ? `${logSource.service} — run log ${shanghaiDate(new Date(logSource.run.startedAt))}`
-              : `${logSource.svc.service} — current log ${shanghaiDate(new Date())}`
+              ? `${logSource.service} — run log ${fmtDate(shanghaiDate(new Date(logSource.run.startedAt)))}`
+              : `${logSource.svc.service} — current log ${fmtDate(shanghaiDate(new Date()))}`
         }
         subtitle={
           logSource == null

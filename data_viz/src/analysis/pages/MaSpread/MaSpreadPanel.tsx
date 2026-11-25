@@ -50,6 +50,7 @@ import {
   type RoofFloorEstimateMethod,
 } from "@shared/types";
 import { fmtNum, fmtPct } from "@/lib/series";
+import { fmtDate } from "@/shared/datetime";
 import type { OhlcMode } from "@/lib/ohlc";
 import {
   computeBreakStreaks,
@@ -878,7 +879,7 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
           color="text.secondary"
           sx={{ display: "block", mt: 0.5, fontSize: "0.7rem" }}
         >
-          {selectedPair?.pair_label} @ {latestSummary.date} · short {fmtNum(latestSummary.short_value)} ·
+          {selectedPair?.pair_label} @ {fmtDate(latestSummary.date)} · short {fmtNum(latestSummary.short_value)} ·
           long {fmtNum(latestSummary.long_value)} · gap{" "}
           <Box
             component="span"
@@ -907,7 +908,7 @@ function subtitleOf(
   return chartData
     ? `${chartData.code} · ${chartData.name || name || "—"} · ${firstPairRows.length} bars` +
         (firstPairRows.length > 0
-          ? ` · ${firstPairRows[0].date} → ${firstPairRows[firstPairRows.length - 1].date}`
+          ? ` · ${fmtDate(firstPairRows[0].date)} → ${fmtDate(firstPairRows[firstPairRows.length - 1].date)}`
           : "")
     : `${code} · ${name || "—"}`;
 }

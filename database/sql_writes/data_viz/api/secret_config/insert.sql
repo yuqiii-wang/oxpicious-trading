@@ -19,14 +19,19 @@
 --   $8 api_key_hint    TEXT | NULL — masked preview ('••••••••<last4>')
 --   $9 is_active       BOOLEAN
 --   $10 notes          TEXT | NULL
+--   $11 input_modality SMALLINT label code (static.label_dim 'llm_modality':
+--                      0 text | 1 text+vision | 2 text+image-gen | 3 audio | 99 other)
+--   $12 output_modality SMALLINT — same 'llm_modality' domain (DEFAULT 0 = text)
 --
 -- (secret_type, provider, COALESCE(model_name,'')) is unique — a duplicate is
 -- a UI error (the caller maps the empty RETURNING to 409), not a silent
 -- overwrite. Returns the non-secret columns only.
 INSERT INTO static.secret_config
-    (secret_type, provider, sub_type, model_name, context_length, api_url,
+    (secret_type, provider, sub_type, model_name, context_length,
+     input_modality, output_modality, api_url,
      api_key_enc, api_key_hint, is_active, notes)
-VALUES ($1::smallint, $2::smallint, $3::smallint, $4, $5::int, $6, $7, $8,
+VALUES ($1::smallint, $2::smallint, $3::smallint, $4, $5::int,
+        $11::smallint, $12::smallint, $6, $7, $8,
         $9::boolean, $10)
 ON CONFLICT (secret_type, provider, COALESCE(model_name, '')) DO NOTHING
 RETURNING secret_id,
@@ -35,6 +40,8 @@ RETURNING secret_id,
           sub_type,
           model_name,
           context_length,
+          input_modality,
+          output_modality,
           api_url,
           api_key_hint,
           is_active,

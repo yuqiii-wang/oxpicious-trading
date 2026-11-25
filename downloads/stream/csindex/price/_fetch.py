@@ -21,7 +21,7 @@ from downloads._common import (
     service_urls,
     setup_logger,
 )
-from downloads.index.csindex.quote import (
+from downloads.index.csindex.price import (
     fetch_intraday,
 )
 

@@ -16,7 +16,7 @@ from fastapi import APIRouter, Request
 
 from ..data_definitions.admin import SegmentRequest, SegmentResponse
 from ..manager import ModelManager
-from .deps import find_tokenization_backend
+from .deps import check_bearer, find_tokenization_backend
 from .errors import model_load_failed, openai_error
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,9 @@ router = APIRouter(tags=["tokenization"])
 async def tokenization_segment(request: Request, body: SegmentRequest
                                ) -> Any:
     manager: ModelManager = request.app.state.manager
+    denied = check_bearer(request, request.app.state.config, manager)
+    if denied is not None:
+        return denied
     backend = find_tokenization_backend(manager)
     if backend is None:
         return openai_error(

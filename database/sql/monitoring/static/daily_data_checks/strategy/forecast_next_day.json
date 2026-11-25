@@ -1,0 +1,4 @@
+{
+  "view": "server_cluster/maintainer/daily_check/strategy/forecast_next_day",
+  "notes": "strategy_daily step 2 (strategy.forecast_next_day): the forecast register's max(anchor_date) per study-10 code (the run's own scope, STUDY_CODES) vs the OHLCV close frontier (1-day slack) — the module's own incremental rule is anchor == horizon, so a lagging anchor means the nightly forecast pass stopped."
+}

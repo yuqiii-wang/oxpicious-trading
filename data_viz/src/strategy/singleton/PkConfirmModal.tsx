@@ -13,6 +13,7 @@ import {
   DialogContentText,
   DialogTitle,
 } from "@mui/material";
+import { fmtDate } from "@/shared/datetime";
 import type { CheckExistingResult } from "@/lib/api-client";
 import type { MaSpreadSecType } from "@shared/types";
 
@@ -65,7 +66,7 @@ export function PkConfirmModal(props: PkConfirmModalProps) {
                 </Box>
               )}
             </div>
-            <div>Period: {existingRun.start_date}{existingRun.end_date ? ` → ${existingRun.end_date}` : " → null"}</div>
+            <div>Period: {fmtDate(existingRun.start_date)}{existingRun.end_date ? ` → ${fmtDate(existingRun.end_date)}` : " → null"}</div>
             {existingRun.scenario && (
               <div>Scenario: {existingRun.scenario}</div>
             )}

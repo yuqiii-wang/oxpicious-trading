@@ -1,5 +1,6 @@
 import React from "react";
 import { renderReactElement, signedPct, tooltipComponents } from "@/lib/react-tooltip-renderer";
+import { fmtDate } from "@/shared/datetime";
 import { UP_COLOR, DOWN_COLOR } from "@/theme/chart-palette";
 import type { IntradayMovementsResponse } from "@shared/types";
 import type { PrevDayOhlcBar } from "../prevDayOhlc";
@@ -78,7 +79,7 @@ function PrevDayOhlcTooltip({ bar }: { bar: PrevDayOhlcBar }) {
   return React.createElement(
     React.Fragment,
     null,
-    React.createElement(Header, null, `${bar.label} · prev day ${bar.date}`),
+    React.createElement(Header, null, `${bar.label} · prev day ${fmtDate(bar.date)}`),
     React.createElement(MutedRow, null, "OHLC vs prev open"),
     React.createElement(Row, null, "O: ", React.createElement(Bold, { style: { color } }, pctRel(0, bar.openPct))),
     React.createElement(Row, null, "H: ", React.createElement(Bold, { style: { color } }, pctRel(bar.highPct, bar.openPct))),

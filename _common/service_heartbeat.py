@@ -95,6 +95,8 @@ import time
 from pathlib import Path
 
 from _common.db_commons import get_db_connection
+from _common.labels import PROGRESS_PHASE_CODE, PROGRESS_STATE_CODE, \
+    SERVICE_COMMAND_CODE
 
 # ---------------------------------------------------------------------------
 # Registry — unique service name -> (scope, sub_scope)
@@ -437,9 +439,13 @@ def autoregister(
 class HeartbeatThread(threading.Thread):
     """Daemon thread upserting one service's heartbeat row forever.
 
-    Failures are rate-limited to one stderr line per 30 minutes — a DB
-    outage must not flood the service's nohup log; the watchdog notices
-    the missing beats on its own.
+    The loop runs in ``_MAILBOX_POLL_S`` (5s) slices: every 12th tick
+    carries the 60s beat (the cadence unchanged), EVERY tick polls the
+    command mailbox (Phase 4, 2026-11-21 — claimed commands dispatch
+    into the service's in-process state for the work loop's
+    checkpoints). Failures are rate-limited to one stderr line per 30
+    minutes — a DB outage must not flood the service's nohup log; the
+    watchdog notices the missing beats on its own.
     """
 
     def __init__(
@@ -470,34 +476,71 @@ class HeartbeatThread(threading.Thread):
 
     def run(self) -> None:
         conn = None
+        ticks = 0
+        beat_every = max(1, round(self._interval_s / _MAILBOX_POLL_S))
         while not self._halt.is_set():
             if conn is None:
                 try:
                     conn = get_db_connection()
                 except Exception as e:  # noqa: BLE001 — never kill the service
                     self._warn(f"connect failed, retrying next tick: {e}")
-                    self._halt.wait(self._interval_s)
+                    self._halt.wait(_MAILBOX_POLL_S)
+                    continue
+            if ticks % beat_every == 0:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            _BEAT_SQL,
+                            (self._service, self._scope, self._sub_scope,
+                             os.getpid(), self._code_fingerprint),
+                        )
+                except Exception as e:  # noqa: BLE001
+                    self._warn(f"beat failed, reconnecting: {e}")
+                    try:
+                        conn.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    conn = None
+                    ticks += 1
+                    self._halt.wait(_MAILBOX_POLL_S)
                     continue
             try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        _BEAT_SQL,
-                        (self._service, self._scope, self._sub_scope,
-                         os.getpid(), self._code_fingerprint),
-                    )
-            except Exception as e:  # noqa: BLE001
-                self._warn(f"beat failed, reconnecting: {e}")
+                self._poll_mailbox(conn)
+            except Exception as e:  # noqa: BLE001 — no commands flow
+                self._warn(f"mailbox poll failed, reconnecting: {e}")
                 try:
                     conn.close()
                 except Exception:  # noqa: BLE001
                     pass
                 conn = None
-            self._halt.wait(self._interval_s)
+            ticks += 1
+            self._halt.wait(_MAILBOX_POLL_S)
         if conn is not None:
             try:
                 conn.close()
             except Exception:  # noqa: BLE001
                 pass
+
+    def _poll_mailbox(self, conn) -> None:
+        """Claim (consume atomically) every pending command for this
+        service and dispatch into its in-process state. Bounded per
+        tick; a DB problem raises to the caller's reconnect."""
+        st = _command_states.get(self._service)
+        if st is None:
+            return
+        for _ in range(16):
+            with conn.cursor() as cur:
+                cur.execute(
+                    # TWO placeholders: the claim's consumer pid + the
+                    # service name (the sub-select's ordering carries
+                    # delivery order).
+                    _CLAIM_COMMAND_SQL,
+                    (os.getpid(), self._service),
+                )
+                row = cur.fetchone()
+            if row is None:
+                return
+            _dispatch_command(st, row[1], row[2])
 
     def stop(self) -> None:
         self._halt.set()
@@ -596,6 +639,11 @@ def _write_stop(service: str) -> None:
     thread = _threads.pop(service, None)
     if thread is None:
         return
+    # The mailbox state dies with the thread's registration (Phase 4):
+    # a stale state left behind would hold a consumed command edge for
+    # a service this process no longer runs.
+    _command_states.pop(service, None)
+    _last_progress.pop(service, None)
     reason, normal = _exit_info.pop(service, ("process exit", True))
     thread.stop()
     thread.join(timeout=3.0)  # no in-flight beat can clear the stop row
@@ -794,6 +842,170 @@ def stale_check_for(service: str) -> bool:
             if isinstance(flag, bool):
                 return flag
     return DEFAULT_STALE_PROCESS_CHECK
+
+
+# --- resource class + commands + progress config (2026-11-21 control
+#     unification plan Phases 3+4) ---------------------------------------
+#
+# The COMMAND/PROGRESS channel is gated by CLASS, never by code branches:
+# each service's service_config file carries ``resource_class`` +
+# ``pausable`` (and, when it has derivable progress, a ``progress``
+# block). Classes (the memory study's gating):
+#   io      — pure-I/O downloads (0/62 activate cudf): PAUSE/RESUME OK,
+#             a pause holds ~RAM only; bounded by ``max_pause_s``.
+#   sampler — intraday stream samplers: pause allowed ONLY outside a
+#             trading session (mid-session = silent data loss — the
+#             child refuses with that reason; the flag stays true).
+#   host    — resident hosts: a pause holds the whole RSS (generous
+#             bound, rarely wanted).
+#   gpu     — NO pause (a paused GPU step pins the CUDA context ~1.67
+#             GiB + the WSL early floor until exit — kill-and-restart
+#             stays its only give-way).
+# An UNCONFIGURED service defaults to the gpu class + not pausable:
+# refusing a command is always the safe default (Phase 4 lands behind
+# per-service opt-in flags).
+RESOURCE_CLASSES: tuple[str, ...] = ("io", "sampler", "host", "gpu")
+DEFAULT_RESOURCE_CLASS = "gpu"
+DEFAULT_PAUSABLE = False
+
+# The pause bound (seconds) when a service_config file carries
+# ``max_pause_s``; the class default caps a pause when unset (io/sampler
+# 1800s, host 600s — a resident pause must not outlive the operator's
+# attention; gpu never pauses).
+DEFAULT_MAX_PAUSE_S = 1800.0
+_HOST_MAX_PAUSE_S = 600.0
+
+# A ``progress`` block's table-name charset — config is git-reviewed,
+# but the names ride INTO SQL as fragments, so validate the charset
+# defensively anyway (segments of [A-Za-z0-9_], dotted, schema-qualified).
+_TABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$")
+
+
+def resource_class_for(service: str) -> str:
+    """The service's resource class from the static service_config tree
+    (``resource_class`` in its own file; absent → the gpu no-pause
+    default). Same file-then-default.json chain and fail-soft contract
+    as max_parallel_for."""
+    for file in _service_config_files(service):
+        try:
+            doc = json.loads(file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(doc, dict):
+            cls = doc.get("resource_class")
+            if cls in RESOURCE_CLASSES:
+                return cls
+    return DEFAULT_RESOURCE_CLASS
+
+
+def pausable_for(service: str) -> bool:
+    """Whether the service accepts PAUSE/RESUME commands at all (its
+    service_config file's ``pausable``; absent → not pausable). The
+    class still gates HOW a pause behaves (sampler session checks, gpu
+    refusal) — this flag is the opt-in switch."""
+    for file in _service_config_files(service):
+        try:
+            doc = json.loads(file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(doc, dict):
+            flag = doc.get("pausable")
+            if isinstance(flag, bool):
+                return flag
+    return DEFAULT_PAUSABLE
+
+
+def max_pause_s_for(service: str) -> float:
+    """The pause bound for the service: its service_config file's
+    ``max_pause_s`` when present, else the class default (io/sampler
+    1800s, host 600s). A pause auto-resumes past the bound — a wedged
+    pause can never hold a resident forever."""
+    for file in _service_config_files(service):
+        try:
+            doc = json.loads(file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(doc, dict):
+            bound = doc.get("max_pause_s")
+            if isinstance(bound, (int, float)) and bound > 0:
+                return float(bound)
+    cls = resource_class_for(service)
+    if cls == "host":
+        return _HOST_MAX_PAUSE_S
+    return DEFAULT_MAX_PAUSE_S
+
+
+def _clean_progress_tables(value: object) -> dict[str, str]:
+    """One progress config entry → the validated table/column fields
+    (strings fitting the table-name charset; anything else dropped)."""
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key in ("identity_table", "intraday_table", "result_table",
+                "key_column", "code_column", "exchange_column"):
+        val = value.get(key)
+        if isinstance(val, str) and _TABLE_NAME_RE.fullmatch(val):
+            out[key] = val
+    return out
+
+
+def service_progress_config(service: str) -> dict | None:
+    """The service's derived-progress config from its service_config
+    file's ``progress`` block, validated minimally; None when absent or
+    malformed (no derived progress is derived then — a config problem
+    must never break the detail endpoint). Shapes:
+
+      {"kind": "intraday", "assets": [{name, identity_table,
+        intraday_table, code_column?, exchange_column?, exchange?}]}
+      — the stream-poller completeness (one render of the shared
+        intraday_progress template per asset).
+      {"kind": "missing_set", "identity_table": ..., "result_table":
+        ..., "key_column": ...}
+      — the generic expected-minus-missing oracle (identity vs result
+        table on the key column, latest date).
+    """
+    for file in _service_config_files(service):
+        try:
+            doc = json.loads(file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(doc, dict):
+            continue
+        block = doc.get("progress")
+        if not isinstance(block, dict):
+            continue
+        kind = block.get("kind")
+        if kind == "intraday":
+            assets = []
+            for entry in block.get("assets") or []:
+                fields = _clean_progress_tables(entry)
+                if not {"identity_table", "intraday_table"} <= fields.keys():
+                    continue  # a malformed asset drops silently
+                exchange = entry.get("exchange") if isinstance(
+                    entry, dict) else None
+                assets.append({
+                    "name": (entry.get("name") if isinstance(entry, dict)
+                             else "") or fields["intraday_table"],
+                    "identity_table": fields["identity_table"],
+                    "intraday_table": fields["intraday_table"],
+                    "code_column": fields.get("code_column", "code"),
+                    "exchange_column": fields.get("exchange_column"),
+                    "exchange": exchange if isinstance(exchange, str)
+                    else None,
+                })
+            if assets:
+                return {"kind": "intraday", "assets": assets}
+            return None
+        if kind == "missing_set":
+            fields = _clean_progress_tables(block)
+            if {"identity_table", "result_table"} <= fields.keys():
+                return {"kind": "missing_set",
+                        "identity_table": fields["identity_table"],
+                        "result_table": fields["result_table"],
+                        "key_column": fields.get("key_column", "code")}
+            return None
+        return None
+    return None
 
 
 # --- resident / freq / priority (the orchestration give-way rank) ----------
@@ -1257,6 +1469,299 @@ def _release_parallel_slot(service: str) -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# Command mailbox + reported progress — the Phase 4 channels (2026-11-21
+# control unification plan)
+# ---------------------------------------------------------------------------
+# The DOWN channel: the heartbeat thread claims commands from
+# monitor.service_command every ``_MAILBOX_POLL_S`` (ONE conditional
+# UPDATE claims AND consumes atomically — exactly-once, the
+# live_parallel-claim pattern composed with the planned-stop marker's
+# 120s age cap for expiry) and dispatches into the in-process state the
+# WORK loop reads at its safe checkpoints (:func:`pause_checkpoint` /
+# :func:`consume_flush`). Class-gated from the memory study:
+# ``pausable_for`` / ``resource_class_for`` (the service_config tree's
+# ``pausable`` / ``resource_class`` flags) decide whether a PAUSE is
+# honored at all (gpu never; an unconfigured service defaults to gpu) —
+# and a SAMPLER's checkpoints pass ``safe=False`` mid-session, so a
+# pause that would silently lose data is refused with that reason.
+#
+# The UP channel: the work loop posts progress at its safe checkpoints
+# (:func:`report_progress` — throttled; a phase/state change posts
+# immediately) straight into the heartbeat row's progress columns
+# (guarded on pid so a concurrent life cannot overwrite another's
+# report). The detail endpoint reads them; the hung detector reads
+# ``paused`` as the legal state it is.
+#
+# Fail-soft contract (the plan's risk register): a DB outage means NO
+# commands flow and progress posts skip — work proceeds, the same as
+# beats. SIGTERM → grace → SIGKILL remains the backstop everywhere.
+
+_MAILBOX_POLL_S = 5.0
+_COMMAND_TTL_S = 120.0
+_PROGRESS_MIN_INTERVAL_S = 30.0
+
+_CLAIM_COMMAND_SQL = """
+UPDATE monitor.service_command
+SET claimed_at = now(), claimed_pid = %s, consumed_at = now()
+WHERE id = (
+    SELECT id FROM monitor.service_command
+    WHERE service = %s
+      AND consumed_at IS NULL
+      AND expires_at > now()
+    ORDER BY id
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+RETURNING id, command, payload
+"""
+
+_REPORT_PROGRESS_SQL = """
+UPDATE monitor.service_heartbeat
+SET progress_phase = COALESCE(%s, progress_phase),
+    progress_state = COALESCE(%s, progress_state),
+    progress_payload = COALESCE(%s::jsonb, progress_payload),
+    progress_at = now()
+WHERE service = %s AND pid = %s
+"""
+
+
+class ServiceCommandState:
+    """The in-process mailbox state ONE registered service's work loop
+    reads at its safe checkpoints. The heartbeat thread is the only
+    WRITER (dispatch); the work loop is the only ACTOR (the
+    checkpoint blocks / the flush edge fires)."""
+
+    def __init__(self, service: str) -> None:
+        self.service = service
+        self.pause_requested = False
+        self.pause_deadline = 0.0  # monotonic — the auto-resume bound
+        self.paused = False  # True while a pause actually holds
+        self.flush_requested = False  # the FLUSH_NOW edge (one-shot)
+        self.lock = threading.Lock()
+
+
+_command_states: dict[str, ServiceCommandState] = {}
+_progress_lock = threading.Lock()
+_last_progress: dict[str, tuple[float, tuple]] = {}
+
+
+def _dispatch_command(state: ServiceCommandState, command_code: int,
+                      payload: Any) -> None:
+    """One claimed command → the in-process state (the heartbeat
+    thread's side; the checkpoint does the holding). Field writes ride
+    the state's lock — the work loop reads the same fields at its
+    checkpoints."""
+    with state.lock:
+        if command_code == SERVICE_COMMAND_CODE["flush_now"]:
+            state.flush_requested = True
+            print(
+                f"[service_heartbeat] {state.service}: FLUSH_NOW claimed "
+                "— the flush edge is set for the next cycle tail",
+                file=sys.stderr, flush=True,
+            )
+            return
+        if command_code == SERVICE_COMMAND_CODE["resume"]:
+            state.pause_requested = False
+            state.pause_deadline = 0.0
+            state.paused = False
+            print(
+                f"[service_heartbeat] {state.service}: RESUME claimed — "
+                "the checkpoint releases",
+                file=sys.stderr, flush=True,
+            )
+            # Post running NOW (not just at the checkpoint's release): a
+            # child whose next safe checkpoint is far away (a poller
+            # sleeping until the next session) must not sit in the
+            # reported `pausing` state for days after a resume.
+            report_progress(state="running", service=state.service,
+                            force=True)
+            return
+        if command_code == SERVICE_COMMAND_CODE["pause"]:
+            if not pausable_for(state.service) \
+                    or resource_class_for(state.service) == "gpu":
+                print(
+                    f"[service_heartbeat] {state.service}: PAUSE refused "
+                    "(not pausable or gpu-class — kill-and-restart stays "
+                    "its only give-way); command consumed, nothing held",
+                    file=sys.stderr, flush=True,
+                )
+                return
+            bound = max_pause_s_for(state.service)
+            override = (payload or {}).get("max_pause_s") \
+                if isinstance(payload, dict) else None
+            if isinstance(override, (int, float)) and 0 < override <= bound:
+                bound = float(override)
+            state.pause_deadline = time.monotonic() + bound
+            state.pause_requested = True
+        else:
+            print(
+                f"[service_heartbeat] {state.service}: unknown command "
+                f"code {command_code} consumed (no-op)",
+                file=sys.stderr, flush=True,
+            )
+            return
+    # Outside the lock: the DB post is best effort and the bound print
+    # is already computed.
+    print(
+        f"[service_heartbeat] {state.service}: PAUSE claimed — holds at "
+        f"the next safe checkpoint, auto-resumes after {bound:.0f}s",
+        file=sys.stderr, flush=True,
+    )
+    report_progress(state="pausing", service=state.service, force=True)
+
+
+def report_progress(phase: str | None = None, state: str | None = None,
+                    payload: dict | None = None, *,
+                    service: str | None = None, force: bool = False,
+                    ) -> bool:
+    """Post THIS process's progress into its heartbeat row (the Phase 4
+    UP channel). ``phase`` is the three-phase machine (downloading |
+    reading | writing), ``state`` the run state (running | pausing |
+    paused | done); omitted fields KEEP their previous values (the
+    COALESCE in the SQL), so a checkpoint can update one dimension.
+    Throttled: an unchanged (phase, state) reposts at most every
+    ``_PROGRESS_MIN_INTERVAL_S`` unless ``force`` (phase transitions
+    and checkpoint state flips force).
+
+    Guarded on pid: a concurrent life of the same service cannot
+    overwrite another life's report. Returns True when a row was
+    written; False = throttled away, nothing registered, or the DB is
+    unreachable (fail-soft — progress is a bonus, never a blocker)."""
+    svc = service or current_service()
+    if svc is None:
+        return False
+    phase_code = PROGRESS_PHASE_CODE.get(phase) if phase else None
+    if phase is not None and phase_code is None:
+        raise ValueError(f"unknown progress phase {phase!r}")
+    state_code = PROGRESS_STATE_CODE.get(state) if state else None
+    if state is not None and state_code is None:
+        raise ValueError(f"unknown progress state {state!r}")
+    now = time.monotonic()
+    signature = (phase_code, state_code)
+    with _progress_lock:
+        last_time, last_sig = _last_progress.get(svc, (0.0, None))
+        if not force and signature == last_sig \
+                and now - last_time < _PROGRESS_MIN_INTERVAL_S:
+            return False
+        _last_progress[svc] = (now, signature)
+    try:
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    _REPORT_PROGRESS_SQL,
+                    (phase_code, state_code,
+                     json.dumps(payload) if payload else None,
+                     svc, os.getpid()),
+                )
+                return cur.rowcount > 0
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001 — progress is fail-soft
+        print(
+            f"[service_heartbeat] {svc}: progress post failed: {e}",
+            file=sys.stderr, flush=True,
+        )
+        return False
+
+
+def pause_checkpoint(*, safe: bool = True,
+                     service: str | None = None) -> bool:
+    """The safe-checkpoint PAUSE hold (the Phase 4 DOWN channel's work-
+    loop side). Call at every safe checkpoint of a pausable service's
+    loop (the poller cycle tail, the batch stage boundary); blocks
+    while a claimed PAUSE holds, auto-resumes past the ``max_pause_s``
+    bound, reports ``paused`` / ``running`` around the hold.
+
+    ``safe=False`` marks a checkpoint where a pause would SILENTLY
+    LOSE DATA (a sampler mid-session): a pause requested there is
+    refused with that reason and ``False`` returned. A service with no
+    registered mailbox state returns False immediately (no-op).
+
+    Returns True when a pause was honored (held and released)."""
+    svc = service or current_service()
+    if svc is None:
+        return False
+    st = _command_states.get(svc)
+    if st is None:
+        return False
+    honored = False
+    while True:
+        with st.lock:
+            requested = st.pause_requested
+            deadline = st.pause_deadline
+        if not requested:
+            if honored:
+                st.paused = False
+                # The release drain (Phase 4's re-wiring of the orphaned
+                # post_check.release_memory — gap 9): a held pause held
+                # buffers/pools; release them back BEFORE the loop
+                # resumes (also the future gpu-class drain-pause tier's
+                # hook point). Best effort — a drain problem never
+                # blocks the resume.
+                try:
+                    from _common.post_check import release_memory
+
+                    release_memory()
+                except Exception as exc:  # noqa: BLE001 — best effort
+                    print(
+                        f"[service_heartbeat] {svc}: pause-release drain "
+                        f"failed: {exc}",
+                        file=sys.stderr, flush=True,
+                    )
+                report_progress(state="running", service=svc, force=True)
+            return honored
+        if not safe:
+            st.pause_requested = False
+            print(
+                f"[service_heartbeat] {svc}: PAUSE refused at an unsafe "
+                "checkpoint (mid-session sampler — a hold here would "
+                "silently lose data)",
+                file=sys.stderr, flush=True,
+            )
+            report_progress(state="running", service=svc, force=True)
+            return False
+        if time.monotonic() >= deadline:
+            st.pause_requested = False
+            st.paused = False
+            print(
+                f"[service_heartbeat] {svc}: pause bound reached — "
+                "auto-resumed",
+                file=sys.stderr, flush=True,
+            )
+            report_progress(state="running", service=svc, force=True)
+            return honored
+        if not honored:
+            honored = True
+            st.paused = True
+            report_progress(state="paused", service=svc, force=True)
+        time.sleep(1.0)
+
+
+def consume_flush(service: str | None = None) -> bool:
+    """One-shot FLUSH_NOW edge (the poller cycle tail's check): True
+    exactly once per claimed FLUSH_NOW command."""
+    svc = service or current_service()
+    if svc is None:
+        return False
+    st = _command_states.get(svc)
+    if st is None:
+        return False
+    with st.lock:
+        if st.flush_requested:
+            st.flush_requested = False
+            return True
+    return False
+
+
+def command_state_for(service: str) -> ServiceCommandState | None:
+    """The in-process mailbox state of ``service`` (None when
+    unregistered) — read by the supervisor's hung pass via the DB, not
+    this; kept for probes/tests."""
+    return _command_states.get(service)
+
+
 def _enforce_parallel_policy(service: str) -> None:
     """Exit when the service's ``max_parallel`` is already reached, or a
     parallel-services conflict exists with a live service.
@@ -1377,5 +1882,9 @@ def register_service(
         code_fingerprint=source_fingerprint(fingerprint_roots_for(service)),
     )
     _threads[service] = thread
+    # The mailbox state (Phase 4): the thread dispatches claimed
+    # commands into it; the work loop reads it at its checkpoints
+    # (pause_checkpoint / consume_flush).
+    _command_states[service] = ServiceCommandState(service)
     thread.start()
     return thread

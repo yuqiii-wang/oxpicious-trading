@@ -40,6 +40,7 @@ import {
   MA20_COLOR,
 } from "@/theme/chart-palette";
 import { baseChartOption, commonTooltip, useChartThemeMode } from "@/shared/charts/base-chart";
+import { fmtDate } from "@/shared/datetime";
 import { useAiAskAddon } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import { useDocs } from "@/shared/docs";
@@ -613,7 +614,7 @@ function RiskItemsTable({ rs, factors }: RiskItemsTableProps) {
                 {r.value}
                 {r.sub && (
                   <Typography component="div" sx={{ fontWeight: 400, fontSize: "0.68rem", color: r.subColor ?? "text.secondary" }}>
-                    {r.sub}
+                    {fmtDate(r.sub)}
                   </Typography>
                 )}
               </TableCell>

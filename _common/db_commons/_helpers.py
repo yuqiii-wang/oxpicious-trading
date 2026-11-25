@@ -211,3 +211,36 @@ def _get_replica_conn_params() -> dict:
         params["host"] = os.environ["SUPABASE_REPLICA_HOST"]
         params["port"] = int(os.environ.get("SUPABASE_REPLICA_PORT", params["port"]))
     return params
+
+
+# ---------------------------------------------------------------------------
+# The write-progress hook (Phase 4, 2026-11-21 control unification) —
+# ONE callback fired at every chunk-commit boundary of the bulk-write
+# helpers (both the sync and the async bulk_upsert). Default OFF (None):
+# a pipeline opts in via set_write_progress_hook (its callback maps the
+# (chunks_done, chunks_total) counts onto its reported progress —
+# typically service_heartbeat.report_progress(phase="writing",
+# payload={...})). The helpers never let a hook problem break a write.
+# ---------------------------------------------------------------------------
+from typing import Callable as _Callable
+
+_write_progress_hook: "_Callable[[int, int], None] | None" = None
+
+
+def set_write_progress_hook(
+        hook: "_Callable[[int, int], None] | None") -> None:
+    """Install (or clear with None) the chunk-commit progress callback."""
+    global _write_progress_hook
+    _write_progress_hook = hook
+
+
+def _notify_write_progress(chunks_done: int, chunks_total: int) -> None:
+    """Fire the installed hook (best effort — a hook problem is logged
+    and swallowed; the write proceeds)."""
+    hook = _write_progress_hook
+    if hook is None:
+        return
+    try:
+        hook(chunks_done, chunks_total)
+    except Exception as exc:  # noqa: BLE001 — progress is a bonus
+        logger.warning("write-progress hook failed: %s", exc)

@@ -27,6 +27,7 @@ import {
   SKEW_LINE_WIDTH,
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
+import { fmtDate } from "@/shared/datetime";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import type { EChartsOption } from "echarts";
 
@@ -126,7 +127,7 @@ function buildGreekOption(
   if (snap.length === 0) {
     return emptyChartOption(
       mode,
-      `${GREEK_LABELS[greekKey]}  (${dateStr || "—"})\n[No data]`,
+      `${GREEK_LABELS[greekKey]}  (${fmtDate(dateStr)})\n[No data]`,
     );
   }
 
@@ -137,7 +138,7 @@ function buildGreekOption(
   if (valid.length === 0) {
     return emptyChartOption(
       mode,
-      `${GREEK_LABELS[greekKey]}  (${dateStr})\n[No valid ${greekKey} values]`,
+      `${GREEK_LABELS[greekKey]}  (${fmtDate(dateStr)})\n[No valid ${greekKey} values]`,
     );
   }
 
@@ -365,7 +366,7 @@ function buildGreekOption(
   return baseChartOption(mode, {
     grid: commonGrid({ left: 50, right: 12, top: 36, bottom: 36 }),
     title: {
-      text: `${GREEK_LABELS[greekKey]}  (${dateStr})  S=${fmtNum(S)}元`,
+      text: `${GREEK_LABELS[greekKey]}  (${fmtDate(dateStr)})  S=${fmtNum(S)}元`,
       left: "left",
       textStyle: { color: textColor, fontSize: 11, fontWeight: 600 },
     },

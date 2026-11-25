@@ -1,5 +1,11 @@
 -- ============================================================================
 --  KG search HOT PATHS — llm.kg_hotpaths (2026-11-06)
+--  kg entity (ns0 db_semantics_tables reads the payload below):
+-- description: The KG search's promoted replay layer — a repeatable query's
+--   packed chain served without re-running the traversal, and how often each
+--   hot path has been served.
+-- tags: kg hot paths, KG热路径, replay, 回放, chain cache, 链缓存,
+--   repeatable query, 重复查询, hit count, 命中次数
 --  The PROMOTED replay layer of the kg_search chain cache: same row
 --  shape as llm.kg_queries (one row per EDGE of one chain — DDL
 --  database/sql/llm/kg_queries.sql) plus hit_count. The deep

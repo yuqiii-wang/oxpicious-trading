@@ -8,6 +8,7 @@
 import { Router, type Request, type Response } from "express";
 import { HttpError, wrapAsync } from "../../lib/http.js";
 import {
+  LLM_MODALITIES,
   SECRET_SUB_TYPES,
   SECRET_TYPES,
   createSecret,
@@ -15,6 +16,7 @@ import {
   listSecrets,
   testSecret,
   updateSecret,
+  type LlmModality,
   type SecretConfigSave,
   type SecretSubType,
   type SecretType,
@@ -63,12 +65,27 @@ function parseSecretEntry(body: unknown): SecretConfigSave {
     }
     modelName = b.modelName.trim();
   }
-  if ((secretType === "llm" || secretType === "jev") &&
+  if ((secretType === "llm" || secretType === "jev" ||
+       secretType === "ocr") &&
       (modelName == null || modelName === "")) {
     throw new HttpError(400, "INVALID_PARAM",
       `modelName is required for ${secretType} rows (the request payload needs the model id)`);
   }
   if (modelName === "") modelName = null;
+  // The modality profiles ('llm_modality') — omitted = text (the
+  // columns' own default; the UI always sends them explicitly).
+  let inputModality: LlmModality = "text";
+  let outputModality: LlmModality = "text";
+  for (const [field, value] of [["inputModality", b.inputModality], ["outputModality", b.outputModality]] as const) {
+    if (value !== undefined) {
+      if (!(LLM_MODALITIES as readonly string[]).includes(value as string)) {
+        throw new HttpError(400, "INVALID_PARAM",
+          `${field} must be one of: ${LLM_MODALITIES.join(" | ")}`);
+      }
+      if (field === "inputModality") inputModality = value as LlmModality;
+      else outputModality = value as LlmModality;
+    }
+  }
   let contextLength: number | null = null;
   if (b.contextLength != null) {
     contextLength = Number(b.contextLength);
@@ -109,6 +126,8 @@ function parseSecretEntry(body: unknown): SecretConfigSave {
     subType,
     modelName,
     contextLength,
+    inputModality,
+    outputModality,
     apiUrl,
     apiKey: b.apiKey === undefined ? undefined : (b.apiKey as string | null),
     isActive: b.isActive !== false,

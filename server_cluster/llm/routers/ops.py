@@ -18,6 +18,7 @@ from ..data_definitions.admin import (
     ControlRequest, ControlResponse, HealthResponse, StatsResponse,
 )
 from ..manager import ModelManager
+from .deps import check_bearer
 from .deps import find_dummy_backend
 from .errors import openai_error
 
@@ -57,6 +58,9 @@ def _zeroed_controls() -> ControlResponse:
 @router.post("/control", response_model=ControlResponse)
 async def control(request: Request, req: ControlRequest) -> Any:
     manager: ModelManager = request.app.state.manager
+    denied = check_bearer(request, request.app.state.config, manager)
+    if denied is not None:
+        return denied
     dummy = find_dummy_backend(manager)
     if dummy is None:
         return openai_error(

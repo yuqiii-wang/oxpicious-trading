@@ -1,0 +1,47 @@
+[
+  {
+    "service": "downloads.stock.sse.pe",
+    "request_type": "trade_stats",
+    "resource_type": 0,
+    "sleep_sec": 8,
+    "sleep_jitter": 0.3,
+    "poll_interval_sec": null,
+    "max_retries": null,
+    "retry_backoff_sec": null,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 60,
+    "rotate_browser_profile": true,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": null,
+    "notes": "SSE trade stats (query.sse.com.cn) — one request per stock per still-missing date in the weekly sweep; pacing mirrors downloads.stock.sse.pe_latest's trade_stats row (the archive module's former trade_stats row, 2026-10-09).",
+    "source_ref": "downloads/stock/sse/pe/__main__.py",
+    "updated_at": "2026-11-20T12:00:00.000000+00:00"
+  },
+  {
+    "service": "downloads.stock.sse.pe",
+    "request_type": "default",
+    "resource_type": 0,
+    "sleep_sec": 8,
+    "sleep_jitter": 0.3,
+    "poll_interval_sec": null,
+    "max_retries": null,
+    "retry_backoff_sec": null,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 60,
+    "rotate_browser_profile": true,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": null,
+    "settle_sleep_sec": null,
+    "urls": {
+      "sse_trade_stats_url": "http://query.sse.com.cn/security/fund/queryNewAllQuatAbel.do",
+      "sse_trade_stats_alt_url": "http://query.sse.com.cn/commonQuery.do",
+      "sse_company_referer": "http://www.sse.com.cn/assortment/stock/list/info/turnover/index.shtml",
+      "referer": "https://www.sse.com.cn/market/price/trends/"
+    },
+    "notes": "URL carrier for the module's service_urls(SERVICE) lookups (the 成交概况 endpoints re-homed from downloads.stock.sse.archive when its PE half migrated here, 2026-11-20; pacing lives in the trade_stats row).",
+    "source_ref": "downloads/stock/sse/pe/__main__.py",
+    "updated_at": "2026-11-20T12:00:00.000000+00:00"
+  }
+]

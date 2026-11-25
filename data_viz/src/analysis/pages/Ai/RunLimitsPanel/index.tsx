@@ -34,6 +34,7 @@ import {
   ExpandMore,
   Tune,
 } from "@mui/icons-material";
+import { fmtStamp } from "@/shared/datetime";
 import { usePanelFold } from "../usePanelFold";
 import { LIMIT_GROUPS, draftOf, type NumericLimitKey } from "./limitFields";
 import { useRunLimits } from "./useRunLimits";
@@ -201,7 +202,7 @@ export default function RunLimitsPanel() {
                     color="text.secondary"
                     sx={{ display: "block", mt: 0.5 }}
                   >
-                    Updated {limits.updatedAt}
+                    Updated {fmtStamp(limits.updatedAt)}
                   </Typography>
                 )}
               </>

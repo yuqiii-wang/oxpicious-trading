@@ -1,0 +1,13 @@
+{
+  "service": "builds.index",
+  "kind": "derive",
+  "tables": [
+    {
+      "table": "stats.index_tech_stats"
+    },
+    {
+      "table": "stats.index_exts"
+    }
+  ],
+  "notes": "Three phases; the inputs mix date-named exchange files with per-code full-history files (csindex / cnindex / bse), so no csv stage — the session absent from the data tables is the charge. Presence = index_tech_stats (the baseline gate the build itself reads) AND index_exts (the last phase); index_identity is streamer-pre-seeded."
+}

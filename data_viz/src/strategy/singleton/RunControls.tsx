@@ -4,7 +4,8 @@
  * Renders:
  *  - The MODE toggle (2026-11-19): Signals (the analysis signal-family
  *    tags) | Oracle (the HINDSIGHT mode — only analysis.oracle_signals
- *    pivot actions at the oracle's own forward-60d trend grade; the
+ *    pivot actions at the oracle's own 20d favorable-move grade, both
+ *    legs; the
  *    tags input is replaced by the oracle descriptor chip in that
  *    mode)
  *  - SignalTagsInput (the analysis signal-family TAG selector — no
@@ -44,8 +45,8 @@ import { RunHistorySelect } from "./RunHistorySelect";
 
 /** The strategy page's mode: the analysis signal families, or the
  *  hindsight oracle (strategy.factors_and_algos._oracle — only
- *  oracle pivot actions at the oracle's own forward-60d trend
- *  grade). */
+ *  oracle pivot actions at the oracle's own 20d favorable-move
+ *  grade, both legs). */
 export type StrategyMode = "signals" | "oracle";
 
 export interface RunControlsProps {

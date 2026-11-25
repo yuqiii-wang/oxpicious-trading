@@ -57,6 +57,7 @@ const APPS: Record<AppKey, AppConfig> = {
     defaultPath: "/dataviz/debt",
     tabs: [
       { label: "Debt", path: "/dataviz/debt" },
+      { label: "Macro", path: "/dataviz/macro" },
       { label: "Options", path: "/dataviz/szse-options" },
       { label: "ETF", path: "/dataviz/etf-margin" },
       { label: "Index", path: "/dataviz/index" },

@@ -82,29 +82,35 @@
  *       starts. GET /orchestration/runs/:tag polls step statuses;
  *       dryRun=true echoes the plan without executing (smoke only).
  *       The maintainer's chain posts with arrange=true: the monitor
- *       area first upserts the tier's freq-window arrangement
- *       (monitor.orchestration_task_state) and skips not-due steps
- *       (state skipped_not_due) instead of spawning them to no-op.
+ *       area first upserts the tier's arrangement
+ *       (monitor.orchestration_task_state — each step's data pre-check
+ *       where one is declared, else its freq-window verdict) and skips
+ *       not-due steps (state skipped_not_due) instead of spawning them
+ *       to no-op.
  *
  *   GET /api/monitor/orchestration/board
  *     → the ARRANGEMENT BOARD (the Orchestration tab): every
  *       orchestration-tier service's arrangement row
- *       (monitor.orchestration_task_state — the Shanghai-calendar
- *       freq verdict the monitor area's OrchestrationArranger wrote,
- *       state DECODED via the label_dim join) classified into three
- *       sections — `running` (heartbeat-live, pid/started/beat joined),
- *       `queue` (arranged due, not yet successfully run; priority-desc
- *       with the non-daily missing/attempts/next-check tooltip fields),
- *       `noNeed` (the rest, most-recent first, with the reason: within
- *       freq window | once — done | ran since arranged | no window) —
- *       each row enriched with its service_config schedule/sourceRef.
- *       An empty (never-arranged) table bootstraps through one
- *       arrangement pass before the read.
+ *       (monitor.orchestration_task_state — the verdict the monitor
+ *       area's OrchestrationArranger wrote: the Shanghai-calendar freq
+ *       rule, or the data pre-check for a service that declares one;
+ *       state and basis DECODED via the label_dim join) classified into
+ *       three sections — `running` (heartbeat-live, pid/started/beat
+ *       joined), `queue` (arranged due, not yet successfully run;
+ *       priority-desc, with the pre-check reading + session lists and
+ *       the non-daily missing/attempts/next-check tooltip fields),
+ *       `noNeed` (the rest, most-recent first, with the reason: data
+ *       present | csv staged | awaiting source csv (the pre-check) |
+ *       within freq window | once — done | ran since arranged | no
+ *       window) — each row enriched with its service_config
+ *       schedule/sourceRef. An empty (never-arranged) table bootstraps
+ *       through one arrangement pass before the read.
  *
  *   POST /api/monitor/orchestration/arrange
  *     → one arrangement pass over every tier file NOW (the page's
- *       Arrange now action — the same freq rule the nightly chain's
- *       per-tier arrange side applies), then the refreshed board.
+ *       Arrange now action — the same verdicts the nightly chain's
+ *       per-tier arrange side applies: the data pre-check where
+ *       declared, else the freq rule), then the refreshed board.
  *
  *   GET /api/monitor/non-daily
  *     → the non-daily tasks' completeness monitor (the Non-daily tab):
@@ -154,6 +160,28 @@
  *       pg_wal dir size vs max_wal_size, always-on liveness) and return
  *       its [ok] / [ALERT] lines + the health verdict. The UI's refresh
  *       button on the Service Monitor page fires this.
+ *
+ *   GET /api/monitor/fleet
+ *     → the monitor area's aggregated GET /residents (ONE call; the
+ *       monitor's FleetOps fans out ONE GET per area server server-side
+ *       — /processes?detail=1) with each resident row's unified detail
+ *       folded: supervisor row + heartbeat evidence + the DERIVED
+ *       progress (the missing-set oracle — the pollers' per-asset
+ *       completeness, computed from the data tables at the owning
+ *       servers) + the child-reported progress. The 2026-11-21 control
+ *       unification plan's query rule: the UI queries the fleet VIA THE
+ *       SERVER, never per-process. The Service Monitor page merges the
+ *       detail into its resident rows by service name.
+ *
+ *   POST /api/monitor/fleet/command  { service, command, payload? }
+ *     → the ONE downward-control face (Phase 4's command mailbox): a
+ *       cooperative signal (flush_now | pause | resume) enqueued into
+ *       the target child's mailbox at its OWNING area server (the
+ *       py-runner's cluster routing). The child's heartbeat thread
+ *       claims + consumes it atomically within ~5s and acts at its next
+ *       safe checkpoint; the area server's class gate refuses a PAUSE
+ *       for a not-pausable / gpu-class service (409 with the reason).
+ *       The Service Monitor page's per-row ⋮ menu fires this.
  *
  *   POST /api/monitor/stream-always
  *     → bring the always-on fleet up via the monitor area's POST
@@ -348,6 +376,7 @@ import extResourcesRouter from "./ext-resources.js";
 import srcDataAuditRouter from "./src-data-audit.js";
 import streamAlwaysRouter from "./stream-always.js";
 import streamRouter from "./stream.js";
+import fleetRouter from "./fleet.js";
 import aiAuditRouter from "./ai-audit.js";
 import dbAuditRouter from "./db-audit.js";
 import cautionsRouter from "./cautions.js";
@@ -364,6 +393,7 @@ router.use(extResourcesRouter);
 router.use(srcDataAuditRouter);
 router.use(streamAlwaysRouter);
 router.use(streamRouter);
+router.use(fleetRouter);
 router.use(aiAuditRouter);
 router.use(dbAuditRouter);
 router.use(cautionsRouter);

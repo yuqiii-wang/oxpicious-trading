@@ -18,12 +18,23 @@ llm_agents/
 │   ├── errors.py, models.py (SHANGHAI_TZ), prompts.py, text_caps.py
 ├── kg/                             # the KNOWLEDGE-GRAPH domain (2026-11-06 migration:
 │   │                              # INDEPENDENT of deep_agents — imports nothing of it)
-│   ├── graph.py        (the pure namespace-blind traversal engine: bilingual
-│   │                   token index + IDF seed match → spreading activation,
-│   │                   per-(relation, direction) factors, fan-out-normalized,
-│   │                   beam-bounded → blended rank → packed subgraph + renders)
+│   ├── graph/           (the pure namespace-blind traversal engine, a package: engine +
+│   │                   vocabulary + rendering + values/data_definitions — bilingual
+│   │                   token index + IDF seed match, since 2026-11-23 with a FUZZY LANE
+│   │                   (plural strip / char-trigram >= 0.58 for a token with no exact
+│   │                   bucket) → spreading activation on the WALK's own scale (the
+│   │                   2026-11-23 fix: propagated rows were normalized over the seeds'
+│   │                   activation, which held every query at the 2-row minimum) →
+│   │                   seeds-first rank + per-rung relevance floors → packed subgraph
+│   │                   + a SearchTrace of rung counters + the renders)
 │   ├── query_log.py    (QueryLog — the llm.kg_queries LOG / two-hit EVIDENCE table)
 │   ├── hotpaths.py     (HotpathCache — the llm.kg_hotpaths PROMOTED replay layer)
+│   ├── search_stats.py (SearchStatsLog / KgSearchStatRow — the llm.kg_search_stats
+│   │                   PER-CALL search ledger, 2026-11-23: one fail-soft row per
+│   │                   ANSWERED kg_search call on every return path — replay, live
+│   │                   match, no-match, gate-rejected — with the ranked head, the
+│   │                   rung counters (graph.SearchTrace), the replay/gate facts
+│   │                   and the latency; nothing in the search path reads it)
 │   └── service.py      (KnowledgeGraphService — TTL graph load + search/expand
 │                        flows + NS_SCOPES + KgUnavailableError; the process-wide
 │                        KNOWLEDGE_GRAPHS singleton is minted in __init__.py)

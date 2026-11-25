@@ -22,7 +22,9 @@
 \ir analysis_signals/portfolio_signal_rules.sql
 \ir analysis_signals/signal_amplification_history.sql
 \ir analysis_signals/signal_amplification_rules.sql
+\ir analysis_signals/signal_overlap_audit.sql
 \ir analysis_signals/signal_rules.sql
+\ir analysis_signals/signal_type_audit.sql
 \ir futures_ext.sql
 \ir industry_correlations.sql
 \ir industry_hypes_seasonal.sql
@@ -55,6 +57,7 @@
 \ir pe_pct.sql
 \ir pe_pct_streaks.sql
 \ir static/analysis_insight_metrics/insight_page_docs.sql
+\ir text_metrics_daily.sql
 \ir trends/trend_days.sql
 \ir trends/trend_episode_days.sql
 \ir volatility.sql

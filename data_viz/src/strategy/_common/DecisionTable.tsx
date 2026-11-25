@@ -75,6 +75,7 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import type { StrategyDecision } from "@shared/types";
 import { SignalActionChip } from "@/shared/components/signal-action";
+import { fmtDate } from "@/shared/datetime";
 import { parseMixReason, type MixData } from "./mixReason";
 
 /** Build a structured tooltip ReactNode for a mixed-mode decision. Shows
@@ -358,7 +359,7 @@ export default function DecisionTable({
                           color={isLastDaySell(d) ? LAST_DAY_SELL_COLOR : undefined}
                         />
                       </td>
-                      <td>{d.exec_date}</td>
+                      <td>{fmtDate(d.exec_date)}</td>
                       <td>
                         <span
                           title={d.side === "BUY"

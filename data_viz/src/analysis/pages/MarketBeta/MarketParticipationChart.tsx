@@ -24,6 +24,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ToggleButton, ToggleButtonGroup } from "@mui/material";
 import ChartCard from "@/shared/components/ChartCard";
 import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
+import { fmtDate } from "@/shared/datetime";
 import { useAiAskAddon, INSIGHT_PAGES } from "@/shared/ai-ask";
 import { useDocs, compactDefined } from "@/shared/docs";
 import { fetchMarketParticipation } from "@/lib/api-client";
@@ -103,7 +104,7 @@ export function MarketParticipationChart() {
     ? "Loading market participation…"
     : rows.length === 0
       ? "No participation rows"
-      : `${rows.length} trading days · latest ${rows[rows.length - 1].date}` +
+      : `${rows.length} trading days · latest ${fmtDate(rows[rows.length - 1].date)}` +
         (g.latestTotalYi != null ? ` · total ${Math.round(g.latestTotalYi).toLocaleString()} 亿` : "") +
         (g.latestPctRank != null ? ` · 252d pct ${(g.latestPctRank * 100).toFixed(0)}%` : "") +
         (g.latestSharePct != null ? ` · SSE share ${g.latestSharePct.toFixed(1)}%` : "");

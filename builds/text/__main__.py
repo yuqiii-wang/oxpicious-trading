@@ -2,23 +2,33 @@
 
 Pipeline (all steps reuse one DB connection):
 
-  1. Parse the downloaded news artifacts (builds.text.loaders) for the
-     requested --sources.
-  2. Restrict to the --start-date / --end-date window (default: all dates).
-  3. Tag industries + extract keywords (builds.text.keywords — integrated
+  1. Connect + fetch the stored text.news state FIRST — the zhihu loader's
+     title disambiguation claims stored titles from it so re-runs reproduce
+     them instead of renaming already-stored answers into new rows (the
+     duplicate-row guard; details in builds.text.loaders.zhihu).
+  2. Parse the downloaded news artifacts (builds.text.loaders) for the
+     requested --sources (zhihu items deduped across artifacts by
+     ContentID — the same answer is routinely captured by the tmr_forcast
+     and tday_snapshot/lookback artifacts of one market date).
+  3. Restrict to the --start-date / --end-date window (default: all dates).
+  3b. Enrich contents whose src images parse to text (builds.text.image_text —
+     the jev vision gate "text screenshot?" then OCR; the parsed anchors are
+     removed, the URL + transcription appended as a ````ocr fenced block).
+  4. Tag industries + extract keywords (builds.text.keywords — integrated
      static.keyword_maps seed + sec_classification catalog metadata).
-  4. Upsert text.news, refresh text.news_keywords for new/changed articles,
+  5. Upsert text.news, refresh text.news_keywords for new/changed articles,
      recompute doc_freq/idf corpus-wide, fill today_industry_change from
      stats.industry_basic_stats, recompute the is_big_fluctuation flag
      on text.news + llm.llm_qa (builds.text.big_market_mv), and rewrite
      llm.llm_qa_keywords — the QA corpus's keyword audit (same vocabulary
      and negation rules), full-recompute over the ACTIVE llm_qa rows.
-  5. ai_daily source: store the downloaded Q&A envelopes into
+  6. ai_daily source: store the downloaded Q&A envelopes into
      llm.llm_qa (+ llm.llm_qa_refs / news-group provenance) via
      builds.text.ai_daily_qa — idempotent per (question, qa_date), the
      DB half of downloads.macro.ai_daily since its --store removal.
 
-Incremental semantics: text.news upserts are idempotent; keyword rows are
+Incremental semantics: text.news upserts are idempotent (also across runs —
+stored titles are claimed back by their records); keyword rows are
 rewritten only for articles whose stored word_count/industry_id changed
 (downloaded files are immutable per (title, source, date)). --force rewrites
 keyword rows for every article in the selected window.
@@ -33,6 +43,7 @@ Usage::
     python -m builds.text --start-date 2026-09-01           # date window
     python -m builds.text --force                           # refresh all keyword rows
     python -m builds.text --no-keywords                     # text.news only
+    python -m builds.text --no-image-text                   # skip the image OCR enrichment
 
 The :class:`TextBuild` entry class (a :class:`DataBuild` subclass) owns
 the runtime lifecycle; the loaders/keywords modules are pandas-free so
@@ -105,6 +116,10 @@ class TextBuild(DataBuild):
         parser.add_argument("--no-digest", action="store_true",
                             help="Skip the jev news_digestions side task "
                                  "(default: jev-digest newly loaded articles).")
+        parser.add_argument("--no-image-text", action="store_true",
+                            help="Skip the image → embedded-text enrichment "
+                                 "(jev text-screenshot gate + OCR; default: parse "
+                                 "src images into ````ocr content blocks).")
 
     def apply_args(self) -> None:
         self.sources = ([s.strip() for s in self.args.sources.split(",") if s.strip()]
@@ -123,33 +138,13 @@ class TextBuild(DataBuild):
     async def run(self) -> None:
         from _common.build_commons import bulk_upsert_async
 
-        # --- 1. Parse downloaded artifacts ----------------------------------
-        logger.info("\n[1/4] Parsing downloaded news …")
-        rows = load_news(self.sources)
-        if self.start:
-            rows = [r for r in rows if r["date"] >= self.start]
-        if self.end:
-            rows = [r for r in rows if r["date"] <= self.end]
-        if not rows:
-            logger.info("    no rows in scope — nothing to do")
-            return
-        logger.info("    %d articles in scope (%s → %s)",
-                    len(rows), min(r["date"] for r in rows),
-                    max(r["date"] for r in rows))
-
-        # --- 2. Industry tags + keyword extraction --------------------------
-        if not self.args.no_keywords:
-            logger.info("\n[2/4] Tagging industries + extracting keywords …")
-            extract_for_articles(rows)
-            tagged = sum(1 for r in rows if r.get("industry_id"))
-            kw_total = sum(len(r.get("keywords", {})) for r in rows)
-            logger.info("    %d/%d articles industry-tagged, %d keyword rows",
-                        tagged, len(rows), kw_total)
-        else:
-            logger.info("\n[2/4] Keyword extraction skipped (--no-keywords)")
-
-        # --- 3. Connect + upsert text.news ----------------------------------
-        logger.info("\n[3/4] Connecting to database …")
+        # --- 1. Connect + load the stored news state ------------------------
+        # BEFORE parsing: the stored-row map (author/url/news_id per zhihu
+        # (title, date)) feeds the zhihu loader's stored-row claim, so a
+        # re-run reproduces the stored keys instead of renaming
+        # already-stored answers into new rows when the parsed artifact set
+        # drifts (duplication guard — see builds.text.loaders.zhihu).
+        logger.info("\n[1/5] Connecting to database …")
         conn = await self.connect_db()
         # Conn-scoped step instances — every DB call below routes through
         # them (upsert module-level names remain the pure helpers/constants).
@@ -166,11 +161,81 @@ class TextBuild(DataBuild):
                 logger.error("    [FATAL] missing tables %s — run "
                              "database/sql/text/*.sql first", missing)
                 sys.exit(1)
+            pre_existing = await upserter.fetch_existing_news()
+            zhihu_stored_rows = {
+                (title, date): {"author": entry.get("author"),
+                                "url": entry.get("url"),
+                                "news_id": entry["news_id"]}
+                for (title, source, date), entry in pre_existing.items()
+                if source == "zhihu"
+            }
 
+            # --- 2. Parse downloaded artifacts -------------------------------
+            logger.info("\n[2/5] Parsing downloaded news …")
+            rows = load_news(self.sources, zhihu_stored_rows)
+            if self.start:
+                rows = [r for r in rows if r["date"] >= self.start]
+            if self.end:
+                rows = [r for r in rows if r["date"] <= self.end]
+            if not rows:
+                logger.info("    no rows in scope — nothing to do")
+                return
+            logger.info("    %d articles in scope (%s → %s)",
+                        len(rows), min(r["date"] for r in rows),
+                        max(r["date"] for r in rows))
+
+            # --- 2b. Image → embedded-text enrichment ------------------------
+            # Src images (zhihu comment_img anchors; item-level images the
+            # day any source carries them) gate through the jev vision read
+            # ("text screenshot?") and OCR into ````ocr fenced blocks —
+            # BEFORE tagging, so word_count / keywords see the final
+            # content. Fail-soft: an unreachable model host warns here, it
+            # never fails the news build (same discipline as 4b).
+            if self.args.no_image_text:
+                logger.info("\n[2b/5] image → text enrichment skipped "
+                            "(--no-image-text)")
+            else:
+                logger.info("\n[2b/5] Enriching contents with src images "
+                            "(jev gate + OCR) …")
+                try:
+                    from builds.text.image_text import (
+                        ImageTextConfig, NewsImageTextEnricher)
+
+                    enricher = NewsImageTextEnricher(ImageTextConfig())
+                    stats = await enricher.enrich_rows(rows)
+                    logger.info(
+                        "    [image-text] %d/%d rows changed (candidates %d, "
+                        "prefilter-skipped %d, gate-text %d, gate-chart %d, "
+                        "gate-other %d, blocks %d, charts %d, failed %d)",
+                        stats["rows_changed"], stats["rows"],
+                        stats.get("candidates", 0),
+                        stats.get("prefilter_skipped", 0),
+                        stats.get("gate_yes", 0), stats.get("gate_chart", 0),
+                        stats.get("gate_no", 0),
+                        stats.get("blocks", 0), stats.get("charts", 0),
+                        stats.get("failed", 0))
+                except Exception as exc:
+                    logger.warning(
+                        "    [image-text] skipped (%s: %s) — catch up "
+                        "with temp_scripts/backfill_news_comment_ocr.py",
+                        type(exc).__name__, exc)
+
+            # --- 3. Industry tags + keyword extraction -----------------------
+            if not self.args.no_keywords:
+                logger.info("\n[3/5] Tagging industries + extracting keywords …")
+                extract_for_articles(rows)
+                tagged = sum(1 for r in rows if r.get("industry_id"))
+                kw_total = sum(len(r.get("keywords", {})) for r in rows)
+                logger.info("    %d/%d articles industry-tagged, %d keyword rows",
+                            tagged, len(rows), kw_total)
+            else:
+                logger.info("\n[3/5] Keyword extraction skipped (--no-keywords)")
+
+            # --- 4. Upsert text.news ----------------------------------------
             # Pre-upsert state decides which articles need keyword work.
             needing = upsert.select_articles_needing_keywords(
-                rows, await upserter.fetch_existing_news(), force=self.args.force)
-            logger.info("    [DB] upserting %d rows into text.news "
+                rows, pre_existing, force=self.args.force)
+            logger.info("\n[4/5] Upserting %d articles into text.news "
                         "(%d new/changed) …", len(rows), len(needing))
             # KEEP UPSERT (not COPY): rows include EXISTING articles whose
             # word_count / industry_id changed — real PK conflicts by design.
@@ -194,7 +259,7 @@ class TextBuild(DataBuild):
             # filter_new_comments drop already-stored PKs before the write, so a
             # re-run is idempotent and the upsert never conflicts twice.
             if self.sources is None or "zhihu" in self.sources:
-                comment_rows = load_zhihu_comments()
+                comment_rows = load_zhihu_comments(zhihu_stored_rows)
                 news_id_by_key = {
                     key: entry["news_id"] for key, entry in post_existing.items()}
                 comments = upsert.build_comment_rows(comment_rows, news_id_by_key)
@@ -202,6 +267,36 @@ class TextBuild(DataBuild):
                 new_comments = upsert.filter_new_comments(comments, existing_pks)
                 logger.info("    [DB] comments: %d parsed, %d resolved to news, "
                             "%d new", len(comment_rows), len(comments), len(new_comments))
+                if not self.args.no_image_text:
+                    # The same enrichment as the 2b phase, for the inline
+                    # comment images — embed BEFORE the write so search_tsv
+                    # lands on the final content. Fail-soft like 2b.
+                    try:
+                        from builds.text.image_text import (
+                            ImageTextConfig, NewsImageTextEnricher)
+
+                        comment_enricher = NewsImageTextEnricher(
+                            ImageTextConfig())
+                        c_stats = await comment_enricher.enrich_rows(
+                            new_comments)
+                        logger.info(
+                            "    [image-text] comments: %d/%d changed "
+                            "(candidates %d, gate-text %d, gate-chart %d, "
+                            "gate-other %d, blocks %d, charts %d, failed %d)",
+                            c_stats["rows_changed"], c_stats["rows"],
+                            c_stats.get("candidates", 0),
+                            c_stats.get("gate_yes", 0),
+                            c_stats.get("gate_chart", 0),
+                            c_stats.get("gate_no", 0),
+                            c_stats.get("blocks", 0),
+                            c_stats.get("charts", 0),
+                            c_stats.get("failed", 0))
+                    except Exception as exc:
+                        logger.warning(
+                            "    [image-text] comments skipped (%s: %s) — "
+                            "catch up with "
+                            "temp_scripts/backfill_news_comment_ocr.py",
+                            type(exc).__name__, exc)
                 await upserter.insert_comments(new_comments)
 
             # --- llm.llm_qa (ai_daily envelopes) --------------------------
@@ -235,7 +330,7 @@ class TextBuild(DataBuild):
                 logger.info("    [DB] lexicon DF stats: %s — %d lexemes",
                             tbl, n_lex)
 
-            # --- 3b. jev digestions (text.news_digestions) -------------------
+            # --- 4b. jev digestions (text.news_digestions) -------------------
             # Side task over the SAME connection: the local jev decision
             # model (onejev-1.6-4b, POST /v1/systemone) scores a sentiment
             # for every JUST-LOADED article still missing a digestion row
@@ -245,9 +340,9 @@ class TextBuild(DataBuild):
             # news build — catch up later with
             # `python -m llm_agents.news_digestions run --engine jev`.
             if self.args.no_digest:
-                logger.info("\n[3b/4] jev digestions skipped (--no-digest)")
+                logger.info("\n[4b/5] jev digestions skipped (--no-digest)")
             else:
-                logger.info("\n[3b/4] jev digestions for newly loaded "
+                logger.info("\n[4b/5] jev digestions for newly loaded "
                             "articles …")
                 try:
                     from llm_agents.news_digestions.jev_digest import (
@@ -269,9 +364,9 @@ class TextBuild(DataBuild):
 
             # --- 4. text.news_keywords --------------------------------------
             if self.args.no_keywords:
-                logger.info("\n[4/4] text.news_keywords skipped (--no-keywords)")
+                logger.info("\n[5/5] text.news_keywords skipped (--no-keywords)")
                 return
-            logger.info("\n[4/4] Writing text.news_keywords …")
+            logger.info("\n[5/5] Writing text.news_keywords …")
             await upserter.refresh_keyword_rows(articles)
             await upserter.recompute_keyword_stats()
             # The keyword-audit rollup (text.news_keyword_audit — the

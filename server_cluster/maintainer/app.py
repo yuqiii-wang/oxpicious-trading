@@ -4,9 +4,9 @@ One lean FastAPI (the config-area own-app shape): liveness, the job
 catalogue with each job's last result, and a run-on-demand trigger for
 a single job or the shared schedule. ONE scheduler daemon thread owns
 every fire — jobs declare their own ``fire_at`` group (03:30 shared
-maintenance, 07:00 fleet bring-up, 16:00 nightly pipeline chain); the
-API shares the same job objects, so an on-demand run refreshes
-``last_result`` everywhere.
+maintenance, 07:00 fleet bring-up + morning data audit, 16:00 nightly
+pipeline chain); the API shares the same job objects, so an on-demand
+run refreshes ``last_result`` everywhere.
 """
 from __future__ import annotations
 
@@ -20,7 +20,9 @@ from pydantic import BaseModel
 
 from server_cluster._common.config import AreaConfig, ClusterConfig
 from server_cluster._common.process_manager import ProcessManager
+from server_cluster.maintainer.backfill_latest import LatestSessionBackfillJob
 from server_cluster.maintainer.bring_up import FleetBringUpJob
+from server_cluster.maintainer.daily_check import DailyDataCheckJob
 from server_cluster.maintainer.jobs import (DbTableAuditArchiveJob,
                                             JobResult, LogCleanupJob,
                                             StatsDbBackupJob)
@@ -64,8 +66,13 @@ class MaintenanceApp:
         self.processes = ProcessManager(config)
         self.pipeline = NightlyPipelineJob()
         self.non_daily_backfill = NonDailyBackfillJob()
+        self.daily_data_check = DailyDataCheckJob()
+        # The backfill job shares the pipeline instance — its chain
+        # trigger rides the ONE chain lock, never a second one.
+        self.backfill_latest = LatestSessionBackfillJob(self.pipeline)
         self.jobs: list = [LogCleanupJob(), StatsDbBackupJob(),
                            DbTableAuditArchiveJob(), FleetBringUpJob(),
+                           self.daily_data_check, self.backfill_latest,
                            self.pipeline, self.non_daily_backfill]
         self.scheduler = MaintenanceScheduler(self.jobs)
         self.app = self._build_app()
@@ -75,7 +82,13 @@ class MaintenanceApp:
             title=f"server-cluster-{self.config.area}",
             description="Resident maintenance API: the cluster's "
             "schedules — daily maintenance jobs (03:30), the fleet "
-            "bring-up (07:00), the nightly pipeline chain (16:00 "
+            "bring-up (07:00), the morning data audit (07:00: the UI "
+            "API health + every daily_data_checks item's latest-"
+            "loaded-vs-frontier check, stale items to the Cautions "
+            "tab), the missing-session backfill (07:15: purge a "
+            "partial latest-CLOSED-session's rows per daily-bar family "
+            "and run downloads→builds→analysis through the pipeline "
+            "job to fill it), the nightly pipeline chain (16:00 "
             "China time on A-share trading days: monitoring → "
             "downloads → builds → analysis → strategy driven through "
             "the monitor area's orchestration runner; the recovery "

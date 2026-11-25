@@ -1,0 +1,23 @@
+{
+  "service": "builds.etf",
+  "kind": "load",
+  "tables": [
+    {
+      "table": "stats.etf_basic_stats"
+    },
+    {
+      "table": "stats.etf_tech_stats"
+    }
+  ],
+  "csv": [
+    {
+      "dir": "temps/szse_trend",
+      "pattern": "szse_trend_etf_{date}.csv"
+    },
+    {
+      "dir": "temps/sse_trend",
+      "pattern": "sse_trend_etf_{date}.csv"
+    }
+  ],
+  "notes": "Loads the two ETF trend files. Presence = the session in etf_basic_stats AND etf_tech_stats — the build's own data gate (its docstring: etf_identity presence is NOT the completeness signal)."
+}

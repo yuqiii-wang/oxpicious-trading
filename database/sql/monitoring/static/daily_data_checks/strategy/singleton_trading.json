@@ -1,0 +1,7 @@
+{
+  "view": "server_cluster/maintainer/daily_check/strategy/singleton_trading",
+  "params": {
+    "strategy_name": "portfolio:bollinger+crowdedness+ma_cross+macd+momentum+mov_rsi+options_vix+options_wall+rebound+rf_break_ft10"
+  },
+  "notes": "strategy_daily step 1 (strategy.singleton_trading): the nightly mixed portfolio's latest ACTIVE run end_date per covered index code (strategy_identity, strategy_name = the portfolio_name() form of the tier's --algo list — update this param together with the tier args) vs that code's bars frontier (1-day slack for the runner's analysis-horizon cap). A lagging code means the nightly singleton run stopped or skipped it."
+}

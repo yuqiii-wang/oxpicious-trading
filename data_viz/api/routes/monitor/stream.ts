@@ -31,6 +31,16 @@ interface BeatRow {
   is_normal_exit: boolean | null;
   stopped_at: Date | null;
   live_parallel: number;
+  /** The child-REPORTED progress (2026-11-21 control unification Phase
+   *  4 — smallint codes + the index-decoded labels; null = never
+   *  reported). The phase machine: downloading | reading | writing; the
+   *  run state: running | pausing | paused | done. */
+  progress_phase: number | null;
+  progress_state: number | null;
+  progress_at: Date | null;
+  progress_age_s: number | null;
+  progress_phase_label: string | null;
+  progress_state_label: string | null;
 }
 
 /** A watchdog restart, read from the merged trail: the dead life's row in
@@ -67,6 +77,14 @@ export interface ResidentProcessStatus {
    *  the static JSON config (a registration auto-exits past the cap). */
   liveParallel: number | null;
   maxParallel: number | null;
+  /** The child-REPORTED progress at its last safe checkpoint (Phase 4;
+   *  index-decoded labels — null = never reported). The DERIVED progress
+   *  (per-asset completeness) rides the fleet fold (/api/monitor/fleet),
+   *  not this DB read. */
+  progressPhase: string | null;
+  progressState: string | null;
+  progressAt: string | null;
+  progressAgeS: number | null;
 }
 
 /** Non-resident pipeline process (batch builds / downloads / analyses /
@@ -104,6 +122,14 @@ export interface ProcessStatus {
   schedule: string | null;
   notes: string | null;
   sourceRef: string;
+  /** The child-REPORTED progress at its last safe checkpoint (Phase 4;
+   *  index-decoded labels — null = never reported). A batch step wedged
+   *  in one phase with no fresh report is the pre-hung-kill caution
+   *  signal the plan's gap 5 names. */
+  progressPhase: string | null;
+  progressState: string | null;
+  progressAt: string | null;
+  progressAgeS: number | null;
 }
 
 export interface MonitorStreamResponse {
@@ -150,6 +176,10 @@ function toStatus(
       restarts24h: restarts24h.get(expected.service) ?? 0,
       liveParallel: 0,
       maxParallel: maxParallelFor(expected.service), // static JSON config
+      progressPhase: null,
+      progressState: null,
+      progressAt: null,
+      progressAgeS: null,
     };
   }
   const status: ResidentProcessStatus["status"] =
@@ -173,6 +203,10 @@ function toStatus(
     restarts24h: restarts24h.get(expected.service) ?? 0,
     liveParallel: beat.live_parallel,
     maxParallel: maxParallelFor(expected.service), // static JSON config
+    progressPhase: beat.progress_phase_label,
+    progressState: beat.progress_state_label,
+    progressAt: beat.progress_at ? beat.progress_at.toISOString() : null,
+    progressAgeS: beat.progress_age_s,
   };
 }
 
@@ -252,6 +286,10 @@ router.get("/stream", wrapAsync(async (_req: Request, res: Response) => {
         schedule: cfg.schedule,
         notes: cfg.notes,
         sourceRef: cfg.source_ref,
+        progressPhase: r.progress_phase_label,
+        progressState: r.progress_state_label,
+        progressAt: r.progress_at ? r.progress_at.toISOString() : null,
+        progressAgeS: r.progress_age_s,
       };
     });
   // Registered services that NEVER ran: config-tree entries without any
@@ -284,6 +322,10 @@ router.get("/stream", wrapAsync(async (_req: Request, res: Response) => {
       schedule: c.schedule,
       notes: c.notes,
       sourceRef: c.source_ref,
+      progressPhase: null,
+      progressState: null,
+      progressAt: null,
+      progressAgeS: null,
     });
   }
   processes.sort((a, b) => {

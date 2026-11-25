@@ -2,10 +2,11 @@
 -- each study index's newest placeable action (a 5-bar-window candidate
 -- needs its 2 right-side bars, and the one-action selection can place
 -- the frontier unit right up to the bars frontier) versus the newest
--- action row the oracle table actually carries. The weekly cadence
--- lets the built trail lag the frontier by up to ~1 trading week (~15
--- calendar days); a code beyond the 20-day tolerance is genuinely
--- stale (the Saturday backfill re-runs the tier).
+-- action row the oracle table actually carries. The DAILY incremental
+-- (2026-11-21 — the former weekly tier + gate retired) keeps the built
+-- trail within a few bars of the frontier; a code beyond the 20-day
+-- tolerance is genuinely stale (the nightly fire stopped writing —
+-- check the arrangement board / the service_audit trail).
 -- Serves analysis.oracle_signals (NonDailyOps,
 -- server_cluster/monitor/non_daily.py — the db_universe_coverage check;
 -- one row per stale code).

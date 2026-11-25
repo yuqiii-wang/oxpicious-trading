@@ -1,0 +1,4 @@
+{
+  "view": "server_cluster/maintainer/daily_check/analysis/analysis_signals",
+  "notes": "analysis_daily step 9 (analysis.analysis_signals): the mov_rsi family (signal_type=0, the tier's value source) TABLE-WIDE max(date) in analysis_signals.history_signals vs the index bars frontier, STRICT (0-day — the chain runs builds before analysis, so events ride the frontier date; the former 1-calendar-day slack masked any single-night stop across a weekend freeze). history_signals is a sparse EVENT table — per-code max(date) would false-alarm on quiet codes — so the table-wide max is the canary that the nightly signals tier wrote; anything behind the frontier means it stopped."
+}

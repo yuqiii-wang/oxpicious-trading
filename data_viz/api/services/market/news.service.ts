@@ -25,6 +25,11 @@
  *   keyword search — per term: the GIN-indexed search_tsv (Chinese,
  *   StructBERT-segmented on both sides) OR a raw title/content substring;
  *   ALL terms must hit (AND) unless searchAny ORs them.
+ *   default exclusions — articles whose digestion flagged is_fake_news and
+ *   rows whose ORIGIN (source, author-coalesced) is blocklisted in
+ *   text.news_providers (the news_audit >1-fake auto-block) drop out of
+ *   every list endpoint by default; includeFake / includeBlocked opt back
+ *   in (the audit page's drill-down uses both).
  */
 import { queryRows } from "../../lib/db.js";
 import { querySqlView, renderSqlView, sqlFrag } from "../../lib/sql-views.js";
@@ -93,6 +98,47 @@ interface NewsFilters {
    *  big_market_mv pass: |day change| >= 3% AND RSI(3) pinned, 5-td
    *  cooldown per industry). */
   bigFluctuationOnly?: boolean;
+  /** Opt OUT of the API's default exclusions (both default false):
+   *  includeFake keeps articles whose digestion flagged is_fake_news;
+   *  includeBlocked keeps rows whose ORIGIN (source, COALESCE(author, ''))
+   *  is blocklisted in text.news_providers (the news_audit >1-fake
+   *  auto-block + manual curation). The News page never sends them — the
+   *  audit page's item drill-down does (it must see what it audits). */
+  includeFake?: boolean;
+  includeBlocked?: boolean;
+}
+
+/**
+ * The API's DEFAULT exclusions as extra WHERE clauses on the text.news row
+ * aliased `${alias}` ("" = the bare table — count_by_industry has no alias):
+ *  • fake — the article's text.news_digestions row flagged is_fake_news
+ *    (NOT EXISTS keeps undigested rows visible);
+ *  • blocked — the row's ORIGIN (source, author COALESCED to the '' sentinel,
+ *    the registry grain) is blocklisted in text.news_providers.
+ * Applied by every list endpoint unless includeFake/includeBlocked opt out,
+ * so the feed, chips, tree counts and date bar all agree on one visible
+ * corpus.
+ */
+function defaultExclusionSql(
+  alias: string,
+  filters: NewsFilters,
+): string[] {
+  const a = alias ? `${alias}.` : "";
+  const clauses: string[] = [];
+  if (!filters.includeFake) {
+    clauses.push(
+      `NOT EXISTS (SELECT 1 FROM text.news_digestions d` +
+      ` WHERE d.news_id = ${a}news_id AND d.is_fake_news)`,
+    );
+  }
+  if (!filters.includeBlocked) {
+    clauses.push(
+      `NOT EXISTS (SELECT 1 FROM text.news_providers np` +
+      ` WHERE np.source = ${a}source AND np.author = COALESCE(${a}author, '')` +
+      ` AND np.is_blocked)`,
+    );
+  }
+  return clauses;
 }
 
 async function buildFilterSql(
@@ -127,13 +173,26 @@ async function buildFilterSql(
     params.push(filters.source);
     clauses.push(`n.source = $${params.length}`);
   }
-  if (filters.author) {
+  // != null (NOT truthiness): the EMPTY STRING is the provider-level
+  // author sentinel — the News Audit expansion filters to it explicitly;
+  // null = param absent = no filter. The sentinel also matches NULL:
+  // text.news stores author NULL for sources without a distinct author
+  // (the registry sync COALESCEs to '' at the origin grain, the news rows
+  // themselves keep NULL).
+  if (filters.author != null) {
     params.push(filters.author);
-    clauses.push(`n.author = $${params.length}`);
+    clauses.push(
+      filters.author === ""
+        ? `(n.author = $${params.length} OR n.author IS NULL)`
+        : `n.author = $${params.length}`,
+    );
   }
   if (filters.bigFluctuationOnly) {
     clauses.push(`n.is_big_fluctuation`);
   }
+  // Default exclusions (fake verdicts + blocked origins) — see
+  // defaultExclusionSql; includeFake / includeBlocked opt out.
+  clauses.push(...defaultExclusionSql("n", filters));
   // Keyword search: every term must hit the GIN-indexed search_tsv (the
   // StructBERT-segmented full-text vector — the recall path for Chinese,
   // which raw ILIKE tokens can't segment) OR title/content as a raw
@@ -174,17 +233,23 @@ async function buildFilterSql(
 // ---------------------------------------------------------------------------
 
 /** Cached article count per industry_id, optionally scoped to one source /
- *  author (refreshed more often than the catalog: builds.text runs daily). */
+ *  author (refreshed more often than the catalog: builds.text runs daily).
+ *  The default exclusions ride along (bare-alias clauses — the template
+ *  reads text.news without an alias) and the flags join the cache key. */
 async function getNewsCountByIndustry(
   source?: string | null,
   author?: string | null,
+  exclusions?: Pick<NewsFilters, "includeFake" | "includeBlocked">,
 ): Promise<Map<string, number>> {
-  const key = `news:counts-by-industry:${source ?? "all"}:${author ?? "all"}`;
+  const key = `news:counts-by-industry:${source ?? "all"}:${author ?? "all"}:` +
+    `${exclusions?.includeFake ? 1 : 0}:${exclusions?.includeBlocked ? 1 : 0}`;
   const rows = await cachedRows<{ industry_id: string; n: string } & QueryResultRow>(
     key,
     () => {
       const params: unknown[] = [];
-      const clauses: string[] = [];
+      const clauses: string[] = [
+        ...defaultExclusionSql("", { includeFake: exclusions?.includeFake, includeBlocked: exclusions?.includeBlocked }),
+      ];
       if (source) {
         params.push(source);
         clauses.push(`source = $${params.length}`);
@@ -225,10 +290,11 @@ async function buildNewsTree(
   industryPrimary: boolean,
   source?: string | null,
   author?: string | null,
+  exclusions?: Pick<NewsFilters, "includeFake" | "includeBlocked">,
 ): Promise<SectorNode[]> {
   const [rows, counts] = await Promise.all([
     listCatalogRows(),
-    getNewsCountByIndustry(source, author),
+    getNewsCountByIndustry(source, author, exclusions),
   ]);
   const catalogByIndustry = new Map(
     rows.filter((r) => r.is_industry_not_strategy === industryPrimary)
@@ -314,29 +380,36 @@ async function buildNewsTree(
   return sectors;
 }
 
-/** LEFT column — sector → industry tree (is_industry_not_strategy=TRUE). */
+/** LEFT column — sector → industry tree (is_industry_not_strategy=TRUE).
+ *  Both tree columns count over the API's default corpus (fake verdicts +
+ *  blocked origins excluded; includeFake / includeBlocked opt out). */
 export function listNewsThemes(
   source?: string | null,
   author?: string | null,
+  exclusions?: Pick<NewsFilters, "includeFake" | "includeBlocked">,
 ): Promise<SectorNode[]> {
-  return buildNewsTree(true, source, author);
+  return buildNewsTree(true, source, author, exclusions);
 }
 
 /** RIGHT column — parallel strategy → theme tree (is_industry_not_strategy=FALSE). */
 export function listNewsStrategyThemes(
   source?: string | null,
   author?: string | null,
+  exclusions?: Pick<NewsFilters, "includeFake" | "includeBlocked">,
 ): Promise<SectorNode[]> {
-  return buildNewsTree(false, source, author);
+  return buildNewsTree(false, source, author, exclusions);
 }
 
 /**
  * Top authors for the author filter chips — scoped by everything EXCEPT the
  * author itself (selecting an author narrows the other chips, not this list).
+ * Ordered by the curated static.news_prestige rank (the author's exact
+ * (provider, author) row when one exists, else the provider-level row),
+ * then by count; prestige rides along for the chip tooltip.
  */
 export async function listNewsAuthors(
   filters: Omit<NewsFilters, "author">,
-): Promise<Array<{ author: string; count: number }>> {
+): Promise<Array<{ author: string; count: number; prestige: Record<string, unknown> | null }>> {
   const params: unknown[] = [];
   const conditions = await buildFilterSql(filters, params);
   if (conditions === "1=0") return [];
@@ -345,13 +418,51 @@ export async function listNewsAuthors(
   const whereClause = conditions
     ? `${conditions} AND n.author IS NOT NULL`
     : "n.author IS NOT NULL";
-  const rows = await queryRows<{ author: string; n: string } & QueryResultRow>(
+  const rows = await queryRows<
+    { author: string; n: string; prestige: Record<string, unknown> | null } & QueryResultRow
+  >(
     renderSqlView("data_viz/api/services/news/authors", {
       where_clause: sqlFrag(whereClause),
     }).sql,
     params,
   );
-  return rows.map((r) => ({ author: r.author, count: Number(r.n) }));
+  return rows.map((r) => ({
+    author: r.author,
+    count: Number(r.n),
+    prestige: r.prestige ?? null,
+  }));
+}
+
+/**
+ * News providers (text.news.source values) for the provider filter chips —
+ * every DISTINCT source with its article count, ordered by the curated
+ * static.news_prestige rank (provider-level rows) first, then by count —
+ * the LLM-query reference downloads (search-engine media names) rank
+ * after the curated pipeline/portal providers. Scoped by everything
+ * EXCEPT the source itself (selecting a provider narrows the other
+ * chips, not this list); prestige rides along for the chip tooltip.
+ */
+export async function listNewsProviders(
+  filters: Omit<NewsFilters, "source">,
+): Promise<Array<{ provider: string; count: number; prestige: Record<string, unknown> | null }>> {
+  const params: unknown[] = [];
+  const conditions = await buildFilterSql(filters, params);
+  if (conditions === "1=0") return [];
+  // The SELECT lives in the sql view data_viz/api/services/news/providers
+  // (where_clause rides a fragment; its params stay caller-assembled).
+  const rows = await queryRows<
+    { provider: string; n: string; prestige: Record<string, unknown> | null } & QueryResultRow
+  >(
+    renderSqlView("data_viz/api/services/news/providers", {
+      where_clause: sqlFrag(conditions ? `WHERE ${conditions}` : ""),
+    }).sql,
+    params,
+  );
+  return rows.map((r) => ({
+    provider: r.provider,
+    count: Number(r.n),
+    prestige: r.prestige ?? null,
+  }));
 }
 
 // ---------------------------------------------------------------------------

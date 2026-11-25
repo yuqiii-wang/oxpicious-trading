@@ -8,7 +8,9 @@
 import { useState } from "react";
 import { Avatar, Box, Button, Stack, Typography } from "@mui/material";
 import { ExpandLess, ExpandMore } from "@mui/icons-material";
+import { fmtDate } from "@/shared/datetime";
 import type { NewsComment } from "@shared/types";
+import PseudoImagea, { splitPseudoImageBlocks } from "./PseudoImagea";
 
 function CommentAvatar({ name }: { name: string }) {
   return (
@@ -51,7 +53,7 @@ function CommentBody({ comment, isReply }: { comment: NewsComment; isReply: bool
         </Typography>
         {comment.date && (
           <Typography variant="subtitle2" color="text.secondary" sx={{ fontSize: "0.65rem" }}>
-            {comment.date}
+            {fmtDate(comment.date)}
           </Typography>
         )}
         {comment.votes != null && comment.votes > 0 && (
@@ -61,13 +63,22 @@ function CommentBody({ comment, isReply }: { comment: NewsComment; isReply: bool
         )}
       </Stack>
       {comment.content && (
-        <Typography
-          variant="body2"
-          color="text.primary"
-          sx={{ fontSize: isReply ? "0.72rem" : "0.76rem", whiteSpace: "pre-wrap", mt: 0.25 }}
-        >
-          {htmlToText(comment.content)}
-        </Typography>
+        <Box sx={{ mt: 0.25, minWidth: 0 }}>
+          {splitPseudoImageBlocks(htmlToText(comment.content)).map((chunk, i) =>
+            chunk.kind === "pseudo" ? (
+              <PseudoImagea key={i} chunk={chunk} />
+            ) : (
+              <Typography
+                key={i}
+                variant="body2"
+                color="text.primary"
+                sx={{ fontSize: isReply ? "0.72rem" : "0.76rem", whiteSpace: "pre-wrap" }}
+              >
+                {chunk.text}
+              </Typography>
+            ),
+          )}
+        </Box>
       )}
     </Box>
   );

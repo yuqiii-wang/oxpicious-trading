@@ -1013,7 +1013,7 @@ VOL_CRUSH_HIGH_FRAC = 0.98
 
 # ---------------------------------------------------------------------------
 # signal amplification — the amplifier tier (2026-11-18; the 2026-11-20
-# two-level amplifier axis + the margin type)
+# two-level amplifier axis + the margin type; the 2026-11-22 news type)
 # ---------------------------------------------------------------------------
 # The close-only signal families' intraday strengthener
 # (analysis_signals.signal_amplification_rules + _history, written by
@@ -1024,9 +1024,10 @@ VOL_CRUSH_HIGH_FRAC = 0.98
 # recurring day-level anatomy (the amplifier) and BINDS it to the signal
 # families it strengthens/discounts. The amplifier axis is TWO-LEVEL:
 # the PARENT TYPE (ohlcv — K-line day anatomy / margin — 融资融券
-# margin-balance level) + the per-type SUB TYPE vocabulary
-# (SIGNAL_AMPLIFIER_CODE when ohlcv, SIGNAL_AMPLIFIER_MARGIN_CODE when
-# margin).
+# margin-balance level / news — the daily news-text MARKET state) + the
+# per-type SUB TYPE vocabulary (SIGNAL_AMPLIFIER_CODE when ohlcv,
+# SIGNAL_AMPLIFIER_MARGIN_CODE when margin, SIGNAL_AMPLIFIER_NEWS_CODE
+# when news).
 #
 # Two tables:
 #   signal_amplification_rules   one row per (code, sec_type, signal_type)
@@ -1082,6 +1083,71 @@ AMP_MARGIN_WINDOW = 252          # trailing window of the margin quantile bars
 AMP_MARGIN_MIN_PERIODS = 120     # min trailing obs before a bar exists
 AMP_MARGIN_LOW_Q = 0.10          # margin_washout fires at/below this quantile
 AMP_MARGIN_HIGH_Q = 0.90         # margin_crowding fires at/above this quantile
+
+# The NEWS amplifier bars (the 'news' parent type, 2026-11-22 —
+# migrated from the deleted news_wash detection family the same day:
+# the news states AMPLIFY the existing families' signals, never create
+# their own). The daily news-text MARKET state panel
+# (text.news_text_daily, scope market_all) merged per DATE onto the
+# anatomy frame + the per-code weekly aggregates + the drop leg
+# (news_anatomy.NewsAnatomy). The performance verification that
+# graduated the bars (temp_scripts/
+# news_state_signal_vs_amplifier_study.py + the improvement/weekly
+# studies, the 10 study indices on the repo's forward-blend contract):
+# the deep NEGATIVE tails carry real excess over the +0.276% drift —
+# flow_neg >= 5 +1.87% (excess +1.60pp, t=6.70), lex_tone_z <= -1.5
+# +1.59% (+1.31pp, t=4.65), sent_z <= -2.0 +0.77% (+0.50pp, t=3.80),
+# flow_af <= -1.0 the honest marginal candidate (+0.26pp) — while the
+# SELL/euphoria states measured tops-continue (the equity asymmetry),
+# hence BUY-side amplifiers except the weekly tone-recovery exit. The
+# nested family bar grids COLLAPSED to their primary (deepest measured)
+# bars: the amplifier tier has no carve (each amplifier is an
+# independent day row) and the shallow remainders measured drift-only;
+# depth-scaled amplify_bp scales intensity past the bar.
+AMP_NEWS_Z_BAR = -2.0            # sent_shock: sent_z at-or-below
+AMP_NEWS_TONE_BAR = -1.5         # tone_panic: lex_tone_z at-or-below
+AMP_NEWS_FLOWNEG_BAR = 5         # neg_wave: flow_neg at-least
+AMP_NEWS_AF_CALM_BAR = -1.0      # quiet_cov: flow_af at-or-below
+# the POSITIVE-extreme divergence bars (the "good news can't lift it"
+# pair — euphoric state while the code's own curve falls; the study's
+# ungated euphoria states measured tops-continue, the drop-gated
+# divergence is the different claim the evidence block judges)
+AMP_NEWS_POS_Z_BAR = 1.5         # sent_euphoria: sent_z at-or-above
+AMP_NEWS_POS_TONE_BAR = 1.5      # tone_euphoria: lex_tone_z at-or-above
+# the INTERACTION bars (the Heston-Sinha flow-beats-tone /
+# interaction-is-the-edge finding, the options_vix corr x spike
+# precedent): the sentiment shock CONFIRMED by the negative-article
+# wave, confirmed again by cross-origin disagreement (disp_z), and the
+# tone panic with high disagreement. Measured on the 10 study indices,
+# drop-leg gated: z&flow +1.34% / excess +1.07pp / t=5.35; &disp
+# +1.74% / +1.46pp / t=6.87 / hit 64%; tone&disp +1.90% / +1.63pp /
+# t=7.09 / hit 73% — the measured strongest populations.
+AMP_NEWS_ZFLOW_Z_BAR = -1.5      # shock_wave: the shock leg, sent_z at-or-below
+AMP_NEWS_ZFLOW_NEG_BAR = 3       # shock_wave: the wave leg, flow_neg at-least
+AMP_NEWS_INTER_DISP_BAR = 1.0    # wave/tone_disagree: disp_z at-least
+AMP_NEWS_TONE_INTER_BAR = -1.5   # tone_disagree: the tone-panic leg
+# the WEEKLY-AGGREGATION bars (the Heston-Sinha horizon finding: daily
+# tone dies in <=2 days but weekly aggregation persists ~a quarter —
+# the rolling-5 trading-row aggregates, measured WITHOUT the drop leg:
+# the weekly aggregate already carries the persistence the leg
+# confirms daily): wfn >= 10 +0.77%/t=3.21 both regimes (fwd60 +4.18%);
+# wz <= -1 stress +1.85%/t=2.57 vs calm below-bar; wt <= -1 stress
+# +5.90%/t=4.51 hit 78% (fwd60 +10.13% — the quarter drift's strongest
+# carrier). The SELL companion: the weekly tone RECOVERY exit (wt
+# crosses up through 0 after a deep wt episode) — the ONE sell side
+# that cleared the bar (the euphoria/coverage sells measured
+# below-bar, tops continue).
+AMP_NEWS_WEEKLY_WINDOW = 5        # the trading-week rolling window
+AMP_NEWS_WEEKLY_Z_BAR = -1.0      # week_shock: mean(sent_z,5) at-or-below
+AMP_NEWS_WEEKLY_FLOWNEG_BAR = 10  # week_neg_wave: sum(flow_neg,5) at-least
+AMP_NEWS_WEEKLY_TONE_BAR = -1.0   # week_tone: mean(lex_tone_z,5) at-or-below
+AMP_NEWS_WEEKLY_TONE_REC_LOOKBACK = 10  # the recovery's deep-episode memory
+# the UNDERLYING DIRECTION FILTER leg of every DAILY news amplifier:
+# the code's own price below its N-rows-ago close (the volatility
+# VOL_SPIKE_LEG_WINDOW convention — trigger-time observable). The
+# improvement study's window grid {none, 3, 5, 10} measured FLAT (the
+# leg is a per-code confirmation, not a pooled filter) — 5 stands.
+AMP_NEWS_DROP_LEG_WINDOW = 5
 
 # THE BINDING MATRIX — which amplifier strengthens which family, at
 # which action side, at what base strength (bp; NEGATIVE = discount).
@@ -1155,6 +1221,92 @@ AMP_BINDINGS: dict[str, dict[str, tuple[tuple[str, str, int], ...]]] = {
             ("mov_rsi", "sell", 100), ("bollinger", "sell", 100),
             ("momentum", "sell", 100), ("volatility", "sell", 100),
             ("crowdedness", "sell", 120),
+        ),
+    },
+    "news": {
+        # the NEWS state amplifiers (2026-11-22, migrated from the
+        # deleted news_wash detection family): the daily news-text
+        # MARKET state amplifies the EXISTING families' signals —
+        # deep-negative states on the code's own drop leg mark the
+        # capitulation washout (BUY reversion), the weekly tone
+        # recovery marks the exit (SELL). BUY subs bind the reversion
+        # set (the flush_washout / margin_washout convention); bases
+        # scale with the studies' measured strength — priors, the
+        # evidence block is the honest verdict.
+        "tone_disagree": (          # tone&disp +1.90% t=7.09 — strongest
+            ("mov_rsi", "buy", 170), ("bollinger", "buy", 150),
+            ("rebound", "buy", 190), ("rf_break", "buy", 150),
+            ("volatility", "buy", 130), ("crowdedness", "buy", 130),
+        ),
+        "wave_disagree": (          # z&flow&disp +1.74% t=6.87
+            ("mov_rsi", "buy", 160), ("bollinger", "buy", 140),
+            ("rebound", "buy", 180), ("rf_break", "buy", 140),
+            ("volatility", "buy", 120), ("crowdedness", "buy", 120),
+        ),
+        "neg_wave": (               # flow_neg >= 5: +1.87% / excess +1.60pp
+            ("mov_rsi", "buy", 150), ("bollinger", "buy", 130),
+            ("rebound", "buy", 170), ("rf_break", "buy", 130),
+            ("volatility", "buy", 110), ("crowdedness", "buy", 110),
+        ),
+        "tone_panic": (             # lex_tone_z <= -1.5: +1.59% t=4.65
+            ("mov_rsi", "buy", 140), ("bollinger", "buy", 120),
+            ("rebound", "buy", 160), ("rf_break", "buy", 120),
+            ("volatility", "buy", 110), ("crowdedness", "buy", 110),
+        ),
+        "shock_wave": (             # sent_z & flow_neg: +1.34% t=5.35
+            ("mov_rsi", "buy", 130), ("bollinger", "buy", 110),
+            ("rebound", "buy", 150), ("rf_break", "buy", 110),
+            ("volatility", "buy", 100), ("crowdedness", "buy", 100),
+        ),
+        "sent_shock": (             # sent_z <= -2.0: +0.77% t=3.80
+            ("mov_rsi", "buy", 100), ("bollinger", "buy", 90),
+            ("rebound", "buy", 120), ("rf_break", "buy", 90),
+            ("volatility", "buy", 80), ("crowdedness", "buy", 80),
+        ),
+        "quiet_cov": (              # flow_af <= -1.0: marginal +0.26pp
+            ("mov_rsi", "buy", 60), ("bollinger", "buy", 50),
+            ("rebound", "buy", 70), ("rf_break", "buy", 50),
+            ("volatility", "buy", 40), ("crowdedness", "buy", 40),
+        ),
+        # the weekly aggregates (no drop leg — the aggregate carries
+        # the persistence): wt <= -1 stress +5.90% hit 78% (fwd60
+        # +10.13%), wz <= -1 stress +1.85%, wfn >= 10 +0.77% both
+        "week_tone": (
+            ("mov_rsi", "buy", 140), ("bollinger", "buy", 120),
+            ("rebound", "buy", 160), ("rf_break", "buy", 120),
+            ("volatility", "buy", 110), ("crowdedness", "buy", 110),
+        ),
+        "week_shock": (
+            ("mov_rsi", "buy", 110), ("bollinger", "buy", 100),
+            ("rebound", "buy", 130), ("rf_break", "buy", 100),
+            ("volatility", "buy", 90), ("crowdedness", "buy", 90),
+        ),
+        "week_neg_wave": (
+            ("mov_rsi", "buy", 100), ("bollinger", "buy", 90),
+            ("rebound", "buy", 120), ("rf_break", "buy", 90),
+            ("volatility", "buy", 80), ("crowdedness", "buy", 80),
+        ),
+        # the positive-extreme divergence pair ("good news can't lift
+        # a falling market" — euphoric state on the drop leg);
+        # faithful BUY-side migration, modest priors, the evidence
+        # block judges each binding
+        "sent_euphoria": (
+            ("mov_rsi", "buy", 80), ("bollinger", "buy", 70),
+            ("rebound", "buy", 90), ("rf_break", "buy", 70),
+            ("volatility", "buy", 60), ("crowdedness", "buy", 60),
+        ),
+        "tone_euphoria": (
+            ("mov_rsi", "buy", 80), ("bollinger", "buy", 70),
+            ("rebound", "buy", 90), ("rf_break", "buy", 70),
+            ("volatility", "buy", 60), ("crowdedness", "buy", 60),
+        ),
+        # the ONE sell side (exit timing): the weekly tone recovery —
+        # wt crosses up through 0 after a deep episode; binds the
+        # exit-timing set (the spike_blowoff convention)
+        "week_tone_recovery": (
+            ("mov_rsi", "sell", 100), ("bollinger", "sell", 100),
+            ("momentum", "sell", 100), ("volatility", "sell", 100),
+            ("crowdedness", "sell", 110),
         ),
     },
 }

@@ -9,8 +9,13 @@ date. Two period vocabularies share the helpers:
   * quarter-start (is_quarter_start) — the composition tasks' quarterly
     cadence (ALL of them since 2026-11, when the four index composition /
     linked-ETF tasks moved off the monthly tier into downloads_quarterly
-    alongside the ETF composition tasks): refresh on the 1st of a
-    QUARTER-START month (Jan/Apr/Jul/Oct) only;
+    alongside the ETF composition tasks): refresh inside the
+    QUARTER-START window — a quarter-start month (Jan/Apr/Jul/Oct) up to
+    ``QUARTER_REFRESH_LAST_DAY``. The orchestration arrangement fires the
+    quarterly tier ONE WEEK after the calendar quarter start (a
+    2027-Jan-01 quarter comes due 2027-Jan-08) and the first trading day
+    on or after that boundary can slide on a holiday, so the guard
+    accepts the window instead of the exact 1st.
   * month-start (is_month_start) — refresh on the 1st of EVERY month;
     retained for month-cadence download tasks (no composition task uses
     it since the 2026-11 quarterly migration).
@@ -39,6 +44,14 @@ QUARTER_MONTHS: tuple[int, ...] = (1, 4, 7, 10)
 months — one snapshot per index/ETF per calendar quarter, taken at the
 start)."""
 
+QUARTER_REFRESH_LAST_DAY: int = 15
+"""The last day of the quarter-start refresh window. The quarterly tier
+fires one week after the calendar quarter start (the arrangement's
+quarterly boundary: a 2027-Jan-01 quarter comes due 2027-Jan-08) and a
+holiday can slide the first trading day past that boundary, so the
+tasks' quarter-start guard accepts the whole first half of the
+quarter-start month rather than the exact 1st."""
+
 
 def is_month_start(d: date) -> bool:
     """Return True if *d* is the 1st day of its month (month-start trigger)."""
@@ -46,9 +59,10 @@ def is_month_start(d: date) -> bool:
 
 
 def is_quarter_start(d: date) -> bool:
-    """Return True if *d* is the 1st day of a quarter-start month
-    (Jan/Apr/Jul/Oct — the quarterly refresh trigger)."""
-    return d.day == 1 and d.month in QUARTER_MONTHS
+    """Return True if *d* falls in the quarter-start refresh window — a
+    quarter-start month (Jan/Apr/Jul/Oct) up to
+    ``QUARTER_REFRESH_LAST_DAY`` (the quarterly refresh trigger)."""
+    return d.month in QUARTER_MONTHS and d.day <= QUARTER_REFRESH_LAST_DAY
 
 
 def in_same_quarter(a: date, b: date) -> bool:

@@ -15,6 +15,15 @@ MODULE ISOLATION (the defining property of this package):
     edits outside this package are the registry entry
     (``_algo/registry.py`` — the designed extension seam: "adding an
     algo only requires changes in this file") and the UI mode toggle.
+  - OPTIMIZATION (2026-11-21, user-directed demise of the dedicated
+    oracle optimizer): the EXISTING trainer (``_optm_engine`` — the
+    Omega/Calmar NestedTrainer every regular signal family uses)
+    optimizes the replay's confidence-scaling knobs via
+    ``TUNABLE_SPACE``, always BINARY, oracle alone (oracle mode never
+    loads other signals — the run/train parsers reject mixed
+    selections carrying oracle). There is no oracle-owned optimizer
+    anymore; the former hand-pin convention is dead — the trained
+    ``algo_configs`` row owns the tuned knobs.
 
 HINDSIGHT DISCLOSURE (kept honest in every reason string):
 
@@ -36,9 +45,10 @@ confidence column" decision):
 
   The analysis tier grades every placed pivot by its favorable
   excursion on EITHER side — a buy by the biggest rise within the
-  next 60 traded rows OR the biggest drop within the 60 rows before
+  next 20 traded rows OR the biggest drop within the 20 rows before
   it, a sell by the biggest drop after / biggest rise before (the
-  max favorable excursion on both sides) — each leg graded 0..100 on
+  max favorable excursion on both sides; all windows 20, both
+  directions — the 2026-11-21 unification) — each leg graded 0..100 on
   its own LINEAR ramp from the 2% no-action floor to the 10% full
   bar and combined as the WEIGHTED SUM 0.3 * pre-action leg +
   0.7 * forward leg (user-directed "let rises/drops before action
@@ -66,9 +76,11 @@ confidence column" decision):
          conf/100 × the book — small falls exit partially, large
          falls fully (``exit_mode`` "full" = never scale an exit down,
          the meta-labeling convention) — one axis of the confidence
-         scaling, whose whole group (curve power / floor / null size /
-         exit mode) is the ORACLE OPTIMIZER's surface (optimizer.py),
-         never the NestedTrainer's
+         scaling, whose four knobs (curve power / floor / null size /
+         exit mode) are the EXISTING trainer's surface since the
+         2026-11-21 demise of the dedicated oracle optimizer —
+         declared flat on ``TUNABLE_SPACE`` below, optimized by
+         ``_optm_engine`` like every regular signal family's params
 
 FULL-FIDELITY REPLAY (grammar v6, 2026-11-20, user-directed "should
 load exact the same signals from analysis oracle"): the replay
@@ -117,10 +129,14 @@ class OracleSignalAlgo(AlgoBase):
         pivot whose BOTH favorable legs miss the 2% no-action floor is
         not in the table at all). The pivot math itself has no params (it
         lives in analysis.oracle_signals); the replay's tunable surface
-        is its CONFIDENCE SCALING (scaling.py — owned by the oracle's
-        own optimizer, never the trainer) — the full-fidelity flags
-        below keep every graded pivot reaching the engine at the
-        pivot's own date.
+        is its CONFIDENCE SCALING (scaling.py) — the four knobs are
+        declared flat on ``TUNABLE_SPACE`` below and optimized by the
+        EXISTING trainer (``_optm_engine`` — the same Omega/Calmar
+        NestedTrainer every regular signal family uses; the former
+        dedicated oracle optimizer is DEMISED, 2026-11-21). The
+        full-fidelity flags below keep every graded pivot reaching the
+        engine at the pivot's own date — the trainer tunes the scaling,
+        never the signal population.
         """
 
     ALGO_NAME = "oracle"
@@ -151,21 +167,27 @@ class OracleSignalAlgo(AlgoBase):
                                # frontier window)
     )
 
-    # No model params: the pivot math + the grade live in
-    # analysis.oracle_signals.
+    # No model params beyond the confidence scaling: the pivot math +
+    # the grade live in analysis.oracle_signals; the scaling knobs are
+    # the TUNABLE_SPACE below.
     ALGO_PARAM_KEYS: tuple = ()
-    # TUNABLE_SPACE is EMPTY (2026-11-20): the replay's one-time
-    # trainer axis ``exit_mode`` is RETIRED into the confidence-
-    # scaling group (``params["conf_scale"].exit_mode`` — sell-side
-    # confidence semantics ARE scaling), which is owned by the
-    # oracle's OWN optimizer (optimizer.py), never the Omega/Calmar
-    # NestedTrainer (the user's isolation directive). Legacy
-    # top-level ``exit_mode`` keys (the 2026-11-19/20 trained rows,
-    # old study replays) are still honored by
-    # ``ConfidenceScale.from_params`` — but only when no group is
-    # present. (swing_conf_power / wrong_way_mode were retired
-    # earlier with grammar v4.)
-    TUNABLE_SPACE: dict = {}
+    # The replay's TUNABLE model params (2026-11-21, user-directed
+    # demise of the dedicated oracle optimizer): the four confidence-
+    # scaling knobs (scaling.py) declared FLAT — the same top-level
+    # legacy-key surface ``ConfidenceScale.from_params`` already honors
+    # (``exit_mode`` rode it since the 2026-11-20 group retirement) —
+    # and optimized by the EXISTING trainer (_optm_engine, the
+    # Omega/Calmar NestedTrainer every regular signal family uses),
+    # always BINARY, oracle alone (oracle mode never loads other
+    # signals). Bounds mirror the ``ConfidenceScaleCfg`` pydantic
+    # validation so a tuned value can never fail the transform. The
+    # defaults ARE the identity (the 2026-11-20 standing pin).
+    TUNABLE_SPACE: dict = {
+        "grade_power": {"type": "float", "low": 0.25, "high": 4.0},
+        "grade_floor": {"type": "float", "low": 0.0, "high": 100.0},
+        "null_conf": {"type": "float", "low": 0.0, "high": 100.0},
+        "exit_mode": {"type": "categorical", "choices": ["swing", "full"]},
+    }
     DEFAULT_PARAMS: dict = {
         # Documentation-only constants (never read by code): the pickup
         # source and the confidence rule (the grade itself is computed
@@ -178,44 +200,34 @@ class OracleSignalAlgo(AlgoBase):
             "backward-dust unrealized frontier window, replays "
             "full size"
         ),
-        # The replay's confidence scaling (scaling.py) — pinned by hand
-        # from the oracle's own optimizer's matrices (temp_scripts/
-        # oracle_conf_scale_results.csv + oracle_pnl_*.csv +
-        # oracle_amp_*.csv, 2026-11-20). AMP PIN (2026-11-20, user
-        # directives "higher pnl + stable increasing trend, creative
-        # signal amplification" then "the 2025-05-09 rise should see
-        # significant pnl rise" — streak_k raised 0.4 -> 0.6, the
-        # STRICT DOMINANCE point where every stability metric still
-        # >= the sk0.4 cell): IDENTITY grades (power 1.0, swing — the
-        # former p1.5 convex pin is SUPERSEDED: it was compensating
-        # for book-blind sizing, which the amplifier now owns) + the
-        # shadow-book gap-restore/streak stage ON. Measured (10 study
-        # codes, oracle_amp_round2-5): pooled pnl 41.3k vs identity
-        # 17.0k / former p1.5 pin 16.7k (+148%) at pooled dd 4.5%,
-        # worst-code dd 19.7% (vs 29.8%), posMo 76% / worst month
-        # streak 4, OOS pnl 9.9k. 000001: pnl 506 (feeless) vs 245
-        # pin, window 2025-05-09 rise realized +70.0 feeless (old pin
-        # +37.3 stored, sk0.4 amp +62.5 stored), window A +21.8, ret
-        # +65.7%, dd 4.5%, posMo 67%. LEVERAGE DISCLOSURE (standing):
-        # capital ~2.0x identity on 000001 (~2.9x pooled) — the Total
-        # Return card reads LOWER while absolute pnl ~2.4x's; streak_k
-        # is the measured leverage dial (+0.1 sk ~ +2.4 winB / +20
-        # 000001-pnl / +0.1-0.2x lev, dd FLAT to sk1.0 — sk0.7+ starts
-        # paying a small pooled-dd premium). top_k>0 is the defensive
-        # variant. Re-measured and re-pinned by hand after every
-        # analysis.oracle_signals grammar change — never trainer-
-        # upserted.
-        "conf_scale": {
-            "grade_power": 1.0,
-            "grade_floor": 0.0,
-            "null_conf": 100.0,
-            "exit_mode": "swing",
-        },
+        # The replay's confidence scaling (scaling.py) — FLAT top-level
+        # keys since the 2026-11-21 demise of the dedicated oracle
+        # optimizer: the four knobs are ``TUNABLE_SPACE`` entries the
+        # EXISTING trainer (``_optm_engine``) optimizes like any
+        # regular signal family's common trading space, and the trained
+        # ``algo_configs`` row (not a hand pin) owns the values from
+        # then on. The defaults ARE the identity (grade as-is, swing
+        # exits) — the 2026-11-20 standing pin measured optimum
+        # (identity + the amplifier below; the former p1.5 convex pin
+        # was compensating for book-blind sizing, which the amplifier
+        # owns). ``ConfidenceScale.from_params`` reads these keys when
+        # no legacy ``conf_scale`` group is present.
+        "grade_power": 1.0,
+        "grade_floor": 0.0,
+        "null_conf": 100.0,
+        "exit_mode": "swing",
         # The replay's signal AMPLIFICATION (amplify.py — the shadow-
         # book gap-restore / streak / top-boost stage, 2026-11-20 user
-        # directive). Pinned by hand from the oracle optimizer's
-        # amplification matrices (temp_scripts/oracle_amp_*.csv) under
-        # the same convention as conf_scale.
+        # directive). A STATIC replay component, not a trainer axis:
+        # the values below are the measured optimum of the former
+        # dedicated optimizer's amplification matrices
+        # (temp_scripts/oracle_amp_*.csv) — identity grades + this
+        # stage measured pooled pnl 41.3k vs 17.0k identity (+148%) at
+        # pooled dd 4.5%, worst-code dd 19.7%. LEVERAGE DISCLOSURE
+        # (standing): capital ~2.9x identity pooled — the Total Return
+        # card reads LOWER while absolute pnl ~2.4x's; streak_k is the
+        # measured leverage dial (dd FLAT to sk1.0). top_k>0 is the
+        # defensive variant.
         "conf_amp": {
             "enabled": True,
             "gap_k": 1.0,
@@ -281,10 +293,11 @@ class OracleSignalAlgo(AlgoBase):
 
           - ``signal_confidence`` = the oracle's OWN favorable-move
             grade (v5: the WEIGHTED SUM of the pivot's two legs'
-            linear-ramp grades — 0.3 x the backward-60-row move into
+            linear-ramp grades — 0.3 x the backward-20-row move into
             it + 0.7 x the forward-20-row move after it (the
             2026-11-20 user directive "let future look only be 20d
-            not 60d"), each leg ramped
+            not 60d" + the 2026-11-21 unification "also only look
+            back 20d not 60d"), each leg ramped
             2% no-action floor / 10% full; a zero weighted grade
             means the pivot is not in the table at all), signed by
             the pivot's action (buy positive, sell negative). A NULL
@@ -315,8 +328,10 @@ class OracleSignalAlgo(AlgoBase):
         swing = swing.where(is_buy, 1.0 - ext / close)  # sell: the fall
         # THE ORACLE'S OWN GRADE -> replay confidence, through the
         # replay's CONFIDENCE SCALING (scaling.py — the oracle mode's
-        # own tunable surface, owned by its optimizer, never the
-        # NestedTrainer). Identity by default: the stored grade as-is,
+        # own tunable surface, its four knobs declared on TUNABLE_SPACE
+        # and optimized by the existing trainer since the 2026-11-21
+        # demise of the dedicated optimizer). Identity by default: the
+        # stored grade as-is,
         # NULL (an unrealized frontier window) replays full size —
         # unknown is not small. (One whole-frame transform —
         # cudf-native, no per-group loops.)

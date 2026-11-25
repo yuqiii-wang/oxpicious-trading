@@ -1,0 +1,10 @@
+{
+  "service": "builds.bond",
+  "kind": "derive",
+  "tables": [
+    {
+      "table": "stats.debt_identity"
+    }
+  ],
+  "notes": "Inputs are chunk / year / combined files with no date in the name, so no csv stage. Presence = stats.debt_identity — the build's own gate."
+}

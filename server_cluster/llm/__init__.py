@@ -3,10 +3,10 @@
 The server cluster's FIFTH area server (the ``llm`` area; migrated from
 ``llm_agents.local_model_host`` 2026-11) and unlike the four jobs areas
 it serves its OWN model-host app (``create_app``), not the shared jobs
-surface of ``_common.app_factory``. ONE always-on FastAPI process
+surface of ``_common.app_factory``. one always-on FastAPI process
 (127.0.0.1:8767, beside the MCP daemon 8765 / deep-agent daemon 8766 /
 former dummy-llm server 8768) that owns every LOCAL AI model of this
-repo — three backend kinds:
+repo — four backend kinds:
 
   * ``dummy-1`` (kind ``dummy``) — the offline chat-completions
     simulation (``test.dummy_llm.DummyLlmProvider`` gherkin feature
@@ -17,14 +17,20 @@ repo — three backend kinds:
     LLM served as request/response,
   * ``onejev-1.6-4b`` (kind ``jev``) — the OmniJev OneJev1.6-4B Jev
     decision model (a "System One" model: typed questions → calibrated
-    probabilities, fine-tuned from Qwen3.5-4B) via transformers.
+    probabilities, fine-tuned from Qwen3.5-4B) via transformers,
+  * ``paddleocr-vl-1.6`` (kind ``ocr``) — the PaddleOCR-VL-1.6 OCR /
+    vision-language transcription model (image files → the extracted
+    text, the ``OCR:`` element prompts) via transformers.
 
 Request surface — the standard OpenAI chat-completions API, the
-standard Jev decision API, and the host's own management endpoints:
+standard Jev decision API, the OCR transcription API, and the host's
+own management endpoints:
 
   POST /v1/chat/completions            (+ ZhiPu mirror /api/paas/v4/...)
   POST /v1/systemone                   (Jev: noul / choice / score →
                                         calibrated answers)
+  POST /v1/ocr                         (OCR: image files → the
+                                        extracted text)
   GET  /v1/models  |  GET /v1/models/{id}
   POST /v1/models/{id}/load | /offload | /unload
                                         (admin: lifecycle API)
@@ -36,18 +42,19 @@ standard Jev decision API, and the host's own management endpoints:
 
 Model management lives in :mod:`.manager`: one registry, per-model
 lifecycle actions serialized on a lock, ONE idle-policy watchdog driving
-the TWO-tier policy (default 1800 s idle → weights move GPU to CPU, RAM
-keeps them; a further 3600 s idle → the RAM weights drop entirely and
+the TWO-tier policy (default 600 s idle → weights move GPU to CPU, RAM
+keeps them; a further 1200 s idle → the RAM weights drop entirely and
 the next request cold-loads from disk; either tier rehydrates
 transparently) and a warm-up pass at startup. The
 weights live under this package's gitignored ``local_models/`` subdir.
 
 Layout (the official FastAPI structure, right-sized): ``app.py`` is the
 composition root (``create_app``); ``routers/`` splits the HTTP layer by
-resource (chat / models_admin / tokenization / ops, thin — wire concerns
-only) over the service layer ``manager.py`` + ``backends/``; the typed
-payloads live in ``data_definitions/``; in-repo HTTP clients use
-``client.py``. In-repo consumers of the segmenter are host-first
+resource (chat / jev / ocr / models_admin / tokenization / ops, thin —
+wire concerns only) over the service layer ``manager.py`` +
+``backends/``; the typed payloads live in ``data_definitions/``;
+in-repo HTTP clients use ``client.py``. In-repo consumers of the
+segmenter are host-first
 automatically (``_common.tokenization.chinese_word_segmenter`` —
 in-process torch fallback keeps pipelines alive when the host is down);
 ``SearchIndexer`` callers need no change at all.

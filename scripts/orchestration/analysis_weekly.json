@@ -1,8 +1,0 @@
-{
-  "1": {
-    "script": "analysis.oracle_signals",
-    "args": ["--sec-type", "index"],
-    "can_be_parallel": false,
-    "note": "Hindsight oracle local-extreme actions (analysis.oracle_signals → analysis.oracle_signals): local extremes of the 5-bar window [date-2, date+2] scanned with a 1-day stride, ONE action per 5-consecutive-row window (first candidate claims the unit; a more extreme same-side candidate within it upgrades the placement) — buy at a local min, sell at a local max, each row carrying the next opposite action as its swing target (v3 grammar 2026-11-19; v1 gates and v2 +-5 windows retired — the +-5 window left 931743's 2025-09-24 spike top unmarked because the 10-09 higher top fell exactly 5 rows later). WEEKLY tier: the pipeline's own weekly gate no-ops runs until the last build is >= 6 calendar days old (--force and --code bypass). DECOUPLED from the analysis_signals rule tier. Incremental: the engine re-decides the full candidate set and rewrites each code's revisable tail (the frontier unit's placement can upgrade forward as bars arrive); the trail ends 2 bars before the bars frontier (the coverage check accounts for it)."
-  }
-}

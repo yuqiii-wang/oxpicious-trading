@@ -67,7 +67,80 @@ export interface MonitorAreaProcess {
   desired?: string | null;
   state?: string | null;
   pid?: number | null;
-  detail?: Record<string, unknown>;
+  detail?: MonitorProcessDetail | Record<string, unknown>;
+}
+
+/** The unified detail payload ONE resident row folds (server_cluster/
+ *  _common/routers/process_detail.py ProcessDetail — the 2026-11-21
+ *  control unification plan Phase 3): supervisor row + heartbeat
+ *  evidence (incl. the child-REPORTED progress columns — smallint
+ *  label codes; decode at this boundary via label-codes) + the DERIVED
+ *  progress (the missing-set oracle from the data tables) + the
+ *  service_config control summary + the log tail. */
+export interface MonitorProcessDetailHeartbeat {
+  service: string;
+  pid?: number | null;
+  started_at?: string | null;
+  beat_age_s?: number | null;
+  scope?: string | null;
+  sub_scope?: string | null;
+  stop_reason?: string | null;
+  is_normal_exit?: boolean | null;
+  stopped_at?: string | null;
+  live_parallel?: number | null;
+  max_parallel?: number | null;
+  code_fingerprint?: string | null;
+  fingerprint_stale?: boolean | null;
+  progress_phase?: number | null;
+  progress_state?: number | null;
+  progress_payload?: Record<string, unknown> | null;
+  progress_at?: string | null;
+  progress_age_s?: number | null;
+}
+
+export interface MonitorProcessDerivedAsset {
+  name?: string;
+  identity_table?: string;
+  intraday_table?: string;
+  code_column?: string;
+  exchange_column?: string | null;
+  exchange?: string | null;
+  progress?: {
+    trade_date?: string | null;
+    n_identity?: number;
+    n_total_codes?: number;
+    max_time?: string | null;
+    n_codes_done?: number;
+    close_reached?: boolean;
+  };
+}
+
+export interface MonitorProcessDetail {
+  service: string;
+  area?: string;
+  resident?: {
+    service: string;
+    desired: string;
+    state: string;
+    pid: number | null;
+    adopted?: boolean;
+    restarts_recent?: number;
+    backoff_until?: number | null;
+  } | null;
+  heartbeat?: MonitorProcessDetailHeartbeat | null;
+  derived_progress?: {
+    kind: string;
+    detail: Record<string, unknown>;
+  } | null;
+  config?: {
+    resource_class?: string;
+    pausable?: boolean;
+    max_pause_s?: number;
+    max_parallel?: number;
+    priority?: number;
+    is_resident?: boolean;
+  };
+  log_tail?: string;
 }
 
 export interface MonitorAreaFleet {
@@ -208,6 +281,12 @@ export interface MonitorArrangementTask {
   priority: number;
   state: "unknown" | "due" | "not_due";
   state_code: number;
+  /** WHAT the verdict rests on: calendar (the freq rule) or the data
+   *  pre-check's reading (server_cluster/monitor/pre_check.py). */
+  basis: string;
+  basis_code: number;
+  missing_count: number;
+  missing_detail: Record<string, unknown> | null;
   last_success_at: string | null;
   due_at: string | null;
   arranged_at: string | null;
@@ -223,6 +302,11 @@ export interface MonitorArrangementRefresh {
   due: number;
   not_due: number;
   not_due_services: string[];
+  /** Services per basis label (calendar included) — how many verdicts
+   *  the data pre-check decided, and what it found. */
+  by_basis: Record<string, number>;
+  /** Services whose pre-check probe errored — arranged due fail-open. */
+  check_failed_services: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -307,15 +391,43 @@ export function monitorOrchestrationPlan(
 const ARRANGEMENT_REFRESH_TIMEOUT_MS = 120_000;
 
 /** POST /arrangement/refresh — one pass over every orchestration tier
- *  file: upsert each service's freq-window verdict into
+ *  file: upsert each service's verdict into
  *  monitor.orchestration_task_state (what the nightly chain's per-tier
- *  arrange side does; the UI's Arrange now action). */
+ *  arrange side does; the UI's Arrange now action) — the freq-window
+ *  rule, or the service's data pre-check where one is declared (one
+ *  session-presence query per distinct table slice: well under a second
+ *  for one tier, a few seconds — ten cold — over every tier). */
 export function monitorArrangementRefresh(): Promise<MonitorArrangementRefresh> {
   return monitorFetch<MonitorArrangementRefresh>(
     "/arrangement/refresh",
     { method: "POST" },
     ARRANGEMENT_REFRESH_TIMEOUT_MS,
   );
+}
+
+// The maintainer area (server_cluster/maintainer, 8775) — the cluster's
+// ONE chain driver: every nightly-chain pass runs under its lock.
+const MAINTAINER_BASE = "http://127.0.0.1:8775";
+
+/** Whether a nightly chain pass is executing right now — the
+ *  maintainer's GET /pipeline/last-pass (``running`` = its chain lock).
+ *  An unreachable maintainer means no chain can be running (it drives
+ *  every one), so that reads false rather than failing the caller. */
+export async function monitorPipelineRunning(): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5_000);
+  try {
+    const res = await fetch(`${MAINTAINER_BASE}/pipeline/last-pass`, {
+      signal: controller.signal,
+    });
+    if (!res.ok) return false;
+    const body = (await res.json()) as { running?: boolean };
+    return body.running === true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ---------------------------------------------------------------------------

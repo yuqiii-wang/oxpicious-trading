@@ -109,63 +109,60 @@
   "note": "post-close tstyle snapshot once (published ~16:29): gives the day's temps/sse_options_intraday CSV a >=15:00 sample so builds.options' finality gate accepts the date; idempotent upsert; kept serial — same module as the always-on stream poller"
  },
  "22": {
-  "script": "downloads.index.csindex.quote",
-  "args": [
-   "--pe-only"
-  ],
-  "src_host": "csindex",
-  "can_be_parallel": false,
-  "note": "nightly PE step: per code ONLY the incremental PE fetch (indexCsiDsPe) + {code}_history.csv merge — the PE series has no other source, so it must land early and independently of the slow 1m sweep (without it stats.index_valuation.pe went NULL from 2026-10-27, the skip-by-default gate of 35c7dcf); sits in the diff-src wave so it runs PARALLEL with the unrelated-src steps, while step 31's same-host sweep trails it serially"
- },
- "23": {
   "script": "downloads.index.cnindex.archive",
   "src_host": "cnindex",
   "can_be_parallel": false
  },
- "24": {
+ "23": {
   "script": "downloads.index.bse.archive",
   "src_host": "bse",
   "can_be_parallel": false
  },
- "25": {
+ "24": {
   "script": "downloads.etf.huatai_pb.trend",
   "src_host": "huatai",
   "can_be_parallel": false
  },
- "26": {
+ "25": {
   "script": "downloads.futures.cffex.trend",
   "src_host": "cffex",
   "can_be_parallel": false,
   "note": "current-month CFFEX daily futures/options CSVs into temps/cffex_trend (Playwright, anti-bot paced) — builds.futures globs archive + trend, builds.options.cffex reads the trend options files; keep before the builds tier"
  },
- "27": {
+ "26": {
   "script": "downloads.futures.sgx_a50",
   "src_host": "eastmoney",
   "can_be_parallel": false,
   "note": "SGX FTSE China A50 daily bars (Eastmoney klines, curl_cffi) — writes the shared futures tables directly (family CN%), self-contained; the CFFEX-format CSV drop is audit-only"
  },
- "28": {
+ "27": {
   "script": "downloads.futures.hkex.msci_a50",
   "src_host": "hkex",
   "can_be_parallel": false,
   "note": "HKEX MSCI China A 50 Connect daily bars per contract month (Daily Market Report zips mcaf/mcafa) — writes the shared futures tables directly (family MCA%); the same-day report publishes ~21:18 HKT and the AH file ~03:15, so the run refreshes the latest stored date to complete its volume"
  },
- "29": {
+ "28": {
   "script": "downloads.etf.efunds.trend",
   "src_host": "efunds",
   "can_be_parallel": false,
   "note": "E Fund fund-site all-funds NAV snapshot — ONE fundlist.json GET per day (efunds family: composition and intro quarterly)"
  },
- "30": {
+ "29": {
   "script": "downloads.stock.sse.pe_latest",
   "src_host": "sse",
   "can_be_parallel": false,
-  "note": "latest-missing-date PE auto-load for the IMPORTANT SSE stocks only (curated importance rank 0-1): appends the latest biz date's 静态市盈率 row to temps/sse_archive/{code}_pe.csv; builds.stock's PE pass auto-loads the missing tail, keeping the important stocks' estimation anchors fresh. Position within the tier is free (needs only the importance rank map + calendar) — the gap-anchor crawl (quarterly snapshots + big jumps) is the weekly downloads.stock.sse.trend_pe step in downloads_weekly (the archive module's former PE half, migrated 2026-11-20)"
+  "note": "latest-missing-date PE auto-load for the IMPORTANT SSE stocks only (curated importance rank 0-1): appends the latest biz date's 静态市盈率 row to temps/sse_archive/{code}_pe.csv; builds.stock's PE pass auto-loads the missing tail, keeping the important stocks' estimation anchors fresh. Position within the tier is free (needs only the importance rank map + calendar) — the gap-anchor crawl (quarterly snapshots + big jumps) is the weekly downloads.stock.sse.pe step in downloads_weekly (the archive module's former PE half, its own service since 2026-11-23)"
  },
- "31": {
-  "script": "downloads.index.csindex.quote",
+ "30": {
+  "script": "downloads.index.csindex.price",
   "src_host": "csindex",
   "can_be_parallel": false,
-  "note": "csindex sweep AFTER the PE step (22): default increment — from2020 cached-skip + content-gated 1m window + intraday, the daily-bar fallback for CSI-native codes the snapshot ladder does not cover. Same src_host as 22 so the wave scheduler keeps them serial (anti-bot pacing per host); sharing the late wave with efunds/sse lets it trail the PE series by hours without ever delaying a PE row — on a slow night only this tail risks the tier cap"
+  "note": "the daily csindex PRICE sweep (service split 2026-11-23 — the former downloads.index.csindex.quote; the PE fetch is the WEEKLY downloads.index.csindex.pe step in downloads_weekly): default increment — from2020 cached-skip + content-gated 1m window + intraday, the daily-bar fallback for CSI-native codes the snapshot ladder does not cover. Sharing the late wave with efunds/sse lets it trail those by hours — on a slow night only this tail risks the tier cap"
+ },
+ "31": {
+  "script": "downloads.macro.gold_silver",
+  "src_host": "sge",
+  "can_be_parallel": false,
+  "note": "Macro precious-metal daily bars — SGE Au99.99/Ag99.99 spot OHLC (POST graph/Dailyhq, full history per instrument) + sina COMEX GC/SI main-continuous daily klines → temps/gold_silver/*.csv; builds.macro (builds_daily step 12) upserts stats.macro_identity/basic_stats"
  }
 }

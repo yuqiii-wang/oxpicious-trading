@@ -26,6 +26,7 @@ import {
   useTheme,
 } from "@mui/material";
 import { SignalActionChip } from "@/shared/components/signal-action";
+import { fmtDate } from "@/shared/datetime";
 import {
   SIGNAL_TYPE_LABELS,
   signalSubWord,
@@ -130,7 +131,7 @@ export default function SignalRecordsTable({
                 <TableCell sx={{ whiteSpace: "nowrap" }}>{s.code}</TableCell>
               )}
               {showDate && (
-                <TableCell sx={{ whiteSpace: "nowrap" }}>{s.date}</TableCell>
+                <TableCell sx={{ whiteSpace: "nowrap" }}>{fmtDate(s.date)}</TableCell>
               )}
               {showTime && (
                 <TableCell sx={{ whiteSpace: "nowrap" }}>{s.time}</TableCell>

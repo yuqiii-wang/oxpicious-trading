@@ -35,17 +35,19 @@
  */
 import type { CustomSeriesOption } from "echarts";
 import { UP_COLOR, DOWN_COLOR } from "@/theme/chart-palette";
+import { fmtDate } from "@/shared/datetime/display";
 import type {
   PrevDayOhlcEntry,
   PrevDayOhlcMember,
   PrevDayOhlcResponse,
 } from "@shared/types";
 
-/** x-axis category label of the prepended prev-day tick: "MM-DD" of the
- *  prev trading day (e.g. "08-17"). Falls back to "Prev" when unknown. */
+/** x-axis category label of the prepended prev-day tick: the UI-wide
+ *  yyyy-Mmm-dd display date of the prev trading day (e.g. "2026-Aug-17").
+ *  Falls back to "Prev" when unknown. */
 export function prevDayTickLabel(entry: { date: string } | null): string {
   if (!entry?.date) return "Prev";
-  return entry.date.length >= 10 ? entry.date.slice(5, 10) : entry.date;
+  return fmtDate(entry.date);
 }
 
 /** One OHLC bar fully resolved for plotting (all FRACTIONS, close = 0). */

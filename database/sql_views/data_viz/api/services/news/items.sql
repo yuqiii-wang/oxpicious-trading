@@ -18,8 +18,10 @@ SELECT n.news_id, n.title, n.source, n.date::text AS date, n.url,
        d.sentiment_level,
        {{category_decode}} AS category,
        d.is_fake_news,
-       -- LEFT(NULL, n) is NULL: no guard needed for the missing content
-       LEFT(n.content, 200) AS snippet
+       -- LEFT(NULL, n) is NULL: no guard needed for the missing content;
+       -- the ````ocr fenced blocks (image → text enrichment) are stripped
+       -- first so the 2-line snippet never shows fence lines/URLs
+       LEFT(btrim(regexp_replace(n.content, '````ocr[^\n]*\n(?:[\s\S]*?)\n````', '', 'g')), 200) AS snippet
   FROM text.news n
   LEFT JOIN text.news_digestions d ON d.news_id = n.news_id
   {{where_clause}}

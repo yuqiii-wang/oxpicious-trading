@@ -8,7 +8,9 @@ __main__ wraps it):
   1. build analysis.ohlcv_ext (OhlcvExtBuilder — incremental per-code
      horizon; returns the whole universe's anatomy frame) + attach the
      margin anatomy (MarginAnatomy — the 'margin' parent type's
-     trailing rz_balance quantile bars)
+     trailing rz_balance quantile bars) + the news anatomy
+     (NewsAnatomy — the 'news' parent type's market state panel +
+     weekly aggregates + drop leg)
   2. detect the amplifier days (AmplifierEngine — the two-level
      amplifier_type + sub_type axis)
   3. load the bound families' fired days (history_signals standalone
@@ -53,6 +55,9 @@ from analysis.analysis_signals.signal_amplification.amplifiers import (
 from analysis.analysis_signals.signal_amplification.margin_anatomy import (
     MarginAnatomy,
 )
+from analysis.analysis_signals.signal_amplification.news_anatomy import (
+    NewsAnatomy,
+)
 from analysis.analysis_signals.signal_amplification.measurement import (
     AmplificationEvidence,
 )
@@ -70,12 +75,16 @@ RULE_ENTRY = "AmplifierEngine"
 
 # the anatomy columns the history rows' amplifier_params carry as the
 # day's extra facts (beyond the common fact columns; the margin columns
-# are NULL for codes without margin data — the MarginAnatomy attach)
+# are NULL for codes without margin data — the MarginAnatomy attach;
+# the news state columns NULL outside the panel's coverage — the
+# NewsAnatomy attach)
 _MARGIN_FACT_COLUMNS = ["margin_balance", "margin_bar_low",
                         "margin_bar_high"]
+_NEWS_FACT_COLUMNS = ["sent_z", "lex_tone_z", "flow_af", "flow_neg",
+                      "disp_z", "wz", "wfn", "wt"]
 _PARAM_FACT_COLUMNS = ["gap_oc", "ret_1d", "close_vs_prev_high",
                        "close_vs_prev_low", "amt_ratio_252",
-                       *_MARGIN_FACT_COLUMNS]
+                       *_MARGIN_FACT_COLUMNS, *_NEWS_FACT_COLUMNS]
 
 # the bound families' signal_type codes (the config matrix's targets)
 _BOUND_SIGNAL_TYPES = sorted(
@@ -267,6 +276,8 @@ async def run_amplification(conn, sec_type: str, codes: list[str],
     # 1. the ohlcv_ext build (returns the whole universe's anatomy) +
     #    the margin anatomy attach (the 'margin' parent type's source —
     #    codes without margin data keep NULL columns, no margin days)
+    #    + the news anatomy attach (the 'news' parent type's source —
+    #    the market state panel merged per DATE, NULL outside coverage)
     builder = OhlcvExtBuilder(conn, sec_type, codes, force=force)
     anatomy = await builder.build()
     if anatomy.empty:
@@ -274,6 +285,7 @@ async def run_amplification(conn, sec_type: str, codes: list[str],
                        "to do")
         return 0, 0
     anatomy = await MarginAnatomy(conn, sec_type, codes).attach(anatomy)
+    anatomy = await NewsAnatomy(conn, sec_type, codes).attach(anatomy)
 
     # 2. the amplifier days (the extra anatomy facts ride along for the
     # history rows' amplifier_params payload)

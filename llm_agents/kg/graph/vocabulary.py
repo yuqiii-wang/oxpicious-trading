@@ -7,7 +7,7 @@ the relevance floors, and the packing/render budgets."""
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Tuple
+from typing import Dict, FrozenSet, List, Tuple
 
 from llm_agents.kg.graph.values import KgEdge
 
@@ -48,6 +48,31 @@ def extract_tokens(text: str) -> List[str]:
     return tokens
 
 
+def is_fuzzy_token(token: str) -> bool:
+    """Whether *token* takes part in the fuzzy lane: a latin/digit word
+    of at least :data:`FUZZY_MIN_LEN` characters that carries a letter
+    (an index token or a query token — both arrive :func:`normalize`d).
+    Pure digits are identifiers and never take part."""
+    return (len(token) >= FUZZY_MIN_LEN
+            and _FUZZY_TOKEN_RE.fullmatch(token) is not None)
+
+
+def char_trigrams(token: str) -> FrozenSet[str]:
+    """A word's character trigrams, pg_trgm-padded (two leading spaces,
+    one trailing): ``'momentum'`` → ``{'  m', ' mo', 'mom', …}``."""
+    padded = f"  {token} "
+    return frozenset(padded[index:index + 3]
+                     for index in range(len(padded) - 2))
+
+
+def trigram_similarity(left: FrozenSet[str], right: FrozenSet[str]) -> float:
+    """Jaccard over two trigram sets — pg_trgm's ``similarity()``."""
+    shared = len(left & right)
+    if not shared:
+        return 0.0
+    return shared / (len(left) + len(right) - shared)
+
+
 # ---------------------------------------------------------------------------
 # Matching weights: face weights + the CJK unigram dampener
 # ---------------------------------------------------------------------------
@@ -61,6 +86,38 @@ FACE_DESC = 0.8
 FACE_TYPE = 0.5
 # A lone CJK character is ambiguous — it matches at half weight.
 _UNIGRAM_FACTOR = 0.5
+
+# -- the fuzzy lane (character trigrams, 2026-11-23) ----------------------
+# A query token with NO exact index bucket may still be a plural or a
+# misspelling of an authored one (labels → label, momemtum → momentum):
+# exact matching made that a total miss. The seed rung then resolves it
+# through the FUZZY lane — first the English plural strip (``s`` / ``es``
+# → an exact index token, similarity 1.0: ``calls`` → ``call``), else the
+# closest index token by CHARACTER-TRIGRAM similarity, the pg_trgm shape
+# (the word padded with two leading and one trailing space, similarity =
+# shared trigrams / their union). Only latin/digit words of at least
+# FUZZY_MIN_LEN characters take part on either side (shorter words carry
+# too few trigrams to mean anything; CJK bigrams are left alone), a
+# trigram match must clear FUZZY_SIMILARITY_MIN, and every fuzzy hit
+# scores strictly BELOW the exact hit of the same face — the face weight
+# × FUZZY_DAMP × the similarity.
+#
+# FUZZY_SIMILARITY_MIN = 0.58 is the measured cut (temp_scripts/
+# kg_lexical_golden.py, variant group vs negative group): the true
+# misspellings cluster at 0.58–0.77, while the FALSE attachments sit at
+# or below 0.571 (pasta → past on a true-negative ask, contrast →
+# contract inside a real query) — and nothing string-based separates a
+# one-letter typo from a one-letter collision, so the cut is placed
+# between them. Two real misspellings score 0.500 and stay unrecovered
+# (momemtum, sanbox); lowering the threshold to 0.50 recovers them AND
+# lets the two false attachments through.
+FUZZY_MIN_LEN = 4
+FUZZY_SIMILARITY_MIN = 0.58
+FUZZY_DAMP = 0.5
+# A latin/digit word carrying at least one LETTER — pure digits are
+# identifiers (index codes, years) and never fuzzy-matched: 000001 and
+# 000300 share most of their trigrams and are different indices.
+_FUZZY_TOKEN_RE = re.compile(r"(?=[a-z0-9]*[a-z])[a-z0-9]+")
 
 # Seed damping for the read-side sql_views templates: a template
 # matching the query is weaker "IS about the query" evidence than a
@@ -100,11 +157,19 @@ _HUB_DEGREE = 8
 _HUB_FACTOR = 0.5
 # The RELEVANCE FLOOR: results scale with the question's specificity.
 # The seed tail a top seed dwarfs drops out (_SEED_FLOOR of the seed
-# top); propagated nodes are judged on the GLOBAL scale — a blended
-# walk score is already ≤ ~1, so a fraction of the OVERALL top (seeds
-# keep raw lexical scores) is what separates real enrichment from
-# decay noise. Each class keeps a small minimum so a result never
-# collapses.
+# top). Propagated nodes are judged on the GLOBAL scale: their blended
+# score is activation on the WALK's OWN scale (the strongest propagated
+# row scores ACT_BLEND — a propagated node carries no lexical part),
+# and _WALK_FLOOR of the OVERALL top (the raw seed top, i.e. how
+# specifically the ask NAMES its tables, or the top walk score) is what
+# separates real enrichment from decay noise. An ask whose top seed
+# scores above ACT_BLEND / _WALK_FLOOR therefore keeps only the
+# _WALK_MIN strongest propagated nodes (focused); a vaguely named one
+# surfaces more of its neighborhood. Each class keeps a small minimum
+# so a result never collapses. (2026-11-23: the walk scale used to be
+# the max activation over seeds TOO — a seed's activation is its raw
+# lexical score, tens — which flattened every walk score to 0.02–0.27
+# and held every measured query at the minimum; see engine.search.)
 _SEED_FLOOR = 0.10
 _WALK_FLOOR = 0.02
 _SEED_MIN = 3

@@ -20,7 +20,8 @@
 --    30_industry_aggregation  weighting / rank_side / pool_size /
 --                             attribution_type
 --    40_security_identity     sec_type / board / sec_owner_type /
---                             contract_type / option_type / skew_type
+--                             contract_type / macro_metal /
+--                             option_type / skew_type
 --    50_trading               trade_side
 --    60_monitoring_infra      ext_resource / ext_http_source /
 --                             ext_llm_provider / secret_type /

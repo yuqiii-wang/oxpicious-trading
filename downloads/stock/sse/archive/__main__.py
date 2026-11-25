@@ -8,7 +8,7 @@ list endpoint (the same data source as ``stream_sse_price.py``).
 The module's former PE half (静态市盈率 + 总换手率 via the 成交概况 endpoint,
 ``_run_pe_for_stock`` + the trade-stats fetch helpers) migrated to the trend
 side on 2026-11-20: the weekly anchor crawl now lives in
-``downloads.stock.sse.trend_pe`` and the daily latest-missing-tail sweep in
+``downloads.stock.sse.pe`` and the daily latest-missing-tail sweep in
 ``downloads.stock.sse.pe_latest`` (both append to the same
 ``temps/sse_archive/{code}_pe.csv`` files this backfill seeded). Only the
 ETF-held universe loader (``load_target_stocks``) and the list-endpoint
@@ -103,7 +103,7 @@ DAYK_MAX_DAYS = 10000  # Fetch up to 10000 trading days per stock
 # Per-stock archive directory: one CSV per stock holding its full fetched
 # history. Lives under temps/sse_archive/, sibling of the date-grouped
 # temps/sse_trend/ output. The PE files ({code}_pe.csv) that the former PE
-# half of this module seeded live in the SAME directory — trend_pe and
+# half of this module seeded live in the SAME directory — the pe service and
 # pe_latest (their new owners) import this dirname constant from here.
 ARCHIVE_DIRNAME = "sse_archive"
 
@@ -410,7 +410,7 @@ class SseStockArchiveDownload(DownloadJob):
     The former module-level ``download_sse_archive`` orchestrator became the
     method below; the pure parsers/fetch helpers and constants above stay
     module-level. The per-stock ``_run_pe_for_stock`` workflow moved to
-    ``downloads.stock.sse.trend_pe`` (2026-11-20) — this backfill is
+    ``downloads.stock.sse.pe`` (2026-11-20) — this backfill is
     OHLCV/dayk only now.
     """
 
@@ -418,7 +418,7 @@ class SseStockArchiveDownload(DownloadJob):
                    "(default: only stocks held by ETFs). "
                    "Per stock: trend (cached or API) -> {code}_trend.csv. "
                    "For TODAY's snapshot, use download_sse_trend.py instead; "
-                   "for PE, downloads.stock.sse.trend_pe (weekly) / "
+                   "for PE, downloads.stock.sse.pe (weekly) / "
                    "pe_latest (nightly).")
     component = "sse_download"
 
@@ -450,7 +450,7 @@ class SseStockArchiveDownload(DownloadJob):
 
         Per-stock workflow: fetch the full OHLCV daily history from the dayk
         endpoint (yunhq.sse.com.cn) and write ``{code}_trend.csv``. (The
-        former per-stock PE step moved to downloads.stock.sse.trend_pe.)
+        former per-stock PE step moved to downloads.stock.sse.pe.)
 
         Output lives under ``temps/sse_archive/``. Resumable: an existing
         ``{code}_trend.csv`` covering the skip threshold is reused unless

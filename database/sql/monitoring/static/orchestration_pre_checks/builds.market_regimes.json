@@ -1,0 +1,10 @@
+{
+  "service": "builds.market_regimes",
+  "kind": "derive",
+  "tables": [
+    {
+      "table": "stats.market_regimes"
+    }
+  ],
+  "notes": "DB-only wholesale rebuild (reads the basic_stats closes). Presence = the session in stats.market_regimes."
+}

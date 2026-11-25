@@ -1,0 +1,13 @@
+{
+  "service": "strategy.forecast_next_day",
+  "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
+  "is_resident": false,
+  "freq": "daily",
+  "priority": 70,
+  "schedule": "every A-share trading date, in the 16:00 nightly chain after analysis_daily (strategy_daily step 2, auto-linked to step 1 strategy.singleton_trading)",
+  "notes": "Next-day ±kσ scenario forecast (the forecast register): per study index the 20d return σ projects ±1/2/3σ closes and registers which strategy signal would trigger under each scenario. Auto-linked to step 1 — its self-heal spawns the strategy run when the latest active portfolio run is behind the bar horizon (a no-op in the tier, step 1 just ran). Incremental: codes whose registered anchor matches the OHLCV horizon are skipped. Also runnable standalone from the Strategy → Forecast page.",
+  "source_ref": "scripts/orchestration/strategy_daily.json",
+  "updated_at": "2026-11-24T00:00:00.000000+00:00"
+}

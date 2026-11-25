@@ -1,0 +1,11 @@
+{
+  "service": "downloads.margin.szse",
+  "kind": "fetch",
+  "tables": [
+    {
+      "table": "stats.stock_liquidity_margin",
+      "code_scope": "\\.SZ$"
+    }
+  ],
+  "notes": "SZSE margin detail. DB slice only (no csv stage): a no-data session leaves a 0-byte marker pair, and the detail publishes T+1 — so at the 16:00 fire the session always reads absent and the step runs as before. Presence = the SZSE slice of stats.stock_liquidity_margin."
+}

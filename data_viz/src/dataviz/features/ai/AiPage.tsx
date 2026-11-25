@@ -76,6 +76,7 @@ import { SecNavShell, useSecNav } from "@/shared/components/sec-nav";
 import type { SecNavThemesSource } from "@/shared/components/sec-nav";
 import SecClassificationNav from "@/shared/components/sec-classification/SecClassificationNav";
 import DateEventStrip, { type DateEvent } from "@/shared/components/date-events/DateEventStrip";
+import { fmtDate } from "@/shared/datetime";
 import PostFeed from "@/shared/components/post-feed/PostFeed";
 import { CodeTrendChart } from "@/ui/OhlcChart";
 import AiQaCard from "./AiQaCard";
@@ -442,7 +443,7 @@ export default function AiPage() {
       title="AI"
       backPath="/dataviz"
       subtitle={
-        `${scopeLabel}${selectedDate ? ` · ${selectedDate}` : " · 全部日期"} — ` +
+        `${scopeLabel}${selectedDate ? ` · ${fmtDate(selectedDate)}` : " · 全部日期"} — ` +
         (source === "kb"
           ? "LLM 问答知识库（llm.llm_qa）· 点选日期圆点筛选当日问答"
           : source === "research"
@@ -655,7 +656,7 @@ export default function AiPage() {
         loading={itemsLoading}
         error={itemsError}
         errorLabel="Failed to load Q&A"
-        scopeLabel={`${scopeLabel}${selectedDate ? ` · ${selectedDate}` : ""}${search ? ` · “${search}”` : ""}${source === "kb" && bigMvOnly ? " · On Big Fluctuations" : ""}`}
+        scopeLabel={`${scopeLabel}${selectedDate ? ` · ${fmtDate(selectedDate)}` : ""}${search ? ` · “${search}”` : ""}${source === "kb" && bigMvOnly ? " · On Big Fluctuations" : ""}`}
         countNoun={source === "kb" ? "条问答" : source === "research" ? "条研究" : "条提问"}
         empty={!itemsLoading && (itemsData?.items ?? []).length === 0}
         emptyText={

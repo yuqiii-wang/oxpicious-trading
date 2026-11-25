@@ -26,7 +26,7 @@ Scope vocabulary (comma-joined when a code carries several):
   ``csindex``      csindex.com.cn serves NOTHING for the code (daily
                    export, PE, intraday) — another downloader owns its
                    daily data (SSE bulk trend, SZSE downloader, cnindex
-                   archive). The csindex quote runner and streamer skip
+                   archive). The csindex price runner and streamer skip
                    it.
   ``csindex_pe``   only the PE (peg) series never returns; the daily
                    export works, so just the PE step skips the code.

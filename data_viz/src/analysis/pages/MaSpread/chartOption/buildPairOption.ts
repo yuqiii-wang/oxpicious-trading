@@ -31,6 +31,7 @@
  */
 import { ohlcSeries, type OhlcMode } from "@/lib/ohlc";
 import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
+import { fmtMonth } from "@/shared/datetime";
 import {
   MA120_COLOR,
   UP_COLOR,
@@ -672,7 +673,7 @@ export function buildPairOption({
       axisLabel: {
         color: c.textColor,
         fontSize: 9,
-        formatter: (v: string) => v.slice(0, 7),
+        formatter: (v: string) => fmtMonth(v),
         interval: Math.max(1, Math.floor(n / 6)),
       },
       splitLine: { show: false },

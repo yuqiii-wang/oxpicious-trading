@@ -60,7 +60,7 @@ export const SEC_ALLOC_LIVE_LIVE_TAG = "sec-alloc-live:live";
  *    • "ref" — the FULL yday-ref chain, run sequentially server-side and
  *      deduped by process-id-tag (a second POST while any phase runs
  *      resolves immediately with already_running: true):
- *        1. downloads.index.csindex.quote --ensure-prev-trading-day
+ *        1. downloads.index.csindex.price --ensure-prev-trading-day
  *           (tag …:ref:dl) — TARGETED CSV refresh: codes whose local
  *           CSVs already contain the prev trading day are skipped
  *           entirely; only laggards fetch the 1m window.

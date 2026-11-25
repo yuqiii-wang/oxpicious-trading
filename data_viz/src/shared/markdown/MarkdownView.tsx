@@ -2,15 +2,19 @@
  * MarkdownView — shared markdown renderer (react-markdown + remark-gfm)
  * mapped onto MUI theme tokens, so headings/tables/code render consistently
  * in both theme modes on any page that shows an AI-authored or generated
- * document (analysis AI summary, future report surfaces).
+ * document (analysis AI summary, the AI Q&A cards/modal, future report
+ * surfaces). `breaks` is on (GFM-comment style): LLM answers separate lines
+ * with single newlines, which standard CommonMark would merge into one
+ * paragraph.
  *
  * Most styling is descendant CSS on the wrapper Box; only the block
  * elements whose scale should follow the theme typography (headings,
  * paragraphs) are mapped to Typography components.
  */
 import { memo } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 import { Box, Typography } from "@mui/material";
 import type { Components } from "react-markdown";
 
@@ -95,12 +99,26 @@ export interface MarkdownViewProps {
    *  headings, body2 paragraphs, tighter rhythm. Default false (the
    *  document scale the summary page renders at). */
   dense?: boolean;
+  /** Extra element overrides merged OVER the built-in mapping (caller's
+   *  element wins) — e.g. AiQaRefBox intercepts its cite:// links. Memoize
+   *  the object to keep this component's memo effective. */
+  extraComponents?: Components;
+  /** Extra URL transform layered over the default sanitizer — called
+   *  first; a non-null return passes through, a null return falls back to
+   *  the default transform (which strips unknown schemes like cite://).
+   *  Memoize like extraComponents. */
+  extraUrlTransform?: (url: string) => string | null;
 }
 
 /** Memoized: the react-markdown parse is the expensive part, and parents
  *  re-render frequently (poll loops, panels) with an unchanged source —
  *  skip the re-parse unless the source or the scale actually changed. */
-function MarkdownViewImpl({ source, dense = false }: MarkdownViewProps) {
+function MarkdownViewImpl({
+  source,
+  dense = false,
+  extraComponents,
+  extraUrlTransform,
+}: MarkdownViewProps) {
   return (
     <Box
       sx={{
@@ -150,8 +168,11 @@ function MarkdownViewImpl({ source, dense = false }: MarkdownViewProps) {
       }}
     >
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={dense ? denseComponents : components}
+        remarkPlugins={[remarkGfm, remarkBreaks]}
+        urlTransform={(url) =>
+          extraUrlTransform?.(url) ?? defaultUrlTransform(url)
+        }
+        components={{ ...(dense ? denseComponents : components), ...extraComponents }}
       >
         {source}
       </ReactMarkdown>

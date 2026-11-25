@@ -87,7 +87,7 @@ import {
   type IndustryFilter,
 } from "@/live/features/market-movements/marketMovementsOption";
 import { resolvePrevDayBar } from "@/live/features/market-movements/prevDayOhlc";
-import { isWithinTradingHours } from "@/shared/datetime";
+import { isWithinTradingHours, fmtDate } from "@/shared/datetime";
 
 /** One benchmark option in the dropdown. */
 interface BenchmarkOption {
@@ -637,8 +637,8 @@ export default function LiveDataMarketMovementsPage() {
 
   const topSubtitle = data
     ? (noBenchmark
-        ? `No Benchmark (0.0%) · ${data.date} ${data.latest_time}`
-        : `${data.benchmark_name} (${data.benchmark_code}) · ${data.date} ${data.latest_time}`) +
+        ? `No Benchmark (0.0%) · ${fmtDate(data.date)} ${data.latest_time}`
+        : `${data.benchmark_name} (${data.benchmark_code}) · ${fmtDate(data.date)} ${data.latest_time}`) +
       (prevDayBar ? ` · prev-day OHLC: ${prevDayBar.label}` : "") +
       (selectedTick && selectedTick !== data.latest_time
         ? ` · selected tick ${selectedTick}`
@@ -816,7 +816,7 @@ export default function LiveDataMarketMovementsPage() {
         loading={loading}
         emptyText={
           data && data.benchmark_series.length === 0
-            ? `No intraday bars for benchmark ${benchmarkCode} on ${data.date}.`
+            ? `No intraday bars for benchmark ${benchmarkCode} on ${fmtDate(data.date)}.`
             : "No data"
         }
         onCanvasClick={handleTopCanvasClick}

@@ -33,6 +33,7 @@ import {
   commonDataZoom,
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
+import { fmtMonth } from "@/shared/datetime";
 import type { MarginAnalytics, PivotResult } from "./types";
 import { MEMBERS_SUFFIX, RET_SUFFIX, VOL_SUFFIX } from "./types";
 import type { MarginAttribution, MarginSeries } from "../constants";
@@ -285,7 +286,7 @@ export function buildTrendChartOption(args: TrendChartArgs): EChartsOption | nul
         data: dates,
         gridIndex: 1,
         axisLine: { lineStyle: { color: c.axisLineColor } },
-        axisLabel: { color: c.textColor, fontSize: 9, formatter: (v: string) => v.slice(0, 7) },
+        axisLabel: { color: c.textColor, fontSize: 9, formatter: (v: string) => fmtMonth(v) },
         splitLine: { show: false },
       },
     ],

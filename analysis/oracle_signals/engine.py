@@ -87,15 +87,17 @@ level omit:
      LOOKFORWARD_DAYS (20, user-directed 2026-11-20 "let future look
      only be 20d not 60d" — the 2026-11-19 v4 calibration ran 60)
      traded rows OR the biggest DROP within the
-     LOOKBACK_DAYS (60) rows before it; a SELL by the biggest DROP
-     after / biggest RISE before (the max favorable excursion on both
-     sides). Each leg grades 0..100 on its own LINEAR ramp from
-     CONF_NO_ACTION_MOVE (2%) to CONF_FULL_MOVE (10%, clipped); the
-     pivot's CONFIDENCE is the WEIGHTED SUM — the pre-action leg at
-     CONF_BACK_WEIGHT (30%), the forward leg at CONF_FWD_WEIGHT (70%,
-     user-directed "let rises/drops before action date with
-     confidence weighted 30%, while future rises/drops weighted 70%")
-     — and the pivot emits when its weighted grade is positive:
+     LOOKBACK_DAYS (20, 2026-11-21 user-directed "also only look
+     back 20d not 60d" — the v5 calibration ran 60) rows before it;
+     a SELL by the biggest DROP after / biggest RISE before (the max
+     favorable excursion on both sides). Each leg grades 0..100 on
+     its own LINEAR ramp from CONF_NO_ACTION_MOVE (2%) to
+     CONF_FULL_MOVE (10%, clipped); the pivot's CONFIDENCE is the
+     WEIGHTED SUM — the pre-action leg at CONF_BACK_WEIGHT (30%),
+     the forward leg at CONF_FWD_WEIGHT (70%, user-directed "let
+     rises/drops before action date with confidence weighted 30%,
+     while future rises/drops weighted 70%") — and the pivot emits
+     when its weighted grade is positive:
      EITHER leg above the floor acts, BOTH legs below the floor OMIT
      the row (the oracle takes NO ACTION at that pivot — the 2020-01
      small-gap chop buys measure +0.7%/+1.6% forward and dust
@@ -108,8 +110,8 @@ level omit:
      share now (conf only grows as the tail re-grades); a
      backward-dust UNREALIZED window (< 20 future rows at the
      frontier) still emits confidence NULL — unknown is not small —
-     and is re-graded (or dropped) by later runs' revisable tail
-     (``tail_cutoffs``). Omitted pivots still OCCUPY their 5-row unit
+     and is re-graded (or dropped) by later runs' daily diff. Omitted
+     pivots still OCCUPY their 5-row unit
      (placement precedes grading), and the ext_* legs stay
      PLACED-level: the swing target is the next opposite PLACED pivot
      even when that pivot's own row was omitted — a fact about the
@@ -144,9 +146,8 @@ level omit:
      The future legs read the
      REALIZED portion only and are MONOTONE at the frontier (a
      partial window already showing the disqualifying level omits
-     now; the revisable tail — 25 rows, the 20d horizon + the action
-     span —
-     re-decides the rest); the recent/dd-into legs are realized at
+     now; the daily incremental re-decides the rest as the window
+     realizes); the recent/dd-into legs are realized at
      placement.
      Suppressed pivots still OCCUPY their 5-row units and still
      anchor later rows' ext_* legs (placement precedes grading).
@@ -184,26 +185,20 @@ class OracleDecisionEngine:
     def __init__(self, closes: pd.DataFrame, sec_code: int) -> None:
         self.closes = closes
         self.sec_code = sec_code
-        # per-code revisable-tail cutoff dates (python dates): emitted
-        # rows at/after the cutoff can still be re-graded or omitted by
-        # later runs (the forward window still unrealized / the unit
-        # placement fresh) — the incremental write's delete range
-        self.tail_cutoffs: dict[str, object] = {}
 
     # -- public ----------------------------------------------------------
 
     def build(self) -> pd.DataFrame:
         """Run the per-code detection + selection + grading pass and
         materialize the output frame (REAL ctor, one boundary pass at
-        exit); populates ``tail_cutoffs`` per processed code."""
+        exit). The frame is the code set's FULL re-decision — the
+        incremental write diffs the target against it."""
         col: dict[str, list] = {c: [] for c in OUT_COLUMNS}
         for code, g in self._code_groups():
-            rows, cutoff = self._decide_code(
+            rows = self._decide_code(
                 host_array(g["date"].to_numpy()),
                 host_array(g["close"].to_numpy()).astype("float64"),
             )
-            if cutoff is not None:
-                self.tail_cutoffs[code] = cutoff
             for r in rows:
                 col["sec_type"].append(np.int16(self.sec_code))
                 col["code"].append(code)
@@ -223,7 +218,7 @@ class OracleDecisionEngine:
 
     def _decide_code(
         self, dates: np.ndarray, closes: np.ndarray,
-    ) -> tuple[list[dict], object]:
+    ) -> list[dict]:
         """One code's pass: detect the 5-bar-window local extremes
         (1-day stride), select the actions under the 5d per-side
         one-action rule, drop every pivot that is not a genuine
@@ -233,8 +228,7 @@ class OracleDecisionEngine:
         excursion on EITHER side (v4 forward window + v5 backward
         leg). `dates`/`closes` are RAW host arrays (the
         boundary unwrapped once); everything below is plain numpy —
-        no proxy dispatch. Returns (kept rows, the revisable-tail
-        cutoff date or None when no rows)."""
+        no proxy dispatch. Returns the kept rows."""
         k = config.WINDOW_SIDES
         span = config.ONE_ACTION_SPAN
         n = closes.shape[0]
@@ -307,7 +301,8 @@ class OracleDecisionEngine:
         # each PLACED pivot is validated by its favorable excursion on
         # EITHER side: a BUY by the biggest rise within the next
         # LOOKFORWARD_DAYS traded rows OR the biggest drop within the
-        # LOOKBACK_DAYS rows before it; a SELL by the biggest drop
+        # LOOKBACK_DAYS (20 — the 2026-11-21 unification, both windows
+        # 20) rows before it; a SELL by the biggest drop
         # after / biggest rise before. Each leg grades 0..100 on its
         # own linear ramp (floor -> full, clipped); the pivot's
         # CONFIDENCE is the WEIGHTED SUM — the pre-action leg at
@@ -360,10 +355,9 @@ class OracleDecisionEngine:
             # 24-31 rows out and MUST live; measured, not assumed).
             # The future legs read the REALIZED portion only (a
             # partial window already showing the disqualifying
-            # level omits now; the revisable tail — 25 rows, the
-            # 20d horizon + the action span — re-decides
-            # the rest); the recent legs are realized at placement
-            # (past rows). A
+            # level omits now; the daily incremental re-decides
+            # the rest as the window realizes); the recent legs
+            # are realized at placement (past rows). A
             # suppressed pivot still occupies its 5-row unit and
             # still anchors later rows' ext_* legs (placement
             # precedes grading).
@@ -385,7 +379,7 @@ class OracleDecisionEngine:
                 # and keeps otherwise. The dd-into leg is realized at
                 # placement (past rows only); the future leg reads the
                 # REALIZED portion and is monotone at the frontier
-                # (the revisable tail re-decides).
+                # (the daily incremental re-decides).
                 hist_hi = closes[max(0, i - config.PREPARE_HORIZON_DAYS):i]
                 dd_into = (float(1.0 - closes[i] / hist_hi.max())
                            if hist_hi.size else 0.0)
@@ -431,7 +425,7 @@ class OracleDecisionEngine:
             elif back_mfe >= floor:
                 # frontier: the forward window is unrealized — the
                 # known backward leg grades at its own 30% share (the
-                # revisable tail re-grades upward when the forward
+                # daily incremental re-grades upward when the forward
                 # realizes; conf only grows)
                 conf = w_back * _leg_grade(back_mfe, floor, full)
             # else: backward-dust frontier pivot — confidence NULL
@@ -449,19 +443,8 @@ class OracleDecisionEngine:
                               if ext_pos is not None else None),
             })
         if not rows:
-            return [], None
-        # the revisable-tail cutoff: the oldest pivot whose FUTURE is
-        # not fully realized yet — the longest of the forward-reading
-        # horizons (ALL 20 now: the grading's LOOKFORWARD_DAYS and
-        # both gates' horizons — the general form keeps the tail
-        # correct if one horizon ever moves alone); one
-        # action-span further covers a frontier unit's placement
-        # upgrade — rows at/after this date are rewritten per run
-        tail_rows = max(fwd, config.PREPARE_HORIZON_DAYS,
-                        config.SELL_HIGH_HORIZON_DAYS) + span
-        cutoff_i = max(0, n - 1 - tail_rows)
-        cutoff = dates[cutoff_i].astype("datetime64[D]").item()
-        return rows, cutoff
+            return []
+        return rows
 
     def _materialize(self, col: dict[str, list]) -> pd.DataFrame:
         """The boundary exit: ONE real-ctor materialization of the raw

@@ -36,6 +36,7 @@ import {
   commonGrid,
 } from "@/theme/chart-palette";
 import { baseChartOption } from "@/shared/charts/base-chart";
+import { fmtDate, fmtMonth } from "@/shared/datetime";
 import { fmtNum } from "@/lib/series";
 import type { ChartMode } from "./types";
 import React from "react";
@@ -202,7 +203,7 @@ export function buildAmountContributionOption(
         const children: React.ReactNode[] = [];
 
         children.push(
-          React.createElement(tooltipComponents.Header, null, dates[idx])
+          React.createElement(tooltipComponents.Header, null, fmtDate(dates[idx]))
         );
 
         const benchExtra = benchNum == null
@@ -271,7 +272,7 @@ export function buildAmountContributionOption(
       axisLabel: {
         color: c.textColor,
         fontSize: 9,
-        formatter: (v: string) => v.slice(0, 7),
+        formatter: (v: string) => fmtMonth(v),
       },
       splitLine: { show: false },
     },

@@ -12,7 +12,7 @@ import { Box, CircularProgress, IconButton, Paper, Table, TableBody, TableCell, 
 import { Close } from "@mui/icons-material";
 import { useChartData } from "@/shared/charts/base-chart";
 import { fetchDayRuns, type ServiceAuditEntry } from "@/lib/api-client/monitor";
-import { fmtDateTimeShanghai } from "@/shared/datetime";
+import { fmtDate, fmtDateTimeShanghai } from "@/shared/datetime";
 import { fmtAge } from "@/monitor/fmt";
 
 export default function DayRunsPanel({
@@ -100,7 +100,7 @@ export default function DayRunsPanel({
           mb: 0.5,
         }}
       >
-        <Typography variant="subtitle2">Pipeline runs on {day}</Typography>
+        <Typography variant="subtitle2">Pipeline runs on {fmtDate(day)}</Typography>
         <Typography variant="caption" color="text.secondary">
           {loading
             ? "loading…"

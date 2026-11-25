@@ -63,7 +63,11 @@ registry dedupe, per-service `max_parallel` claims and single-instance
 file locks all still apply) and polled to their exits before the next
 wave opens. The width cap bounds concurrent child processes (RAM /
 DB-write load); the nightly `downloads_daily` pass compresses from 30
-serial steps to ~10 waves.
+serial steps to ~10 waves. The end-of-tier resource-retry pass (the
+steps deferred on the `EXIT_RESOURCE` pre-check) re-partitions its
+steps through the SAME wave builder — deferred steps come from
+different waves and may repeat a host, so without the re-partition two
+same-host steps would retry concurrently.
 
 A step's failure never aborts the batch or tier (monitoring is
 alert-only); the run ends `failed` if any step failed. A tier that
@@ -74,6 +78,62 @@ inputs; the steps' incremental guards self-heal on the next night's
 fire or a manual run. An interrupted chain resumes from its state file
 (`server_cluster/_state/nightly_pipeline.json`) when the maintainer
 restarts.
+
+## The arrangement: what a chain pass actually spawns
+
+Before a tier runs, the chain has the monitor area ARRANGE it
+(`POST /orchestration/run {"file", "arrange": true}` →
+`server_cluster/monitor/arrangement.py`): every step service gets a
+run / don't-run verdict in `monitor.orchestration_task_state`, and the
+not-due steps are skipped (state `skipped_not_due`, never spawned)
+instead of being spawned to no-op internally. `force` runs every step
+regardless. Two rules decide a verdict:
+
+- **The data pre-check** — for a service that declares one (one
+  git-reviewed JSON per service under
+  `database/sql/monitoring/static/orchestration_pre_checks/`,
+  `server_cluster/monitor/pre_check.py`). It asks whether the step has
+  work at all, over the latest 5 closed sessions: (1) the DB table —
+  which sessions are absent from the service's DATA table (the one its
+  own pipeline gates on — never a `stats.*_identity` table, which the
+  stream pollers pre-write intraday hours before the EOD load); (2) the
+  source csv — whether an absent session's file is staged (a real,
+  FINAL file: past the 1 KB validity floor and written at/after the
+  session's 15:00 close — a today-file written earlier is a pre-close
+  snapshot). Then by role: a download (`fetch`) RUNS when a session is
+  absent and not staged; a build (`load`) RUNS when it is absent and
+  staged; an analysis / strategy / DB-only build (`derive`) RUNS when
+  its result table's pk lacks a session. Data present everywhere skips
+  the step.
+- **The freq-calendar rule** — every other service (the weekly /
+  monthly / quarterly / semiannual / once tiers, `on_demand` /
+  `occasionally` steps, anything without a pre-check): due again at the
+  next calendar boundary after its last successful exit (daily = the
+  next day, quarterly = a week after the quarter start, `once` = never
+  again).
+
+Because each tier is arranged right before it runs, a tier's pre-check
+sees the tiers before it: the builds tier reads the downloads tier's
+freshly staged csv. A probe that errors fails OPEN (`check_failed` —
+the step runs, its own guards decide). Presence is not completeness: a
+partial session reads present — partial sessions are the morning
+audit's domain (the 07:00 `daily_data_checks`, the 07:15
+missing-session backfill) — with one exception inside the pre-check
+itself: a per-code sweep's slice carries a `min_codes` floor (the CSI
+price sweep is present for a session only once ≥ 230 of its 264
+CSI-native index codes hold it — any-row presence would let a sweep
+that died part-way read as loaded, and the calendar rule misreads the
+step: a pre-dawn run serves the PREVIOUS session yet counts as a
+same-day success). The Monitor UI's Orchestration page shows every
+verdict with its reading (the queue's why-due chip, the no-need
+reason) and its sessions; `POST /api/monitor/orchestration/arrange`
+runs one pass over every tier on demand — and is REFUSED (409) while a
+chain pass is executing: the chain arranges each tier right before
+running it and reads a refused arrange as a conflict, aborting on it.
+On the monitor side a second arrange pass likewise WAITS for the one in
+flight (`ARRANGE_WAIT_S`) instead of being refused, so a manual pass
+holding the arrangement for a few seconds only delays a tier, never
+aborts the chain.
 
 ## Priority give-way (downloads first, then frequency)
 
@@ -90,23 +150,33 @@ regardless of cadence (a build stops to give way to a download), and
 within a domain the more frequent the cadence the higher the rank
 (always 80 > daily 70 > weekly 60 > monthly 50 > quarterly 40 >
 semiannually 30 > once 20 > occasionally 10 > on_demand 0; downloads
-+100):
++100). Alongside the rank, every claim carries its step's `src_host` —
+the SAME-SRC rule: two in-flight children of the same host group never
+overlap regardless of rank (the equal-priority case the rank alone
+cannot order — e.g. the `/non-daily` drive's re-run of one csindex
+module against the chain's another):
 
 - a step whose priority is STRICTLY lower than any running step of
-  another run shows `waiting_priority` (poll `GET
-  /orchestration/run/{tag}`) until the higher-priority run finishes —
-  then it submits;
-- a higher-priority run arriving while a lower-priority step is
-  already running STOPS that step's child (registry stop) and resumes
-  it as a fresh child once the blocker finishes — the tasks'
-  incremental guards pick up where the stop left off;
-- EQUAL priorities never give way to each other (same-rank runs stay
-  concurrent, as before) — a same-file race is still refused (409) or
-  registry-deduped;
+  another run — or whose `src_host` matches ANY running step of
+  another run — shows `waiting_priority` (poll `GET
+  /orchestration/run/{tag}`) until the blocker finishes — then it
+  submits;
+- a higher-priority run (or a same-src run) arriving while a
+  lower-priority step is already running STOPS that step's child
+  (registry stop) and resumes it as a fresh child once the blocker
+  finishes — the tasks' incremental guards pick up where the stop
+  left off;
+- EQUAL-priority, DIFFERENT-src runs never give way to each other
+  (same-rank runs stay concurrent, as before) — a same-file race is
+  still refused (409) or registry-deduped;
 - the `/non-daily` backfill drive (`server_cluster/monitor/
   non_daily.py`) gives way the same way per re-run (its rerun records
   carry a `yields` count; the re-run's rank is its module's
-  service_config priority).
+  service_config priority, its src_host the tier step's) AND sits ON
+  the board while its child runs (`register_claim` / `release_claim`
+  on the runner) — the runner's steps see its rank and src_host like
+  any other run's child, so the give-way works symmetrically across
+  the two surfaces.
 
 A run never blocks its own steps (its waves already order them).
 Adopted runs (after a monitor restart) carry no step plan and claim no
@@ -127,19 +197,28 @@ carries its own month guard inside the step (no-op unless a new month
 started). Higher-cadence tiers (monthly, quarterly, weekly) ride every
 pass — their tasks' internal skip logic makes off-cadence runs no-ops:
 the monthly tasks refresh on the 1st of each month, and the quarterly
-tier's tasks (the index/ETF composition downloads) refresh on the 1st
-of a quarter-start month (Jan/Apr/Jul/Oct) — the former
+tier's tasks (the index/ETF composition downloads) refresh one week
+after the quarter start — the arrangement's quarterly boundary (a
+2027-Jan-01 quarter comes due 2027-Jan-08) lands on the 8th of the
+quarter-start month (Jan/Apr/Jul/Oct) and the tasks' refresh window
+(`is_quarter_start`, `downloads/_common/monthly.py`) covers the first
+half of that month so a holiday slide past the 8th still refreshes —
+the former
 `downloads_seasonally` tier, renamed 2026-11 when the four index
 composition / linked-ETF steps moved off the monthly tier. The
-`downloads_weekly` tier (the SSE stock-PE anchor crawl,
-`downloads.stock.sse.trend_pe`, 2026-11-20 — the archive module's
-former PE half migrated to the trend side) and the `analysis_weekly`
-tier (the hindsight-oracle pipeline, 2026-11-19) carry their own
-weekly gates the same way — the run no-ops until its own clock is ≥ 6
-calendar days old (trend_pe: the last normal exit in
-monitor.service_audit, `WEEKLY_GATE_DAYS` in the module; oracle: the
-last build, `config.WEEKLY_GATE_DAYS`; `--force` / `--code` bypass in
-both).
+`downloads_weekly` tier (the weekly PE sweeps,
+`downloads.stock.sse.pe` — the archive module's former PE half, its own
+service since 2026-11-23 — and `downloads.index.csindex.pe`, split out
+of the nightly quote module 2026-11-23) carry their own weekly
+gates the same way — the run no-ops until its own clock is ≥ 6
+calendar days old (the last normal exit in monitor.service_audit,
+`WEEKLY_GATE_DAYS` in the module; `--force` / `--code` bypass). The
+former `analysis_weekly` tier (the hindsight-oracle pipeline,
+2026-11-19) is gone 2026-11-21: the oracle moved INTO `analysis_daily`
+as step 13 — user-directed "the incremental daily run should be able
+to update last 20d signals to add/remove signals since local max/min
+are known" — and its `config.WEEKLY_GATE_DAYS` gate retired with the
+tier (the daily incremental diffs the oracle table).
 
 A pass with failures (or an aborted/interrupted one) KEEPS its record
 in `server_cluster/_state/nightly_pipeline.json` as the recovery

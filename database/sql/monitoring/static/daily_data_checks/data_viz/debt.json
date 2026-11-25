@@ -1,0 +1,4 @@
+{
+  "view": "server_cluster/maintainer/daily_check/data_viz/debt",
+  "notes": "data_viz UI source debt (stats.debt_identity, the UI latest-dates probe) vs the index bars frontier: the debt family (PBoC OMO/repo/MLF, SHIBOR, ChinaBond yields, LPR) is one row per trading day, but parts publish on their own clock (LPR monthly, some PBoC feeds next morning) — the 4-calendar-day tolerance is the publish-lag slack; beyond it the builds/bond pipeline stopped."
+}

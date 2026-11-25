@@ -30,6 +30,7 @@ import {
   commonDataZoom,
 } from "@/theme/chart-palette";
 import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
+import { fmtDate } from "@/shared/datetime";
 import { fmtNum } from "@/lib/series";
 import type { HotTechView } from "./types";
 import { HOT_TECH_METRIC_ITEMS } from "./constants";
@@ -137,7 +138,7 @@ export function buildHotTechCurveOption(
         const hn = hotN[idx];
         const children = [
           `${data.name || data.code} (${data.code})`,
-          dates[idx] ?? "—",
+          fmtDate(dates[idx] ?? null),
           `Close: ${close == null || !Number.isFinite(close) ? "—" : fmtNum(close, 2)}`,
           `Hot set: ${hn != null && Number.isFinite(hn) ? `${hn} names` : "—"}`,
         ];

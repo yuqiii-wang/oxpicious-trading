@@ -1,0 +1,4 @@
+{
+  "view": "server_cluster/maintainer/daily_check/data_viz/options",
+  "notes": "data_viz UI source options (stats.options_identity, the UI latest-dates probe) vs the index bars frontier: SSE/SZSE/CFFEX options settle on the same trading calendar and load in the nightly chain — a table-wide max(date) behind the frontier (1-day slack for late-afternoon publish timing) means the options downloads or the identity build stopped."
+}

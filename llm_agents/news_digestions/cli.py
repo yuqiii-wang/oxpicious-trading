@@ -155,7 +155,13 @@ async def _run(args) -> None:
                 logger.error("    [digest] failed: %s: %s",
                              type(e).__name__, e)
                 continue
-            await upsert_digestions(conn, [row])
+            # The upsert shares the detector's ONE asyncpg conn — hold the
+            # detector's db_lock so it never overlaps a concurrent prior
+            # hunt (the 2026-11-21 "another operation is in progress" race;
+            # the daily side task never overlapped them — it gathers all
+            # detections before upserting).
+            async with detector.db_lock:
+                await upsert_digestions(conn, [row])
             ok += 1
             logger.info("    [%d/%d] news_id=%s sentiment=%s %s",
                         ok + failed, len(articles), row["news_id"],

@@ -12,6 +12,7 @@
 import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
 import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
+import { fmtDate } from "@/shared/datetime";
 import {
   axisColors,
   commonDataZoom,
@@ -52,7 +53,13 @@ export function buildDbTrendOption(
       type: "category",
       data: labels,
       axisLine: { lineStyle: { color: c.axisLineColor } },
-      axisLabel: { color: c.textColor, fontSize: 9 },
+      // Archive ticks are GMT-day labels ("2026-11-20") — remapped for
+      // display only; live "HH:mm" ticks pass through unchanged.
+      axisLabel: {
+        color: c.textColor,
+        fontSize: 9,
+        formatter: (v: string) => fmtDate(v),
+      },
     },
     yAxis: [
       {

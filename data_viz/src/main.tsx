@@ -29,6 +29,7 @@ function ThemedApp() {
 
 // Wire up ECharts cross-chart tooltip sync once.
 connectChartsByGroup("debt");
+connectChartsByGroup("macro");
 connectChartsByGroup("annual-sentiment");
 connectChartsByGroup("market-beta");
 connectChartsByGroup("options-trend");

@@ -23,6 +23,7 @@
 import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
 import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
+import { fmtDate } from "@/shared/datetime";
 import {
   axisColors,
   commonDataZoom,
@@ -87,7 +88,7 @@ export function buildAlignmentTrendOption(
                   : ""
               }${score}/5 legs`
             : "— (insufficient history)";
-        return `${p.axisValueLabel ?? row.date}<br/>${p.marker ?? ""}alignment ${value}`;
+        return `${p.axisValueLabel ?? fmtDate(row.date)}<br/>${p.marker ?? ""}alignment ${value}`;
       },
     }),
     xAxis: {

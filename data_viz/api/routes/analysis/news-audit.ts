@@ -5,7 +5,11 @@
  */
 
 import { Router, type Request, type Response } from "express";
-import { getNewsProviderAudit, getNewsContentAudit } from "../../services/analysis/index.js";
+import {
+  getNewsProviderAudit,
+  getNewsContentAudit,
+  getNewsCoverageAudit,
+} from "../../services/analysis/index.js";
 import { runPythonModule } from "../../services/infra/py-runner.service.js";
 import { wrapAsync, strParam } from "../../lib/http.js";
 
@@ -22,6 +26,11 @@ const router = Router();
 //     Returns NewsContentAuditResponse: the content twin per industry
 //     ("" = untagged), plus distinct keywords hit / total mentions /
 //     articles with hits. `industry_id` (optional) filters; empty = all.
+//   GET /api/analysis/news-audit/coverage?limit_days=20
+//     Returns NewsCoverageAuditResponse: the DAILY coverage audit
+//     (text.news_coverage_audit) — per (trading day, industry) article /
+//     digested / fake counts, '000001' = the whole-market rollup row
+//     (the daily panel's flow basis; the 2026-11-22 coverage migration).
 //   POST /api/analysis/news-audit/run
 //     Spawns `python -m analysis.news_audit` (incremental: registry sync
 //     + missing/trailing/grace windows) via the shared WSL py-runner and
@@ -52,6 +61,13 @@ router.post("/news-audit/run", wrapAsync(async (_req: Request, res: Response) =>
     stdout_tail: result.stdout.slice(-2000),
     stderr_tail: result.stderr.slice(-2000),
   });
+}));
+
+
+router.get("/news-audit/coverage", wrapAsync(async (req: Request, res: Response) => {
+  res.json(await getNewsCoverageAudit(
+    typeof req.query.limit_days === "string" ? req.query.limit_days : undefined,
+  ));
 }));
 
 export default router;

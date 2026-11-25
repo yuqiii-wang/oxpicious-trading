@@ -54,6 +54,17 @@ everything domain lives HERE). The service owns:
     idempotent sync INLINE, BEFORE the read. Fail-soft — a gate error
     serves the stored graph with a warning; never breaks a KG tool
     result.
+  * the SEARCH-CALL STATS (2026-11-23) — every ANSWERED kg_search call
+    (a hot-path replay, a live match, a no-match, a gate-rejected
+    result) is recorded as ONE ``llm.kg_search_stats`` row after the
+    result text is built: the ranked node names + scores, the rung
+    counters (``graph.SearchTrace`` — what the seed / walk rungs
+    produced, what the relevance floors pruned), the replay and gate
+    facts, the latency (``search_stats.SearchStatsLog``). The chain
+    tables only ever saw successful non-empty traversals, so a miss was
+    invisible; this ledger closes that. Fail-soft like every other
+    layer — it never breaks or alters a result — and a pure side ledger:
+    nothing in the search path reads it.
 """
 from __future__ import annotations
 
@@ -68,12 +79,13 @@ from llm_agents.kg.columns import (
     COLUMN_RENDER_MAX, LEAN_COLUMNS_PER_TABLE, TABLE_COLUMNS,
 )
 from llm_agents.kg.graph import (
-    NODE_MAX_CAP, NODE_MAX_DEFAULT, KgEdge, KgEntity, KnowledgeGraph,
-    SearchResult, normalize_detail, render_expand, render_replay,
-    render_search,
+    DETAIL_FULL, NODE_MAX_CAP, NODE_MAX_DEFAULT, KgEdge, KgEntity,
+    KnowledgeGraph, SearchResult, normalize_detail,
+    render_expand, render_replay, render_search,
 )
 from llm_agents.kg.hotpaths import HotpathCache
 from llm_agents.kg.query_log import QueryLog
+from llm_agents.kg.search_stats import KgSearchStatRow, SearchStatsLog
 
 # The static-seed TTL: seconds one loaded graph serves before the next
 # call re-reads the tables.
@@ -220,6 +232,7 @@ class KnowledgeGraphService:
             Tuple[float, KnowledgeGraph]] = {}
         self._log = QueryLog()
         self._hotpaths = HotpathCache()
+        self._stats = SearchStatsLog()
         self._columns = TABLE_COLUMNS
 
     # -- the column auto-load -------------------------------------------
@@ -551,7 +564,17 @@ class KnowledgeGraphService:
         kg_queries happens either way (both layers fail-soft).
 
         Raises :class:`KgUnavailableError` when the graph cannot load,
-        ``ValueError`` on an empty query or an unknown namespace."""
+        ``ValueError`` on an empty query or an unknown namespace (an
+        invalid call is rejected before anything is recorded).
+
+        THE SEARCH-CALL STATS (2026-11-23): every ANSWERED call — a
+        replay, a live match, a no-match, a gate-rejected result — is
+        recorded as ONE ``llm.kg_search_stats`` row after the result
+        text is built (the row is this call's accumulator —
+        :class:`~llm_agents.kg.search_stats.KgSearchStatRow`, written by
+        :mod:`llm_agents.kg.search_stats`). Fail-soft: the ledger never
+        breaks or alters a result, and nothing in the search path reads
+        it."""
         query = query.strip()
         if not query:
             raise ValueError("pass business keywords (e.g. '动量 momentum' "
@@ -562,10 +585,36 @@ class KnowledgeGraphService:
         hops = max(1, min(3, int(hops)))
         max_results = max(4, min(NODE_MAX_CAP, int(max_results)))
         detail = normalize_detail(detail)
-        lean = detail == "lean"
+        stat = KgSearchStatRow(
+            query=query, namespace=namespace, hops=hops,
+            max_results=max_results, full_detail=detail == DETAIL_FULL)
+        started = time.perf_counter()
+        text, verdict = await self._answer(
+            query, judge=judge, namespace=namespace, hops=hops,
+            max_results=max_results, detail=detail,
+            allowed_tables=allowed_tables,
+            allowed_schemas=allowed_schemas, stat=stat)
+        stat.latency_ms = round(
+            (time.perf_counter() - started) * 1000.0, 3)
+        await self._stats.record(stat)
+        return text, verdict
+
+    async def _answer(self, query: str, *, judge: Optional[KgGateJudge],
+                      namespace: int, hops: int, max_results: int,
+                      detail: str,
+                      allowed_tables: Optional[Collection[str]],
+                      allowed_schemas: Optional[Collection[str]],
+                      stat: KgSearchStatRow) -> Tuple[str, str]:
+        """The answer path of ``_search`` (its two-layer chain-cache
+        flow, the gate and the render — see ``_search``): returns the
+        ``(text, verdict)`` and fills *stat* with what it served for the
+        stats row. *query* arrives stripped and validated."""
+        lean = not stat.full_detail
         kg, tokens, schema_tokens = await self._graph_for(
             namespace, allowed_tables, allowed_schemas)
         note = self._scope_note(tokens, schema_tokens)
+        stat.forced_scope = tokens is not None or schema_tokens is not None
+        stat.entity_hash = kg.entity_digest
         # The hotpath replay serves the LEAN tier (the common repeat —
         # answer economy). A FULL call is the ladder's escalation, so it
         # RE-TRAVERSES live: a replay's faces are the chain's members,
@@ -586,6 +635,14 @@ class KnowledgeGraphService:
                     (mid for edge in edges for mid in edge.member_ids)
                     if (entity := kg.entity(member_id)) is not None
                 ]
+                # The stats face of a replay: the chain's DISTINCT
+                # members in chain order at score 0 (a replay carries no
+                # scores — the chain, not a ranking, is its identity).
+                members: Dict[int, KgEntity] = {}
+                for entity in chain_entities:
+                    members.setdefault(entity.entity_id, entity)
+                stat.note_replay(hot.chain_id, tuple(members.values()),
+                                 len(edges))
                 core = render_replay(
                     kg, query, edges,
                     chain_id=hot.chain_id,
@@ -601,6 +658,7 @@ class KnowledgeGraphService:
                     detail=detail)
                 return (f"{note}\n{core}" if note else core), "ungated"
         result = kg.search(query, hops=hops, max_nodes=max_results)
+        stat.note_result(result)
         if result.edges:
             edge_ids = tuple(edge.edge_id for edge in result.edges)
             twin = await self._log.find_identical_chain(
@@ -608,10 +666,12 @@ class KnowledgeGraphService:
             await self._log.log_chain(
                 query, namespace, kg.entity_digest, edge_ids)
             if twin is not None:
+                stat.promoted = True
                 await self._hotpaths.promote(
                     query, namespace, kg.entity_digest, edge_ids)
         verdict = "ungated"
         if judge is not None and result.nodes:
+            stat.gate_read = True
             gate = await judge(
                 query, NS_SCOPES[namespace],
                 [KgGateCandidate(
@@ -621,9 +681,11 @@ class KnowledgeGraphService:
                     [:_GATE_SUMMARY_MAX])
                  for node in result.nodes[:_GATE_CANDIDATE_MAX]])
             if gate is not None and gate.status == "rejected":
+                stat.gate_rejected = True
                 return "", "rejected"
             if (gate is not None and gate.status == "accepted"
                     and gate.names):
+                stat.gate_accepted = True
                 keep = frozenset(gate.names)
                 kept = tuple(node for node in result.nodes
                              if node.entity.name in keep)

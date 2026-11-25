@@ -160,7 +160,15 @@ TABLE payload moved out of the seeds on 2026-11-09.
   templates also seed DAMPED (`vocabulary.seed_type_damp`: `view`
   entities with a slash-path name match at 0.5 — the schema-qualified
   DB views stay full weight), so 400+ template name tokens never crowd
-  the study tables out of a ranking.
+  the study tables out of a ranking. Since 2026-11-23 a query token
+  with NO exact bucket seeds through the FUZZY lane
+  (`vocabulary.is_fuzzy_token` / `char_trigrams`: an English plural
+  strip at similarity 1.0, else the closest index token by pg_trgm-shape
+  character-trigram similarity ≥ 0.58, damped 0.5) — authored English
+  tags tolerate plurals and one-letter typos, strictly below the exact
+  hit; and every answered call lands one `llm.kg_search_stats` row (the
+  per-call ledger: ranked nodes, rung counters, replay/gate facts —
+  written fail-soft, read by nothing in the search path).
 
 ## Namespace 1 — the prompt catalog (`prompts/01_prompt_catalog.sql`)
 

@@ -69,6 +69,7 @@ import {
   type SignalRule,
   type TradingSignal,
 } from "@/lib/api-client";
+import { fmtDate } from "@/shared/datetime";
 import type { OptionsUnderlying } from "@shared/types";
 import { useStore } from "@/store/filters";
 import { UNDERLYING_LABELS } from "@/theme/chart-palette";
@@ -528,9 +529,9 @@ export default function OptionsSignalsPage() {
           )}
           {datesInfo.dates.length > 0 && (
             <Typography variant="caption" color="text.secondary">
-              Highlighted date {selectedDate || "—"} · {datesInfo.rowCount} option contracts ·{" "}
-              {datesInfo.dates.length} trading days · {datesInfo.dates[0] ?? "—"} →{" "}
-              {datesInfo.dates[datesInfo.dates.length - 1] ?? "—"}
+              Highlighted date {fmtDate(selectedDate)} · {datesInfo.rowCount} option contracts ·{" "}
+              {datesInfo.dates.length} trading days · {fmtDate(datesInfo.dates[0])} →{" "}
+              {fmtDate(datesInfo.dates[datesInfo.dates.length - 1])}
             </Typography>
           )}
 

@@ -30,6 +30,10 @@ interface Props {
   error: string | null;
   /** Reflects the active co-filters in the count line when set. */
   scopeLabel: string;
+  /** Items per page — the pager math AND the caller's fetch limit must
+   *  agree (the offset math lives in the caller). Default PAGE_SIZE (10);
+   *  the News Audit origin expansion passes 5 (five articles per page). */
+  pageSize?: number;
   /** Empty-state hint (defaults to the corpus-browsing text). */
   emptyText?: string;
 }
@@ -42,13 +46,14 @@ export default function NewsFeedPage({
   loading,
   error,
   scopeLabel,
+  pageSize = PAGE_SIZE,
   emptyText = "没有匹配的新闻 — 调整行业 / 日期 / 关键词后再试。",
 }: Props) {
   return (
     <PostFeed
       total={total}
       page={page}
-      pageSize={PAGE_SIZE}
+      pageSize={pageSize}
       onPageChange={onPageChange}
       loading={loading}
       error={error}

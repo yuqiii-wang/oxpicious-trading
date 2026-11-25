@@ -24,7 +24,9 @@ import {
   Insights as InsightsIcon,
 } from "@mui/icons-material";
 import PostCard from "@/shared/components/post-feed/PostCard";
+import { fmtDate } from "@/shared/datetime";
 import PostChip from "@/shared/components/post-feed/PostChip";
+import { MarkdownView, mdPlainText } from "@/shared/markdown";
 import AiQaRefBox from "@/dataviz/features/ai/AiQaRefBox";
 import { fetchAiResearchDetail } from "@/lib/api-client";
 import type {
@@ -84,12 +86,9 @@ function DimensionSection({ title, text, refs }: {
           sx={{ pl: 1, borderLeft: 1, borderColor: "divider", fontSize: "0.85rem" }}
         />
       ) : (
-        <Typography
-          variant="body2"
-          sx={{ whiteSpace: "pre-wrap", lineHeight: 1.65, pl: 1, borderLeft: 1, borderColor: "divider" }}
-        >
-          {text}
-        </Typography>
+        <Box sx={{ pl: 1, borderLeft: 1, borderColor: "divider" }}>
+          <MarkdownView dense source={text} />
+        </Box>
       ))}
     </Box>
   );
@@ -121,7 +120,7 @@ function SourceRow({ src, index }: { src: AiQaResearchSource; index: number }) {
           </Typography>
         )}
         <Typography component="span" sx={{ fontSize: "0.7rem", color: "text.secondary" }}>
-          {src.source ?? "-"}{src.date ? ` · ${src.date}` : ""}
+          {src.source ?? "-"}{src.date ? ` · ${fmtDate(src.date)}` : ""}
         </Typography>
         {src.content && (
           <Button
@@ -198,7 +197,7 @@ export default function AiResearchQaCard({ item }: { item: AiQaResearchItem }) {
         </>
       }
       headline={item.question}
-      snippet={item.answer_snippet}
+      snippet={mdPlainText(item.answer_snippet)}
       fetchDetail={() => fetchAiResearchDetail(item.qa_id)}
       renderHeaderTrailing={(detail) =>
         detail?.avg_ref_sentiment != null && (
@@ -210,10 +209,9 @@ export default function AiResearchQaCard({ item }: { item: AiQaResearchItem }) {
       }
       renderDetail={(detail) => (
         <>
-          {/* The 5th request's SUMMARY — the row's display content. */}
-          <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", lineHeight: 1.65 }}>
-            {detail.answer}
-          </Typography>
+          {/* The 5th request's SUMMARY — the row's display content (LLM
+              markdown, parsed). */}
+          <MarkdownView dense source={detail.answer} />
           {/* The five evaluation dimensions — collapsed by default; each
               renders its [来源：ref_N] citations as expandable ref tags
               (the AiQaCard pattern) when dim_refs resolution exists. */}

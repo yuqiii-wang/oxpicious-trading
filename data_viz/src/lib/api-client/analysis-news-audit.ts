@@ -6,6 +6,7 @@ import { fetchJson } from "./_cache";
 import type { AnalysisRunResponse } from "./analysis-run";
 import type {
   NewsContentAuditResponse,
+  NewsCoverageAuditResponse,
   NewsProviderAuditResponse,
 } from "@shared/types";
 
@@ -75,4 +76,20 @@ export async function runNewsAuditRefresh(): Promise<AnalysisRunResponse> {
   } catch (e) {
     return { success: false, stderr_tail: String(e) };
   }
+}
+
+// ---------------------------------------------------------------------------
+//  GET coverage — the DAILY coverage audit (text.news_coverage_audit):
+//  one row per (trading day, industry) over the most recent `limitDays`
+//  trading days; '000001' = the whole-market rollup row.
+// ---------------------------------------------------------------------------
+export function fetchNewsCoverageAudit(
+  limitDays: number,
+): Promise<NewsCoverageAuditResponse> {
+  const params = new URLSearchParams();
+  params.set("limit_days", String(limitDays));
+  const qs = params.toString();
+  return fetchJson<NewsCoverageAuditResponse>(
+    `/api/analysis/news-audit/coverage?${qs}`,
+  );
 }

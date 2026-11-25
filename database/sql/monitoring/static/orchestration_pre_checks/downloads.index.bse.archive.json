@@ -1,0 +1,11 @@
+{
+  "service": "downloads.index.bse.archive",
+  "kind": "fetch",
+  "tables": [
+    {
+      "table": "stats.index_basic_stats",
+      "code_scope": "^899(050|601)$"
+    }
+  ],
+  "notes": "BSE index per-code history files (899050, 899601). DB slice only: those two codes of stats.index_basic_stats — BSE-native, no other source loads them."
+}

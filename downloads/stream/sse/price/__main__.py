@@ -97,6 +97,7 @@ from downloads._common import (
     setup_logger,
 )
 from _common.db_commons import get_db_connection
+from _common import service_heartbeat
 from _common.service_heartbeat import register_pipeline
 from _common.study_and_select_stocks import (
     ETF_WEIGHT_THRESHOLD,
@@ -478,6 +479,10 @@ class SseStreamDaemon(DownloadJob):
                         "Outside trading hours; sleeping until %s.",
                         nxt.strftime("%Y-%m-%d %H:%M"),
                     )
+                    # Safe checkpoint (outside the session — a hold
+                    # loses nothing): the Phase 4 mailbox's pause holds
+                    # here, then the sleep resumes.
+                    service_heartbeat.pause_checkpoint(safe=True)
                     sleep_until(nxt)
                     continue
 
@@ -518,6 +523,10 @@ class SseStreamDaemon(DownloadJob):
                             "Data complete for %s; sleeping until %s.",
                             today, nxt.strftime("%Y-%m-%d %H:%M"),
                         )
+                        # Safe checkpoint (complete data — a hold here
+                        # loses nothing): the Phase 4 mailbox's pause
+                        # holds, then the sleep resumes.
+                        service_heartbeat.pause_checkpoint(safe=True)
                         sleep_until(nxt)
                         continue
 
@@ -562,6 +571,9 @@ class SseStreamDaemon(DownloadJob):
 
                 cycle_start = _time.time()
                 once_done = False  # set when --once emits a bar this cycle
+                # Phase 4 UP channel: the poll cycle's phase posts (the
+                # fetch phase; the write posts ride the emission below).
+                service_heartbeat.report_progress(phase="downloading")
                 for asset in assets:
                     # Per-asset isolation: a fetch or CSV-write failure on one
                     # asset skips only that asset's sample this cycle; the
@@ -629,6 +641,44 @@ class SseStreamDaemon(DownloadJob):
 
                 if once_done:
                     break
+
+                # Phase 4 mailbox (control unification, 2026-11-21): the
+                # cycle tail is the poller's command checkpoint. A
+                # claimed FLUSH_NOW emits the current buffers through
+                # the poller's own "flushed" path; the write-phase post
+                # carries the in-flight buffer summary (what the DB
+                # frontier cannot see). The pause checkpoint here is
+                # UNSAFE mid-session — a hold would silently lose
+                # samples — so a mid-session PAUSE is refused inside the
+                # checkpoint with that reason (the complete-data and
+                # outside-hours paths above hold at their safe points).
+                if service_heartbeat.consume_flush():
+                    for asset in assets:
+                        if not asset.buffer:
+                            continue
+                        logger.info(
+                            "FLUSH_NOW: emitting %d buffered %s sample(s).",
+                            len(asset.buffer), asset.name,
+                        )
+                        update_dt = asset.buffer[-1][0]
+                        trade_date = update_dt.date()
+                        if asset.name == "options":
+                            conn = self._emit_options_bars(
+                                conn, asset, trade_date, "flushed")
+                        else:
+                            conn = self._emit_asset_bars(
+                                conn, asset, trade_date, "flushed",
+                                etf_member_codes,
+                            )
+                        asset.buffer.clear()
+                service_heartbeat.report_progress(
+                    phase="writing",
+                    payload={"buffers": {a.name: len(a.buffer)
+                                         for a in assets},
+                             "finished": {a.name: len(a.finished_codes)
+                                          for a in assets}},
+                )
+                service_heartbeat.pause_checkpoint(safe=False)
 
                 # Sleep for the remainder of the poll interval to keep cadence.
                 elapsed = _time.time() - cycle_start

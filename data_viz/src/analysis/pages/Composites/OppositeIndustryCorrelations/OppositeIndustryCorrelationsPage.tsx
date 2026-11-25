@@ -79,6 +79,7 @@ import type {
   IndustryCorrOffsetsResponse,
 } from "@shared/types";
 import AuditTable from "./AuditTable";
+import { fmtDate } from "@/shared/datetime";
 import { buildCorrOffsetChartOption } from "./corrOffsetChartOption";
 import { useOffsetCorrRefresh } from "./useOffsetCorrRefresh";
 import PairRatioSection from "./PairRatioSection";
@@ -543,8 +544,8 @@ export default function OppositeIndustryCorrelationsPage() {
           {latestRows.length > 0 && (
             <Box sx={{ mt: 2 }}>
               <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
-                Latest full {win} window audit — through {rowEndDate(latestRows[0]!, win)}
-                {" "}(window start {latestRows[0]?.start_date}; sorted by
+                Latest full {win} window audit — through {fmtDate(rowEndDate(latestRows[0]!, win))}
+                {" "}(window start {fmtDate(latestRows[0]?.start_date)}; sorted by
                 benchmark-offset correlation, most opposite first)
               </Typography>
               <AuditTable rows={latestRows} enableFilters={data.enable_filters} />

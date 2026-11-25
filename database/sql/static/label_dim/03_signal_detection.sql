@@ -724,6 +724,12 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     ('signal_sub_type', 6215, 'ewma_10pct', 6215),
     ('signal_sub_type', 6216, 'ewma_15pct', 6216),
     ('signal_sub_type', 6217, 'ewma_20pct', 6217),
+    -- signal_type 13 + the nw_* block 6220-6235 RETIRED 2026-11-22:
+    -- the news_wash family was migrated into the amplifier tier
+    -- (signal_amplifier_type 'news' + the signal_amplifier_news
+    -- vocabulary below — the news states AMPLIFY the existing
+    -- families' signals, never create their own) and its rows and
+    -- labels deleted; the codes stay reserved.
     -- analysis_cache_kind: analysis_signals.analysis_cache.kind — the
     -- generic intermediate-result cache's tenant (which analysis owns
     -- the row's cache jsonb)
@@ -839,8 +845,9 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
 -- bound amplifiers[] inside signal_amplification_rules.rule_params):
 -- which DATA DOMAIN an amplifier's day-level anatomy comes from. The
 -- specific pattern under each type is the sub_type column, decoded via
--- 'signal_amplifier' when ohlcv, 'signal_amplifier_margin' when margin
--- (the external_resource_audit resource_type/sub_type precedent).
+-- 'signal_amplifier' when ohlcv, 'signal_amplifier_margin' when margin,
+-- 'signal_amplifier_news' when news (the external_resource_audit
+-- resource_type/sub_type precedent).
 INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- 0 ohlcv: the K-line day anatomy amplifiers (gap / wick / volume
     -- shapes) — the sub types decode via 'signal_amplifier'
@@ -848,7 +855,12 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- 1 margin: the 融资融券 margin-balance level amplifiers (rz_balance
     -- vs its own trailing quantile bars) — the sub types decode via
     -- 'signal_amplifier_margin'
-    ('signal_amplifier_type', 1, 'margin', 1);
+    ('signal_amplifier_type', 1, 'margin', 1),
+    -- 2 news (2026-11-22): the daily news-text MARKET-state amplifiers
+    -- (the migrated news_wash rules — the news states AMPLIFY the
+    -- existing families' signals, never create their own) — the sub
+    -- types decode via 'signal_amplifier_news'
+    ('signal_amplifier_type', 2, 'news', 2);
 
 -- signal_amplifier_margin (2026-11-20): the MARGIN sub-type vocabulary
 -- (the 'signal_amplifier_type' = 1 / margin branch) — the 融资余额
@@ -868,3 +880,68 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- — post-close record) — leverage crowding / fragility; amplifies
     -- the exit-timing families' SELL
     ('signal_amplifier_margin', 1, 'margin_crowding', 1);
+
+-- signal_amplifier_news (2026-11-22): the NEWS sub-type vocabulary (the
+-- 'signal_amplifier_type' = 2 / news branch — migrated from the deleted
+-- news_wash detection family the same day): the daily news-text MARKET
+-- state (text.news_text_daily, scope market_all) AMPLIFIES the existing
+-- families' signals. The deep-negative states on the code's own drop
+-- leg (price below its 5-rows-ago close) mark the capitulation washout
+-- — BUY reversion amplification; the weekly rolling-5 aggregates
+-- persist ~a quarter (the Heston-Sinha horizon finding) and fire
+-- un-gated; the euphoric states on the drop leg are the "good news
+-- can't lift it" divergence (BUY, the evidence block judges); the
+-- weekly tone recovery is the one SELL exit. The nested family bar
+-- grids collapsed to their primary (deepest measured) bars.
+INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
+    -- 0 sent_shock (情绪冲击, BUY reversion): sent_z <= -2.0 on the drop
+    -- leg — the deep sentiment-shock tail (+0.77% blend, excess
+    -- +0.50pp, t=3.80)
+    ('signal_amplifier_news', 0, 'sent_shock', 0),
+    -- 1 tone_panic (关键词情绪恐慌, BUY reversion): lex_tone_z <= -1.5 on
+    -- the drop leg — the down-family mention balance surging (+1.59%,
+    -- excess +1.31pp, t=4.65)
+    ('signal_amplifier_news', 1, 'tone_panic', 1),
+    -- 2 neg_wave (负面报道浪潮, BUY reversion): flow_neg >= 5 on the drop
+    -- leg — the strongly-negative article wave (+1.87%, excess
+    -- +1.60pp, t=6.70, the measured strongest single state)
+    ('signal_amplifier_news', 2, 'neg_wave', 2),
+    -- 3 quiet_cov (报道异常冷清, BUY reversion): flow_af <= -1.0 on the
+    -- drop leg — abnormally quiet coverage (the honest marginal
+    -- candidate, excess +0.26pp)
+    ('signal_amplifier_news', 3, 'quiet_cov', 3),
+    -- 4 sent_euphoria (情绪亢奋背离, BUY divergence): sent_z >= +1.5 on
+    -- the drop leg — "good news can't lift a falling market" (the
+    -- faithful divergence migration; the evidence block judges)
+    ('signal_amplifier_news', 4, 'sent_euphoria', 4),
+    -- 5 tone_euphoria (关键词亢奋背离, BUY divergence): lex_tone_z >= +1.5
+    -- on the drop leg (the divergence pair's tone leg)
+    ('signal_amplifier_news', 5, 'tone_euphoria', 5),
+    -- 6 week_neg_wave (周度负面浪潮, BUY reversion): sum(flow_neg,5) >= 10
+    -- — the week's negative wave (+0.77%/t=3.21 both regimes, fwd60
+    -- +4.18%)
+    ('signal_amplifier_news', 6, 'week_neg_wave', 6),
+    -- 7 week_tone (周度情绪恐慌, BUY reversion): mean(lex_tone_z,5) <= -1.0
+    -- — the week's tone panic (stress +5.90%/t=4.51 hit 78%, fwd60
+    -- +10.13% — the quarter drift's strongest carrier)
+    ('signal_amplifier_news', 7, 'week_tone', 7),
+    -- 8 week_shock (周度情绪冲击, BUY reversion): mean(sent_z,5) <= -1.0 —
+    -- the persistent weekly shock (stress +1.85%/t=2.57)
+    ('signal_amplifier_news', 8, 'week_shock', 8),
+    -- 9 shock_wave (情绪冲击浪潮, BUY reversion): sent_z <= -1.5 confirmed
+    -- by flow_neg >= 3, on the drop leg (+1.34%, excess +1.07pp,
+    -- t=5.35 — vs the shock alone +0.59%)
+    ('signal_amplifier_news', 9, 'shock_wave', 9),
+    -- 10 wave_disagree (情绪冲击分歧, BUY reversion): the shock + wave
+    -- confirmed again by cross-origin disagreement (disp_z >= 1.0):
+    -- +1.74%, excess +1.46pp, t=6.87, hit 64%
+    ('signal_amplifier_news', 10, 'wave_disagree', 10),
+    -- 11 tone_disagree (负面声浪分歧, BUY reversion): the keyword-tone
+    -- panic with high disagreement (lex_tone_z <= -1.5 & disp_z >= 1.0):
+    -- +1.90%, excess +1.63pp, t=7.09, hit 73% — the measured strongest
+    ('signal_amplifier_news', 11, 'tone_disagree', 11),
+    -- 12 week_tone_recovery (周度情绪修复, SELL exit): wt crosses up
+    -- through 0 after a deep wt episode within the 10-row lookback —
+    -- the ONE sell side that cleared the bar (exit timing; the
+    -- euphoria/coverage sells measured below-bar, tops continue)
+    ('signal_amplifier_news', 12, 'week_tone_recovery', 12);

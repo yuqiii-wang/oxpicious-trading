@@ -26,6 +26,7 @@
 import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
 import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
+import { fmtDate } from "@/shared/datetime/display";
 import {
   axisColors,
   commonDataZoom,
@@ -114,7 +115,7 @@ export function buildVolSignalCurveOption(
       type: "category",
       data: dates,
       axisLine: { lineStyle: { color: c.axisLineColor } },
-      axisLabel: { color: c.textColor, fontSize: 9 },
+      axisLabel: { color: c.textColor, fontSize: 9, formatter: (v: string) => fmtDate(v) },
     },
     yAxis: [
       {

@@ -83,3 +83,71 @@ class StatsResponse(BaseModel):
                                  description="Registry counts: running / "
                                  "finished_stored / adopted.")
     residents: list[ResidentStatus] = Field(default_factory=list)
+
+
+class HeartbeatDetail(BaseModel):
+    """The heartbeat row's evidence for ONE service (the detail
+    endpoint's b+d blocks): liveness (beat age), the stop record, the
+    parallel-slot state, and — when the Phase 4 progress columns exist
+    — the reported progress (phase machine + state + payload)."""
+
+    service: str
+    pid: int | None = None
+    started_at: str | None = None
+    beat_age_s: float | None = Field(default=None,
+                                     description="Seconds since the last "
+                                     "beat; None = no row yet.")
+    scope: str | None = None
+    sub_scope: str | None = None
+    stop_reason: str | None = None
+    is_normal_exit: bool | None = None
+    stopped_at: str | None = None
+    live_parallel: int | None = None
+    max_parallel: int | None = None
+    code_fingerprint: str | None = None
+    fingerprint_stale: bool | None = Field(default=None,
+                                           description="True when the row's "
+                                           "code_fingerprint no longer "
+                                           "matches a fresh disk hash; None "
+                                           "= uncheckable (no row, unknown "
+                                           "hash, or no fingerprint).")
+    progress_phase: str | None = None
+    progress_state: str | None = None
+    progress_payload: dict[str, Any] | None = None
+    progress_at: str | None = None
+    progress_age_s: float | None = None
+
+
+class DerivedProgress(BaseModel):
+    """The missing-set oracle's answer for ONE service (the detail
+    endpoint's c block) — derived from the DATA tables, never reported:
+    ``kind`` picks the shape (``intraday`` = per-asset stream
+    completeness counts; ``missing_set`` = expected-minus-missing over
+    the identity/result pair)."""
+
+    kind: str
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProcessDetail(BaseModel):
+    """GET /processes/{service}/detail — the ONE unified query face
+    (control unification plan Phase 3): the supervisor row when the
+    service is a resident of this area, the heartbeat row's evidence,
+    the derived (missing-set oracle) progress, the child-reported
+    progress when present, and the service-log tail."""
+
+    service: str
+    area: str
+    resident: ResidentStatus | None = Field(default=None,
+                                            description="The supervisor "
+                                            "row when the service is a "
+                                            "resident of this area.")
+    heartbeat: HeartbeatDetail | None = None
+    derived_progress: DerivedProgress | None = None
+    config: dict[str, Any] = Field(default_factory=dict,
+                                   description="The service_config entry's "
+                                   "control summary: resource_class, "
+                                   "pausable, max_parallel, priority, "
+                                   "is_resident.")
+    log_tail: str = Field(default="", description="The service log's tail "
+                          "(the same file the child writes).")

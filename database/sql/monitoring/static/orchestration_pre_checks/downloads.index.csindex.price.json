@@ -1,0 +1,12 @@
+{
+  "service": "downloads.index.csindex.price",
+  "kind": "fetch",
+  "tables": [
+    {
+      "table": "stats.index_basic_stats",
+      "code_scope": "^(93[012]|95[01]|H)",
+      "min_codes": 230
+    }
+  ],
+  "notes": "The CSI price sweep (per-code full-history files, no date in the name — so no csv stage): a session counts as present only when at least 230 of the 264 CSI-native index codes (the 93x / 95x / H families, loaded by this sweep alone — each has its temps/csindex file) hold it. Any-row presence would be too weak (other sources fill the shared table first), and the calendar rule misreads this step: a pre-dawn run serves the PREVIOUS session yet counts as a same-day success and held it for the night (2026-11-24). The floor sits under the observed session counts (257-264) and above a sweep that died part-way. The sweep publishes on its own clock (EOD_EXPECT_HOUR 17): at the 16:00 fire the latest session always reads absent and the step runs as before."
+}

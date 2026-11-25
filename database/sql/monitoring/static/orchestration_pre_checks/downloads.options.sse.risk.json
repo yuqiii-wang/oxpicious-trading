@@ -1,0 +1,18 @@
+{
+  "service": "downloads.options.sse.risk",
+  "kind": "fetch",
+  "tables": [
+    {
+      "table": "stats.options_terms",
+      "exchange": "SSE",
+      "code_column": "contract_code"
+    }
+  ],
+  "csv": [
+    {
+      "dir": "temps/sse_options_risk",
+      "pattern": "sse_options_risk_{date}.csv"
+    }
+  ],
+  "notes": "SSE options risk metrics → builds.options. Same presence slice as the price step (stats.options_terms, SSE)."
+}

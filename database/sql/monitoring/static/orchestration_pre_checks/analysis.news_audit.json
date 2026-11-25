@@ -1,0 +1,10 @@
+{
+  "service": "analysis.news_audit",
+  "kind": "derive",
+  "tables": [
+    {
+      "table": "text.news_coverage_audit"
+    }
+  ],
+  "notes": "Presence = the session in text.news_coverage_audit (pk date, industry_id) — the daily coverage audit; the 5-day window audits are window-keyed and stay out."
+}

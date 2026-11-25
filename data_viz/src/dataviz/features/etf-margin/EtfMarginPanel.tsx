@@ -33,6 +33,7 @@ import { baseChartOption, commonTooltip, useChartThemeMode } from "@/shared/char
 import { useAiAskAddon, INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import { useDocs, compactDefined } from "@/shared/docs";
+import { fmtDate, fmtMonth } from "@/shared/datetime";
 import type { ThemeMode } from "@/store/filters";
 import type { EtfBundle } from "@shared/types";
 import {
@@ -458,7 +459,7 @@ function buildOption(
             `O=${formatPriceValue(o, ohlcMode)} H=${formatPriceValue(h, ohlcMode)} L=${formatPriceValue(l, ohlcMode)} C=${formatPriceValue(c, ohlcMode)}`);
 
         const children: React.ReactNode[] = [];
-        children.push(makeHeader(dateStr));
+        children.push(makeHeader(fmtDate(dateStr)));
 
         const corp = corpActionByDate.get(dateStr);
         if (corp) {
@@ -514,7 +515,7 @@ function buildOption(
         const de = divEstByDate.get(dateStr);
         if (showDivEst && de && de.raw != null && Number.isFinite(de.raw)) {
           const nextTxt = de.nextEx
-            ? ` · next ex ${de.nextEx.slice(0, 10)}` +
+            ? ` · next ex ${fmtDate(de.nextEx)}` +
               (de.nextDiv != null ? ` · D ${fmtNum(de.nextDiv, 3)}` : "")
             : " · open tail";
           children.push(makeRow([
@@ -539,7 +540,7 @@ function buildOption(
         color: c.textColor,
         fontSize: 8,
         rotate: 0,
-        formatter: (v: string) => v.slice(0, 7), // YYYY-MM only
+        formatter: (v: string) => fmtMonth(v), // monthly tick labels
         interval: Math.max(1, Math.floor(dates.length / 6)),
       },
       splitLine: { show: false },

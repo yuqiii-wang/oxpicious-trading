@@ -96,9 +96,11 @@ from llm_agents.online_search_summary.core.citations import (
 )
 from llm_agents.online_search_summary.core.prompts import lang_label
 from llm_agents.online_search_summary.daily import (
-    DAILY_CATEGORY, DAILY_COUNT, GEO_SCOPE_CHINA, GEO_SCOPE_GLOBAL, GeoAsk,
-    RECENCY_5D, daily_china_geo_query, daily_global_geo_query,
-    daily_geo_asks, daily_market_query, daily_recency, daily_request,
+    DAILY_CATEGORY, DAILY_COUNT, GEO_SCOPE_CHINA, GEO_SCOPE_GLOBAL,
+    GEO_SCOPE_INVESTORS, GeoAsk, RECENCY_5D, daily_china_geo_query,
+    daily_global_geo_query, daily_geo_asks,
+    daily_investor_focus_query_en, daily_investor_focus_query_zh,
+    daily_market_query, daily_recency, daily_request,
     daily_target_or_clamp, default_daily_target,
 )
 from llm_agents.online_search_summary.providers.base import (
@@ -129,8 +131,10 @@ __all__ = [
     "RECENCY_FILTERS", "CONTENT_SIZES", "SHANGHAI_TZ",
     "DAILY_CATEGORY", "DAILY_COUNT", "RECENCY_5D", "daily_market_query",
     "daily_recency", "daily_request", "daily_target_or_clamp",
-    "default_daily_target", "GEO_SCOPE_GLOBAL", "GEO_SCOPE_CHINA", "GeoAsk",
+    "default_daily_target", "GEO_SCOPE_GLOBAL", "GEO_SCOPE_CHINA",
+    "GEO_SCOPE_INVESTORS", "GeoAsk",
     "daily_global_geo_query", "daily_china_geo_query", "daily_geo_asks",
+    "daily_investor_focus_query_en", "daily_investor_focus_query_zh",
     "BaseOnlineSearchProvider", "ZhipuSearchProvider", "ZhihuSearchProvider",
     "PROVIDERS", "get_provider",
     "REF_TYPE_EXACT", "REF_TYPE_RELEVANT",

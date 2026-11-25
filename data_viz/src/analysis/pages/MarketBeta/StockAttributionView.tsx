@@ -34,6 +34,7 @@ import { INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import { useDocs } from "@/shared/docs";
 import { fetchIndustryStockAttribution } from "@/lib/api-client";
+import { fmtDate } from "@/shared/datetime";
 import type { IndustryStockAttributionResponse } from "@shared/types";
 import type { StockAttributionViewProps } from "./types";
 import { buildStockAttributionOption } from "./stockAttributionOption";
@@ -168,7 +169,7 @@ export function StockAttributionView({
           const riseTail = sumBuckets(resp, (b) => b >= FIRST_BIG_RISE_BUCKET);
           const dropTail = sumBuckets(resp, (b) => b <= LAST_BIG_DROP_BUCKET);
           subtitle =
-            `as-of ${resp.date} · ${resp.total_stocks} stocks · ` +
+            `as-of ${fmtDate(resp.date)} · ${resp.total_stocks} stocks · ` +
             `up(≥0) ${up} / down(<0) ${down} · ` +
             `≥7.5%: ${riseTail} · ≤-7.5%: ${dropTail}`;
         }

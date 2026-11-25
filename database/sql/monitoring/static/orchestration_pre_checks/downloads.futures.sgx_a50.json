@@ -1,0 +1,11 @@
+{
+  "service": "downloads.futures.sgx_a50",
+  "kind": "fetch",
+  "tables": [
+    {
+      "table": "stats.futures_identity",
+      "code_scope": "^CN"
+    }
+  ],
+  "notes": "SGX FTSE China A50 bars — writes the shared futures tables DIRECTLY (family CN%), no build step, so the DB slice is the completion signal. No service_config of its own: without this pre-check the step runs every pass. (SGX closes on some CN trading days — such a session reads absent and the step runs, no-op.)"
+}

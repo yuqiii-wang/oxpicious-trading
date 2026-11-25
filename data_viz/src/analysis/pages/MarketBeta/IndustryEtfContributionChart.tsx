@@ -16,6 +16,7 @@ import { INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import { useDocs } from "@/shared/docs";
 import { fetchIndustryEtfContributionBars } from "@/lib/api-client";
+import { fmtDate } from "@/shared/datetime";
 import type { IndustryEtfContributionChartProps } from "./types";
 import { buildIndustryEtfContributionOption } from "./industryEtfContributionOption";
 
@@ -56,7 +57,7 @@ export function IndustryEtfContributionChart({
       title={`${industryLabel || industryId} — ETF Contribution`}
       subtitle={
         data
-          ? `${industryLabel || industryId} — ${etfCount} ETF${etfCount === 1 ? "" : "s"} · as-of ${data.date || "—"}`
+          ? `${industryLabel || industryId} — ${etfCount} ETF${etfCount === 1 ? "" : "s"} · as-of ${fmtDate(data.date)}`
           : `${industryLabel || industryId}`
       }
       aiAsk={aiAsk}
@@ -65,7 +66,7 @@ export function IndustryEtfContributionChart({
       error={error ? `Failed to load ETF contribution: ${error}` : null}
       emptyText={
         data && etfCount === 0
-          ? `No ETF trading data for ${industryId} on ${data.date || "this date"}. Run python -m analysis.market_beta to populate.`
+          ? `No ETF trading data for ${industryId} on ${data.date ? fmtDate(data.date) : "this date"}. Run python -m analysis.market_beta to populate.`
           : "No data"
       }
       height={360}

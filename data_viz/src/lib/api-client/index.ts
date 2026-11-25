@@ -27,9 +27,14 @@ export {
 } from "./debt";
 
 export {
+  fetchMacroDaily,
+} from "./macro";
+
+export {
   fetchNewsThemes,
   fetchNewsStrategyThemes,
   fetchNewsAuthors,
+  fetchNewsProviders,
   fetchNewsCalendar,
   fetchNewsItems,
   fetchNewsItem,
@@ -206,9 +211,19 @@ export {
 export {
   fetchNewsProviderAudit,
   fetchNewsContentAudit,
+  fetchNewsCoverageAudit,
   runNewsAuditRefresh,
   NEWS_AUDIT_RUN_TAG,
 } from "./analysis-news-audit";
+
+export {
+  fetchSignalAuditMeta,
+  fetchSignalTypeSummary,
+  fetchSignalOverlap,
+  runSignalRulesAuditRefresh,
+  SIGNAL_RULES_AUDIT_RUN_TAG,
+  type SignalAuditPeriod,
+} from "./analysis-signals-audit";
 
 export {
   fetchPairPctRatioUniverse,

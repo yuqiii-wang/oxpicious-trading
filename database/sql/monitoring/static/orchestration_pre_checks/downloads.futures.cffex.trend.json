@@ -1,0 +1,17 @@
+{
+  "service": "downloads.futures.cffex.trend",
+  "kind": "fetch",
+  "tables": [
+    {
+      "table": "stats.futures_identity",
+      "code_scope": "^(?:IC|IF|IH|IM|TF|TL|TS|T)[0-9]{4}$"
+    }
+  ],
+  "csv": [
+    {
+      "dir": "temps/cffex_trend",
+      "pattern": "*/{date}_futures.csv"
+    }
+  ],
+  "notes": "CFFEX daily futures (one file per session under a YYYYMM month dir). Presence = the CFFEX family of the SHARED stats.futures_identity (builds.futures' CFFEX_CODE_SCOPE — the offshore CN / MCA families populate the same table on other calendars). No service_config of its own: without this pre-check the step runs every pass."
+}

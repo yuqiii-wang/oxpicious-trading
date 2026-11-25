@@ -22,6 +22,7 @@ import {
 } from "@mui/icons-material";
 import PostCard from "@/shared/components/post-feed/PostCard";
 import PostChip from "@/shared/components/post-feed/PostChip";
+import { mdPlainText } from "@/shared/markdown";
 import { fetchAiQaDetail } from "@/lib/api-client";
 import type { AiQaDetail, AiQaItem, AiQaRefItem } from "@shared/types";
 import AiQaRefBox, { RefExpandBox } from "./AiQaRefBox";
@@ -96,7 +97,7 @@ export default function AiQaCard({ item }: { item: AiQaItem }) {
         </>
       }
       headline={item.question}
-      snippet={item.answer_snippet}
+      snippet={mdPlainText(item.answer_snippet)}
       fetchDetail={() => fetchAiQaDetail(item.qa_id)}
       renderHeaderTrailing={(detail) =>
         detail?.avg_ref_sentiment != null && (

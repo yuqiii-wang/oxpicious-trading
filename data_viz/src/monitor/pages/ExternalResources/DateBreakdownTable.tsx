@@ -36,7 +36,7 @@ import {
   type ExtResourceAuditEntry,
   type ExtResourceStatEntry,
 } from "@/lib/api-client/monitor";
-import { fmtTimeWithZoneShanghai } from "@/shared/datetime";
+import { fmtDate, fmtTimeWithZoneShanghai } from "@/shared/datetime";
 
 const AUDIT_LIMIT = 100;
 
@@ -409,7 +409,7 @@ function BucketRow({
             )}
             {!audit.loading && audit.error == null && audit.entries.length === 0 && (
               <Typography variant="caption" color="text.secondary">
-                No audit rows for {row.service} on {date} (status{" "}
+                No audit rows for {row.service} on {fmtDate(date)} (status{" "}
                 {row.statusCode ?? "no response"}) — the audit writer may have
                 dropped them (DB outage) or the stats are stale.
               </Typography>
@@ -528,7 +528,7 @@ export default function DateBreakdownTable({
           flexWrap: "wrap",
         }}
       >
-        <Typography variant="subtitle2">Breakdown — {date} (GMT)</Typography>
+        <Typography variant="subtitle2">Breakdown — {fmtDate(date)} (GMT)</Typography>
         <Typography variant="caption" color="text.secondary">
           GMT day — runs Beijing 08:00 → next 08:00 · {rows.length} bucket(s)
           · {totalRequests.toLocaleString()} requests ·{" "}

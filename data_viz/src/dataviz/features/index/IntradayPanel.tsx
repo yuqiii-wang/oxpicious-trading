@@ -22,6 +22,7 @@ import {
   type OhlcMode,
 } from "@/lib/ohlc";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
+import { fmtDate } from "@/shared/datetime";
 import { axisColors } from "@/theme/chart-palette";
 import type { IndexIntraday5minResponse } from "@shared/types";
 import type { EChartsOption } from "echarts";
@@ -169,7 +170,7 @@ export default function IntradayPanel({
                 onClick={onRefresh}
                 loading={loading}
                 size="tiny"
-                tooltip={`Refresh 5-min bars for ${date}`}
+                tooltip={`Refresh 5-min bars for ${fmtDate(date)}`}
               />
             )}
             <IconButton aria-label="close intraday" onClick={onClose} size="small">

@@ -7,7 +7,46 @@
   "freq": null,
   "priority": 180,
   "schedule": "always-on while the host is up; the stream watchdog restarts it when the beat goes stale",
-  "notes": "Also captures the SSE options EOD snapshot once per trading date (--options-eod step in downloads_daily, published ~16:29) so builds.options' nightly finality gate accepts the date.",
+  "notes": "Also captures the SSE options EOD snapshot once per trading date (--options-eod step in downloads_daily, published ~16:29) so builds.options' nightly finality gate accepts the date. 2026-11-21 control unification: resource_class sampler — a PAUSE command is accepted only outside a trading session (mid-session pause = silent data loss; the child refuses it with that reason). The progress block names the per-asset table pairs the process-detail endpoint renders through the shared intraday_progress sql_view template (the SAME template the poller's own loop renders — no duplicated SQL).",
   "source_ref": "server_cluster/_common/resident_supervisor.py;scripts/stream_watchdog.sh;scripts/orchestration/downloads_daily.json",
-  "updated_at": "2026-11-20T15:25:15.716730+00:00"
+  "updated_at": "2026-11-21T00:00:00+00:00",
+  "resource_class": "sampler",
+  "pausable": true,
+  "progress": {
+    "kind": "intraday",
+    "assets": [
+      {
+        "name": "stock",
+        "identity_table": "stats.stock_identity",
+        "intraday_table": "stats.stock_intraday_5min",
+        "code_column": "code",
+        "exchange_column": "exchange",
+        "exchange": "SS"
+      },
+      {
+        "name": "etf",
+        "identity_table": "stats.etf_identity",
+        "intraday_table": "stats.etf_intraday_5min",
+        "code_column": "code",
+        "exchange_column": "exchange",
+        "exchange": "SS"
+      },
+      {
+        "name": "index",
+        "identity_table": "stats.index_identity",
+        "intraday_table": "stats.index_intraday_5min",
+        "code_column": "code",
+        "exchange_column": null,
+        "exchange": null
+      },
+      {
+        "name": "options",
+        "identity_table": "stats.options_identity",
+        "intraday_table": "stats.options_intraday_5min",
+        "code_column": "contract_code",
+        "exchange_column": "exchange",
+        "exchange": "SSE"
+      }
+    ]
+  }
 }

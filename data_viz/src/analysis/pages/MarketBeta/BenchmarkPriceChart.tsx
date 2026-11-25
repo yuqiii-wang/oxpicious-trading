@@ -12,11 +12,11 @@
  *                column (cumulative performance over the trailing X-day
  *                window).
  *
- * A rolling-days DROPDOWN lets the user pick which trailing window
- * (5 / 20 / 60 / 252 / 504 trading days) drives the shade overlay. Each
- * option selects one of the 5 pre-materialized
+ * A rolling-days DROPDOWN selects which trailing window drives the shade
+ * overlay — only 60 trading days is offered (2026-11-21: the other window
+ * options were removed). It picks one of the pre-materialized
  * benchmark_non_this_industry_rolling_{N}days_price columns from
- * analysis.industry_attributions. Defaults to 252 days (~1 year).
+ * analysis.industry_attributions.
  *
  * The chart is CLICKABLE — clicking anywhere inside the plot grid selects the
  * nearest date (via onCanvasClick), which flows up to the parent and updates
@@ -49,6 +49,7 @@ import {
   ToggleButtonGroup,
 } from "@mui/material";
 import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
+import { fmtDate } from "@/shared/datetime";
 import { INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import { useDocs } from "@/shared/docs";
@@ -63,8 +64,8 @@ import type {
 import type { ECharts } from "echarts";
 import type { BenchmarkPriceChartProps, RollingDays } from "./types";
 import {
-  ROLLING_DAYS,
-  DEFAULT_ROLLING_DAYS,
+  ATTRIBUTION_ROLLING_DAYS,
+  DEFAULT_ATTRIBUTION_ROLLING_DAYS,
   ROLLING_DAYS_LABELS,
   ROLLING_DAYS_FIELD,
 } from "./constants";
@@ -103,11 +104,11 @@ export function BenchmarkPriceChart({
   // highlighted at the bottom of the bar in the industry's color.
   const [showTradingAmt, setShowTradingAmt] = useState<boolean>(false);
 
-  // Rolling-days dropdown: which trailing window (5/20/60/252/504) drives the
-  // shade overlay. Selects one of the 5 pre-materialized
-  // non_this_industry_rolling_{N}days_price columns from the API response.
-  // Defaults to 252 days (~1 year).
-  const [rollingDays, setRollingDays] = useState<RollingDays>(DEFAULT_ROLLING_DAYS);
+  // Rolling-days dropdown: which trailing window drives the shade overlay.
+  // Selects one of the pre-materialized non_this_industry_rolling_{N}days_price
+  // columns from the API response. Only 60d is offered (2026-11-21 — the
+  // other windows were removed from this chart's dropdown).
+  const [rollingDays, setRollingDays] = useState<RollingDays>(DEFAULT_ATTRIBUTION_ROLLING_DAYS);
 
   // Fetch benchmark price when benchmarkCode changes.
   useEffect(() => {
@@ -373,7 +374,7 @@ export function BenchmarkPriceChart({
   }, [focusDateRequest, chartDates]);
 
   const subtitle = data
-    ? `${data.name} (${data.code}) — click any date to set the as-of date${selectedDate ? ` · selected: ${selectedDate}` : ""}` +
+    ? `${data.name} (${data.code}) — click any date to set the as-of date${selectedDate ? ` · selected: ${fmtDate(selectedDate)}` : ""}` +
       (hasIndustries
         ? shadesAvailable
           ? ` · ${industryShades.length} industr${industryShades.length === 1 ? "y" : "ies"} shaded · window: ${ROLLING_DAYS_LABELS[rollingDays]}`
@@ -442,7 +443,7 @@ export function BenchmarkPriceChart({
                 sx={{ "& .MuiSelect-select": { py: 0.25, fontSize: "0.8rem" } }}
                 inputProps={{ "aria-label": "Rolling days window" }}
               >
-                {ROLLING_DAYS.map((d) => (
+                {ATTRIBUTION_ROLLING_DAYS.map((d) => (
                   <MenuItem key={d} value={d}>{ROLLING_DAYS_LABELS[d]}</MenuItem>
                 ))}
               </Select>

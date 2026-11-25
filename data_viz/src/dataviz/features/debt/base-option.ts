@@ -1,15 +1,20 @@
 /**
  * Shared option builder for the Debt panels. All four panels share
- * the same x-axis (date), quarterly axis labels, and a connected group for
- * cross-chart tooltip sync — matching the matplotlib sharex=True behaviour
- * in the builds/bond pipeline. The option preamble (background / animation /
- * legend / tooltip / grid) comes from the shared base-chart kit.
+ * the same x-axis (date), zoom-aware tick labels — the tick granularity
+ * comes in from useDateTickGranularity: month / quarter / year, whichever
+ * is densest for the visible time-slider window at the measured width, so
+ * the labels never overlap (see shared/charts/dateTicks) — and a connected
+ * group for cross-chart tooltip sync (matching the matplotlib sharex=True
+ * behaviour in the builds/bond pipeline). The option preamble (background /
+ * animation / legend / tooltip / grid) comes from the shared base-chart kit.
  */
 import React from "react";
 import type { EChartsOption, SeriesOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
 import { axisColors, MUTED_PALETTE, commonDataZoom, commonLegend, commonGrid } from "@/theme/chart-palette";
 import { baseChartOption, commonTooltip, type BaseChartOptionOverrides } from "@/shared/charts/base-chart";
+import { dateTickFilter, type DateTickGranularity } from "@/shared/charts/dateTicks";
+import { fmtDate } from "@/shared/datetime";
 import { fmtNum } from "@/lib/series";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 
@@ -21,30 +26,12 @@ export function getAxisColors(mode: ThemeMode): AxisColors {
 }
 
 /**
- * Compute quarterly tick positions (first business date of each quarter).
- * Mirrors format_date_axis_quarterly in _plot_commons.py.
- */
-export function quarterTickFilter(dates: string[]): Set<string> {
-  const out = new Set<string>();
-  let lastQuarter = -1;
-  for (const d of dates) {
-    const m = Number(d.slice(5, 7));
-    const q = Math.floor((m - 1) / 3);
-    if (q !== lastQuarter) {
-      out.add(d);
-      lastQuarter = q;
-    }
-  }
-  return out;
-}
-
-/**
  * Build the common x-axis + grid + tooltip + dataset base option shared by
  * all four debt panels. Rebased on the shared kit's
  * `baseChartOption` so the preamble (transparent background, animations off,
  * legend / tooltip / grid fragment slots) is the single app-wide one; the
- * quarterly x-axis, twin y-axes, group-linked axisPointer and the markerMap
- * tooltip stay family-specific.
+ * zoom-aware date x-axis, twin y-axes, group-linked axisPointer and the
+ * markerMap tooltip stay family-specific.
  *
  * If `markerMap` is provided, PBoC operation info (outright repo / MLF) is
  * shown in the tooltip on hover instead of dense vertical markLines.
@@ -52,11 +39,14 @@ export function quarterTickFilter(dates: string[]): Set<string> {
 export function buildBaseOption(
   dates: string[],
   mode: ThemeMode,
+  /** Tick granularity from useDateTickGranularity — month / quarter / year
+   *  for the visible time-slider window at the measured chart width. */
+  tickGranularity: DateTickGranularity,
   extra: BaseChartOptionOverrides = {},
   markerMap?: Map<string, string[]>,
 ): EChartsOption {
   const c = getAxisColors(mode);
-  const quarterTicks = quarterTickFilter(dates);
+  const dateTicks = dateTickFilter(dates, tickGranularity);
 
   return baseChartOption(mode, {
     grid: commonGrid({
@@ -76,7 +66,7 @@ export function buildBaseOption(
         if (arr.length === 0) return "";
         const dateStr = (arr[0].axisValue as string) || "";
         const children: React.ReactNode[] = [
-          tooltipComponents.Header({ children: dateStr, style: { marginBottom: 4 } }),
+          tooltipComponents.Header({ children: fmtDate(dateStr), style: { marginBottom: 4 } }),
         ];
         const markerInfo = markerMap?.get(dateStr);
         if (markerInfo && markerInfo.length > 0) {
@@ -115,8 +105,8 @@ export function buildBaseOption(
       axisLabel: {
         color: c.textColor,
         fontSize: 10,
-        interval: (_idx: number, value: string) => quarterTicks.has(value),
-        formatter: (v: string) => v.slice(0, 10),
+        interval: (_idx: number, value: string) => dateTicks.has(value),
+        formatter: (v: string) => fmtDate(v),
         rotate: 0,
       },
       splitLine: { show: false },

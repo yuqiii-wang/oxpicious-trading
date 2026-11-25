@@ -19,6 +19,9 @@
 \ir news_keywords.sql
 \ir news_provider_audit.sql
 \ir news_content_audit.sql
+\ir news_coverage_audit.sql
+\ir news_lexicon_scores.sql
+\ir news_text_daily.sql
 
 -- indexes
 \ir 13_news_keyword_audit.sql

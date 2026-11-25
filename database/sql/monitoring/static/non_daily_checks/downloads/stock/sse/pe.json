@@ -1,0 +1,10 @@
+{
+  "service": "downloads.stock.sse.pe",
+  "check": "db_source_freshness",
+  "params": {
+    "view": "server_cluster/monitor/non_daily/sse_pe_last_success",
+    "max_age_days": 9
+  },
+  "rerun_args": [],
+  "notes": "The weekly PE anchor crawl's own last success (monitor.service_audit) — the same clock the task's in-task weekly gate reads, so the weekly re-run only actually fires when the sweep is genuinely stale (fires missed for over a week; max_age_days 9 = weekly cadence + grace). File-mtime freshness cannot serve here: pe_latest touches the same {code}_pe.csv files daily. Renamed with the service split 2026-11-23 (was downloads.stock.sse.trend_pe / sse_trend_pe_last_success)."
+}

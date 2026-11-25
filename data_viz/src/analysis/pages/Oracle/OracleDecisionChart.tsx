@@ -8,6 +8,7 @@
  */
 import { useMemo } from "react";
 import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
+import { fmtDate } from "@/shared/datetime";
 import type { BaseChartProps } from "@/shared/charts/base-chart";
 import type { OracleSeriesResponse } from "@shared/types";
 import { CHART_HEIGHT } from "./constants";
@@ -42,7 +43,7 @@ export default function OracleDecisionChart({ data, ...base }: Props) {
         data
           ? `${buys} buys (local minima) · ${sells} sells (local maxima) · ` +
             `5-bar pivots · 1 action per side / 5d · latest ` +
-            `${data.rows.at(-1)?.date ?? "—"}`
+            `${fmtDate(data.rows.at(-1)?.date)}`
           : undefined
       }
       option={option}

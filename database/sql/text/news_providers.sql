@@ -2,9 +2,10 @@
 --  News providers registry
 --  Table: text.news_providers — one row per news ORIGIN (source, author):
 --  the provider-level row (author = '') plus one row per captured author
---  (zhihu answer authors, gov 来源). Carries the blocklist flag
---  (is_blocked) and the origin's seen-date span, synced from text.news by
---  analysis.news_audit.
+--  (zhihu answer authors, gov 来源). Carries the origin's media type
+--  (news_type — social media / financial report / news article / …),
+--  the blocklist flag (is_blocked) and the origin's seen-date span,
+--  synced from text.news by analysis.news_audit.
 --
 --  Column naming: "provider" here is text.news.source (gov, zhihu, ndrc,
 --  pboc_*, ai_daily) — the repo's news vocabulary calls it source, so the
@@ -14,14 +15,15 @@
 --  (author when captured, else source); PG primary keys cannot hold NULL.
 -- ============================================================================
 -- kg entity (ns0 db_semantics_tables reads the payload below):
--- description: The news origin registry — one row per provider/author pair with the blocklist flag and the origin's seen-date span.
--- tags: provider, 提供方, author, 作者, registry, 名录, blocklist, 黑名单, news, 新闻
+-- description: The news origin registry — one row per provider/author pair with the origin's media type, the blocklist flag (auto-set on more than one audited fake item) and the seen-date span.
+-- tags: provider, 提供方, author, 作者, registry, 名录, blocklist, 黑名单, news, 新闻, type, 类型, social media, 社交媒体
 
 
 CREATE TABLE IF NOT EXISTS text.news_providers (
     source           TEXT        NOT NULL,             -- provider: text.news.source (gov, zhihu, ndrc, ...)
     author           TEXT        NOT NULL DEFAULT '',  -- '' = provider-level row (no distinct author)
-    is_blocked       BOOLEAN     NOT NULL DEFAULT false,   -- blocklist flag: manual curation, never touched by the sync
+    news_type        SMALLINT    NOT NULL DEFAULT 99,  -- the origin's media type (label_dim 'news_type'): 0 news_article | 1 financial_report | 2 social_media | 3 ai_digest | 99 other
+    is_blocked       BOOLEAN     NOT NULL DEFAULT false,   -- blocklist flag: auto-set on >1 audited fake item; manual curation otherwise
     first_seen_date  DATE,                             -- MIN(text.news.date) over the origin's articles
     last_seen_date   DATE,                             -- MAX(text.news.date) over the origin's articles
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -43,11 +45,32 @@ COMMENT ON COLUMN text.news_providers.author IS
   'ORIGIN concept as the fake-news detector (author when captured, else '
   'source).';
 
+COMMENT ON COLUMN text.news_providers.news_type IS
+  'The origin''s MEDIA type — label_dim domain ''news_type'': 0 '
+  'news_article (news portals + official news items — gov, ndrc and the '
+  'web-scraped portals, the unmapped default), 1 financial_report '
+  '(official monetary-policy / financial data releases: pboc_lpr, '
+  'pboc_omo, pboc_oma), 2 social_media (UGC platforms: zhihu, xueqiu, '
+  'weibo, guba/caifuhao, 淘股吧, 韭研公社, bilibili, the broker '
+  'communities), 3 ai_digest (the repo''s own ai_daily), 99 other '
+  '(unrecognized). Derived from text.news.source by the registry sync''s '
+  'classify (analysis/news_audit/config.py — curated platform list + '
+  'substring guards) and REWRITTEN by every sync (sync-owned, unlike the '
+  'manual is_blocked); read against the audit metrics — a fake share '
+  'concentrated in social_media origins is the expected shape, the same '
+  'share in financial_report is the alarm.';
+
 COMMENT ON COLUMN text.news_providers.is_blocked IS
-  'Blocklist flag for the origin: true = flagged as a blocked/mistrusted '
-  'provider or author. MANUAL curation — the registry sync''s upsert '
-  'never touches this column (it updates only the seen-date span), so '
-  'flipping it here survives every sync. No consumer filters on it yet.';
+  'Blocklist flag for the origin: true = blocked — the news API''s '
+  'default feeds exclude the origin''s rows (include_blocked opts back '
+  'in). TWO writers: the news_audit pipeline AUTO-blocks an origin once '
+  'its audit history carries more than one fake item '
+  '(SUM(text.news_provider_audit.num_fake) > 1 — one-way: a manual '
+  'unblock re-blocks on the next audit run; '
+  'analysis/news_audit/steps/news_providers/block_fake_origins.sql), and '
+  'manual curation handles everything else. The registry sync''s upsert '
+  'still never touches this column (it updates only the seen-date span '
+  '+ news_type).';
 
 COMMENT ON COLUMN text.news_providers.first_seen_date IS
   'Earliest text.news.date among the origin''s articles (full-history '
@@ -59,6 +82,9 @@ COMMENT ON COLUMN text.news_providers.last_seen_date IS
 
 COMMENT ON TABLE text.news_providers IS
   'News origin registry: one row per (source, author) — provider-level '
-  'rows carry author = ''''. Holds the manual is_blocked blocklist flag '
-  'plus the origin''s seen-date span, synced from text.news by '
-  'analysis.news_audit (upsert preserves is_blocked).';
+  'rows carry author = ''''. Holds the origin''s media type (news_type), '
+  'the is_blocked blocklist flag (auto-set by the news_audit pipeline on '
+  'more than one audited fake item, manual curation otherwise) plus the '
+  'origin''s seen-date span, synced from text.news by analysis.news_audit '
+  '(upsert preserves is_blocked, rewrites news_type from the source '
+  'classify).';

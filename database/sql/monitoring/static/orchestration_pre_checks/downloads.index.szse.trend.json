@@ -1,0 +1,12 @@
+{
+  "service": "downloads.index.szse.trend",
+  "kind": "fetch",
+  "csv": [
+    {
+      "dir": "temps/szse_trend",
+      "pattern": "szse_trend_index_{date}.csv",
+      "min_bytes": 100
+    }
+  ],
+  "notes": "SZSE-native index EOD (4 rows, ~450 bytes — hence the 100-byte floor). csv stage alone: 399xxx codes are also loaded by downloads.index.cnindex.archive, so no DB slice isolates this download."
+}

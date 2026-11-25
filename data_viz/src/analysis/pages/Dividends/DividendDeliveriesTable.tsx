@@ -34,6 +34,7 @@ import {
   useTheme,
 } from "@mui/material";
 import { fetchDividendDeliveries } from "@/lib/api-client";
+import { fmtDate } from "@/shared/datetime";
 import { fmtNum, fmtPct } from "@/lib/series";
 import type {
   DividendDeliveryRow,
@@ -204,10 +205,10 @@ export function DividendDeliveriesTable({
                 }}
               >
                 <TableCell sx={{ fontSize: "0.75rem", whiteSpace: "nowrap" }}>
-                  {row.window_end_date}
+                  {fmtDate(row.window_end_date)}
                   <Box component="span" sx={{ color: "text.secondary" }}>
                     {" ← "}
-                    {row.window_start_date}
+                    {fmtDate(row.window_start_date)}
                   </Box>
                 </TableCell>
                 <TableCell align="right" sx={NUM_SX}>{row.deliveries}</TableCell>

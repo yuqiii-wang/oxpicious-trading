@@ -34,6 +34,7 @@ import {
   commonGrid,
 } from "@/theme/chart-palette";
 import { baseChartOption } from "@/shared/charts/base-chart";
+import { fmtDate, fmtMonth } from "@/shared/datetime";
 import { fmtNum } from "@/lib/series";
 import type { ChartMode } from "./types";
 
@@ -208,7 +209,7 @@ export function buildComparisonOption(
         }
 
         return `
-          <div style="font-weight:600">${dates[idx]}</div>
+          <div style="font-weight:600">${fmtDate(dates[idx])}</div>
           ${valueLines}
           <div style="margin-top:2px;opacity:0.85">Rolling close correlation (stride-20 grid):</div>
           <div style="opacity:0.85">  20d: <b style="color:${corrColor(c20)}">${c20 == null ? "—" : fmtNum(c20, 4)}</b>  ·  60d: <b style="color:${corrColor(c60)}">${c60 == null ? "—" : fmtNum(c60, 4)}</b></div>
@@ -230,7 +231,7 @@ export function buildComparisonOption(
         color: c.textColor,
         fontSize: 9,
         // Show ~6 ticks to avoid label crowding on long histories.
-        formatter: (v: string) => v.slice(0, 7),
+        formatter: (v: string) => fmtMonth(v),
       },
       splitLine: { show: false },
     },

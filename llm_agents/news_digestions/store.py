@@ -38,7 +38,8 @@ logger = logging.getLogger(__name__)
 
 DIGESTIONS_TABLE = "text.news_digestions"
 DIGESTION_COLUMNS = ("news_id", "date", "industry_id", "summary",
-                     "sentiment_level", "category", "is_fake_news",
+                     "sentiment_level", "p_bullish", "p_bearish",
+                     "intensity_score", "category", "is_fake_news",
                      "llm_model")
 
 

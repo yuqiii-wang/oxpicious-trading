@@ -36,6 +36,10 @@ function loadLlmEnv(): void {
   if (_envLoaded) return;
   const envPath = path.resolve(
     import.meta.dirname ?? __dirname,
+    // services/infra -> api -> data_viz -> REPO ROOT (the file the
+    // Python side reads too — llm_agents/_core/secret_config.py; three
+    // ups landed in data_viz/database/.env, which does not exist)
+    "..",
     "..",
     "..",
     "..",

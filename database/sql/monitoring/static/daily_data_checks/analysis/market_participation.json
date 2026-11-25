@@ -1,0 +1,4 @@
+{
+  "view": "server_cluster/maintainer/daily_check/analysis/market_participation",
+  "notes": "analysis_daily step 12 (analysis.market_participation): analysis.market_participation (one row per trading day) vs the stats.exchange_trading_amt SS-and-SZ frontier — the module's own _missing_dates source. A gap means the nightly participation pass stopped writing."
+}

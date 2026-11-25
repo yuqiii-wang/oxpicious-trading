@@ -1,0 +1,4 @@
+{
+  "view": "server_cluster/maintainer/daily_check/analysis/futures",
+  "notes": "analysis_daily step 5 (analysis.futures): analysis.futures_ext table-wide max(date) vs stats.futures_identity (the module's own frontier source). A gap means the nightly basis/correlation pass stopped writing."
+}

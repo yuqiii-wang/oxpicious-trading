@@ -1,0 +1,10 @@
+{
+  "service": "downloads.bond.chinabond",
+  "kind": "fetch",
+  "tables": [
+    {
+      "table": "stats.debt_identity"
+    }
+  ],
+  "notes": "ChinaBond treasury curve (one file per year, always re-downloaded). DB slice only: stats.debt_identity — the session reads present once builds.bond loaded the day's curve."
+}

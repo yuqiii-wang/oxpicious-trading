@@ -18,6 +18,7 @@ import {
   buildExtResourceTrendOption,
   type TrendSeries,
 } from "./extResourceTrendOption";
+import { fmtDate } from "@/shared/datetime";
 
 const NO_SERIES: TrendSeries[] = [];
 const NO_COUNTS: number[] = [];
@@ -64,7 +65,7 @@ export default function ExtResourceTrendChart({
       title="External requests"
       subtitle={`${
         dates.length
-          ? `${dates[0]} → ${dates[dates.length - 1]} (GMT days)`
+          ? `${fmtDate(dates[0])} → ${fmtDate(dates[dates.length - 1])} (GMT days)`
           : "no data"
       } · ${totalRequests.toLocaleString()} requests · click a date to drill in`}
       option={option}

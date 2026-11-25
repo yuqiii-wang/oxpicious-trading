@@ -15,7 +15,8 @@
  * process-status poll (useForecastRunPoll) — the Singleton page's
  * Run/Train pattern, one tag. The register renders as the
  * TRADING-SIGNALS-LIST (the live SignalTable idiom): one parent row per
- * code (click to expand), filtered by the σ-rung toggle (1σ/2σ/3σ).
+ * (scenario, code) — grouped by scenario (the σ rung), then code —
+ * filtered by the σ-rung toggle (1σ/2σ/3σ).
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -43,6 +44,7 @@ import {
 } from "@/lib/api-client";
 import { ForecastSignalsTable } from "./ForecastSignalsTable";
 import { useForecastRunPoll } from "./useForecastRunPoll";
+import { fmtDateTime } from "@/shared/datetime";
 
 /** The module's scope — index, the 10 study indices (v1). */
 const SEC_TYPE = "index" as const;
@@ -95,6 +97,17 @@ export default function ForecastPage() {
     () => rows.filter((r) => sigmaFilter.includes(Number(r.sigma_mult))),
     [rows, sigmaFilter],
   );
+
+  // The register's run time — the latest write stamp across the loaded
+  // rows (the nightly run / the last Run Forecast touch).
+  const runAt = useMemo(() => {
+    if (rows.length === 0) return null;
+    return rows.reduce<string | null>(
+      (max, r) =>
+        max == null || r.updated_at > max ? r.updated_at : max,
+      null,
+    );
+  }, [rows]);
 
   const onSettled = useCallback(
     async (exitCode: number | null) => {
@@ -161,6 +174,14 @@ export default function ForecastPage() {
               strategy signal would trigger under each close (index, the
               study indices)
             </Typography>
+            <Tooltip
+              title="When the forecast pipeline last wrote these rows (strategy.forecast_next_day.updated_at — the nightly run or the last Run Forecast)"
+              arrow
+            >
+              <Typography variant="caption" color="text.secondary">
+                run at {fmtDateTime(runAt)}
+              </Typography>
+            </Tooltip>
           </Box>
         </Box>
         <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
@@ -248,7 +269,11 @@ export default function ForecastPage() {
             No scenarios for the selected σ rungs — enable at least one of 1σ/2σ/3σ.
           </Typography>
         ) : (
-          <ForecastSignalsTable rows={filtered} loading={loading} />
+          <ForecastSignalsTable
+            rows={filtered}
+            loading={loading}
+            secType={SEC_TYPE}
+          />
         )}
       </Box>
     </Box>

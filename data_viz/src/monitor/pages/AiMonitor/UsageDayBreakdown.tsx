@@ -17,6 +17,7 @@ import {
   Typography,
 } from "@mui/material";
 import type { AiUsageEntry } from "@/lib/api-client/monitor";
+import { fmtDate } from "@/shared/datetime";
 
 function fmtMs(ms: number | null): string {
   if (ms == null) return "—";
@@ -55,7 +56,7 @@ export default function UsageDayBreakdown({
           flexWrap: "wrap",
         }}
       >
-        <Typography variant="subtitle2">Breakdown — {date} (GMT)</Typography>
+        <Typography variant="subtitle2">Breakdown — {fmtDate(date)} (GMT)</Typography>
         <Typography variant="caption" color="text.secondary">
           GMT day — runs Beijing 08:00 → next 08:00 · {rows.length} bucket(s)
           · {totalRequests.toLocaleString()} requests ·{" "}

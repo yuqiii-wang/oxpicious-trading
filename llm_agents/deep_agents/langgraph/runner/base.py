@@ -65,7 +65,7 @@ from llm_agents.deep_agents.planning.prompt_loading import (
     CatalogRow, PromptLadder,
 )
 from llm_agents.deep_agents.planning.session import (
-    SpawnPassDown, PlanSessionResult,
+    PlanSession, SpawnPassDown, PlanSessionResult,
     item_labels,
 )
 from llm_agents.deep_agents.planning.store import (
@@ -187,6 +187,16 @@ module docstring).
         # and lose the earlier steps' files).
         if self._sandbox_cell is None:
             self._sandbox_cell = [None]
+        # The node-level prompt-matching caches: ONE catalog-row cell
+        # per run (lazily filled by the first _node_prompts hop, the
+        # same per-run cell shape as the sandbox's) and the per-key
+        # raw-text cache behind _prompt_raw (the load_prompt tool's
+        # loader). The 2026-11-07 split introduced both accesses
+        # without initializing them, so every catalog-carrying hop
+        # raised AttributeError and the [Step-matched prompts] block
+        # silently never loaded (caught as caution id=2933, 2026-11-23).
+        self._catalog_rows_cell: List[Any] = [None]
+        self._prompt_text_cache: Dict[str, str] = {}
 
 
     def run_sandbox(self, state: ThreadState) -> Optional["Sandbox"]:

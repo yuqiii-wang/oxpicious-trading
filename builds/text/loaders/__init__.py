@@ -32,8 +32,9 @@ in ``_parsing`` instead of with a YAML library.
 """
 from __future__ import annotations
 
+import datetime
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from builds.text.loaders import _parsing, ai_daily, gov, ndrc, pboc, zhihu
 from builds.text.loaders.ai_daily import load_ai_daily  # noqa: F401
@@ -66,9 +67,20 @@ LOADERS = {
 }
 
 
-def load_news(sources: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+def load_news(
+    sources: Optional[List[str]] = None,
+    stored_zhihu_rows: Optional[
+        Dict[Tuple[str, datetime.date], Dict[str, Any]]
+    ] = None,
+) -> List[Dict[str, Any]]:
     """Load + merge news rows for *sources* (default: all), deduped on the
-    text.news natural key (title, source, date) — last occurrence wins."""
+    text.news natural key (title, source, date) — last occurrence wins.
+
+    *stored_zhihu_rows* — {(title, date): {author, url, news_id}} over the
+    zhihu rows already stored in text.news (the build passes the pre-parse
+    DB state); forwarded to the zhihu loader only, whose title
+    disambiguation claims stored rows so re-runs reproduce them
+    (duplication guard)."""
     wanted = sources or ALL_SOURCES
     unknown = [s for s in wanted if s not in LOADERS]
     if unknown:
@@ -76,7 +88,10 @@ def load_news(sources: Optional[List[str]] = None) -> List[Dict[str, Any]]:
 
     merged: Dict[tuple, Dict[str, Any]] = {}
     for source in wanted:
-        rows = LOADERS[source]()
+        if source == zhihu.SOURCE:
+            rows = LOADERS[source](stored_zhihu_rows)
+        else:
+            rows = LOADERS[source]()
         logger.info("    [%s] parsed %d rows", source, len(rows))
         for row in rows:
             merged[(row["title"], row["source"], row["date"])] = row

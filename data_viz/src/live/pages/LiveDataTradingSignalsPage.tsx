@@ -73,6 +73,7 @@ import {
 import RefreshButton from "@/components/RefreshButton";
 import { SignalPopulationToggles } from "@/shared/components/signal-code-trend";
 import { DateSelector } from "@/shared/components/date-selector";
+import { fmtDate } from "@/shared/datetime";
 import {
   configLabel,
   persistSecType,
@@ -291,7 +292,7 @@ export default function LiveDataTradingSignalsPage() {
           dates={dateOptions}
           value={selectedDate}
           defaultDate={resolvedDate || undefined}
-          tooltip={selectedDate ? selectedDate : `Biz today (${resolvedDate})`}
+          tooltip={selectedDate ? fmtDate(selectedDate) : `Biz today (${fmtDate(resolvedDate)})`}
           onChange={(v) => {
             // Picking the resolved biz-today entry returns to "live"
             // mode (null); a historical date freezes the page.
@@ -368,7 +369,7 @@ export default function LiveDataTradingSignalsPage() {
         open={analysisConfirmOpen}
         onClose={() => setAnalysisConfirmOpen(false)}
       >
-        <DialogTitle>No intraday data for {selectedDate}</DialogTitle>
+        <DialogTitle>No intraday data for {fmtDate(selectedDate)}</DialogTitle>
         <DialogContent>
           <DialogContentText>
             A past date has no intraday bars to check. Refresh will run the

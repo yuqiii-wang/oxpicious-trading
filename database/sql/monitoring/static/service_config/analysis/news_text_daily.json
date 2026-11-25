@@ -1,0 +1,13 @@
+{
+  "service": "analysis.news_text_daily",
+  "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
+  "is_resident": false,
+  "freq": "daily",
+  "priority": 70,
+  "schedule": "every A-share trading date, after builds_daily (builds.text) and after step 14's news_audit (its coverage audit) and step 15's news_lexicon in the 16:00 nightly chain (step 16)",
+  "notes": "Daily news-text metric panel (text.news_text_daily): per (date, scope_kind, scope_code). Market scopes (0 market_all = every digested article; 1 market_recap = the BROAD_SSE recap subset) carry the full metric set — lexicon-blended sentiment level (0.7*LLM + 0.3*lexicon, disagreeing articles 0.5 weight, n<3 guard), trailing-60d z (min 20), ewm halflife-3/10 lines, day change, the abnormal-flow flag ((n - 63d median)/IQR, min 40), sign-split counts (+/-1 cuts), origin dispersion (>=2 origins), kw_market px-tone z — all on the SSE Composite trading calendar (weekend articles roll forward, T+1-compatible). Industry scope (2) carries EVENT-DAY aggregates only (a row on days the industry has digested articles; curve columns NULL). Validated 2026-11-21 on this corpus: sentiment levels are state not direction (IC ~0 at 1-5d), ema10 contrarian at the monthly tail (+0.33% vs +1.54% after bottom-20% months), flow_af the most consistent risk flag (negative forward IC at 1-10d in every scope/year). Forward returns and regime flags NOT stored — join stats.v_index_daily on (scope_code, date). Incremental: missing article-bearing trade days + 15-day grace tail; probe loads from the OLDEST existing row (a gap longer than the grace window still heals); --force truncates + full rebuild.",
+  "source_ref": "scripts/orchestration/analysis_daily.json",
+  "updated_at": "2026-11-22T00:00:00+00:00"
+}

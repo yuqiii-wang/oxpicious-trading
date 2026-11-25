@@ -29,6 +29,16 @@ import type {
 // The SELECT lives in the sql view
 // strategy/forecast/forecast.
 
+/** sec_type → stats identity table that carries (code, date, name) —
+ *  the display-name lookup's per-sec source (the trading-signals
+ *  service's same map). */
+const IDENTITY_TABLE: Record<string, string> = {
+  index: "stats.index_identity",
+  etf: "stats.etf_identity",
+  stock: "stats.stock_identity",
+  industry: "stats.industry_identity",
+};
+
 /**
  * Fetch the forecast register rows for one sec_type — one code's
  * ladder when `code` is given, else every code's latest anchor.
@@ -53,6 +63,7 @@ export async function fetchForecast(
       trend_decode: sqlFrag(labelDecodeSql("trend", "f.trend_state")),
       regime_decode: sqlFrag(labelDecodeSql("regime", "f.regime_state")),
       sec_type: sqlFrag(String(LABEL_CODE.sec_type[secType])),
+      identity_table: sqlFrag(IDENTITY_TABLE[secType]),
       code,
       anchor_date: anchorDate,
     },

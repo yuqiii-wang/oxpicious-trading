@@ -16,6 +16,7 @@
 import React from "react";
 import { fmtPct } from "@/lib/series";
 import { renderReactElement } from "@/lib/react-tooltip-renderer";
+import { fmtDate } from "@/shared/datetime";
 import {
   fmtVal,
   Header,
@@ -98,12 +99,12 @@ export function buildPairTooltipFormatter(ctx: TooltipContext) {
     if (arr.length === 0) return "";
     const dateStr = tooltipAxisValue(params);
     const idx = dates.indexOf(dateStr);
-    if (idx < 0) return renderReactElement(React.createElement(Header, null, dateStr));
+    if (idx < 0) return renderReactElement(React.createElement(Header, null, fmtDate(dateStr)));
 
     const children: React.ReactNode[] = [];
 
     // Date header
-    children.push(React.createElement(Header, { key: "date" }, dateStr));
+    children.push(React.createElement(Header, { key: "date" }, fmtDate(dateStr)));
 
     const sv = shorts[idx];
     const lv = longs[idx];
@@ -219,8 +220,8 @@ export function buildPairTooltipFormatter(ctx: TooltipContext) {
         const { span } = hit;
         const nDays = span.span_days;
         const periodText = span.start_date === span.end_date
-          ? `${span.start_date} (${nDays}d)`
-          : `${span.start_date} → ${span.end_date} (${nDays}d)`;
+          ? `${fmtDate(span.start_date)} (${nDays}d)`
+          : `${fmtDate(span.start_date)} → ${fmtDate(span.end_date)} (${nDays}d)`;
         children.push(
           React.createElement(Row, {
             key: "trend",
@@ -264,11 +265,11 @@ export function buildAmtTooltipFormatter(args: AmtTooltipArgs) {
     if (arr.length === 0) return "";
     const dateStr = tooltipAxisValue(params);
     const idx = dates.indexOf(dateStr);
-    if (idx < 0) return renderReactElement(React.createElement(Header, null, dateStr));
+    if (idx < 0) return renderReactElement(React.createElement(Header, null, fmtDate(dateStr)));
 
     const children: React.ReactNode[] = [];
 
-    children.push(React.createElement(Header, { key: "date" }, dateStr));
+    children.push(React.createElement(Header, { key: "date" }, fmtDate(dateStr)));
 
     // The whole amount block (tradingAmt group).
     appendAmtEnvelopeRows(children, { ...args, idx });

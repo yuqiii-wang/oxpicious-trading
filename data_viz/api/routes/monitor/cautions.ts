@@ -61,11 +61,13 @@ export interface CautionsResponse {
   rows: CautionEntry[];
 }
 
-/** GET /api/monitor/cautions?state=open|resolved|all&source=&severity=&limit=
+/** GET /api/monitor/cautions?state=open|resolved|all&source=&severity=&date=&limit=
  *  — the caution trail, OPEN-first ordering (open before resolved, worst
  *  severity first, most-recent-hit first). source/severity arrive
  *  DECODED (caution_source / caution_severity; decode at the API
- *  boundary, the label-code contract). Reads the replica. */
+ *  boundary, the label-code contract). date filters the row's own day
+ *  (the generated GMT day of created_at): absent/'today' → the current
+ *  GMT day, 'all' → no day filter, else YYYY-MM-DD. Reads the replica. */
 router.get("/cautions", wrapAsync(async (req: Request, res: Response) => {
   const stateRaw = String(req.query.state ?? "open");
   const state = stateRaw === "resolved" || stateRaw === "all"
@@ -86,6 +88,21 @@ router.get("/cautions", wrapAsync(async (req: Request, res: Response) => {
       400, "INVALID_PARAM",
       "query param 'severity' must be info | warning | error | critical");
   }
+  const dateRaw = req.query.date == null || req.query.date === ""
+    ? "today"
+    : String(req.query.date);
+  let dateArg: string | null;
+  if (dateRaw === "today") {
+    dateArg = new Date().toISOString().slice(0, 10);
+  } else if (dateRaw === "all") {
+    dateArg = null;
+  } else if (/^\d{4}-\d{2}-\d{2}$/.test(dateRaw)) {
+    dateArg = dateRaw;
+  } else {
+    throw new HttpError(
+      400, "INVALID_PARAM",
+      "query param 'date' must be today | all | YYYY-MM-DD");
+  }
   const limit = intParam(req, "limit", { default: 200, clamp: [1, 500] });
   const pool = getReadPool();
   const { sql, params } = renderSqlView(
@@ -94,6 +111,7 @@ router.get("/cautions", wrapAsync(async (req: Request, res: Response) => {
       state,
       source: sourceRaw,
       severity: severityRaw,
+      date: dateArg,
       limit,
       source_label: sqlFrag(labelDecodeSql("caution_source", "source")),
       severity_label: sqlFrag(labelDecodeSql("caution_severity", "severity_level")),

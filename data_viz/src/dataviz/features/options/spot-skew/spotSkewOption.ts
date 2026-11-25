@@ -32,6 +32,7 @@ import {
   commonLegend,
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
+import { fmtDate } from "@/shared/datetime";
 import type { ThemeMode } from "@/store/filters";
 import type {
   SkewDayPoint,
@@ -96,7 +97,7 @@ export function buildTodayOption(
 
   return baseChartOption(themeMode, {
     title: {
-      text: `Skew Term Structure · ${date} · ${rr} by expiry · vol pts`,
+      text: `Skew Term Structure · ${fmtDate(date)} · ${rr} by expiry · vol pts`,
       left: 4,
       top: 0,
       textStyle: { color: c.textColor, fontSize: 11, fontWeight: 600 },
@@ -119,7 +120,8 @@ export function buildTodayOption(
         return (
           tooltipHeader(
             c,
-            `Expiry ${s.label} (${s.expiryDate}, DTE ${s.dte})`,
+            // label already renders the UI-wide display date — no parenthetical.
+            `Expiry ${s.label}, DTE ${s.dte}`,
           ) +
           tooltipRow(rrColor, `${rr} (C−P)`, s.rr, " vp", rrColor) +
           tooltipRow(IV_BLUE, "ATM IV", s.atmIv, " %")
@@ -318,7 +320,7 @@ export function buildHistoryOption(
         const groups = [spotRows, levelRows, rrRows].filter(
           (g) => g.length > 0,
         );
-        return tooltipHeader(c, p.date) + groups.map((g) => g.join("")).join(sep);
+        return tooltipHeader(c, fmtDate(p.date)) + groups.map((g) => g.join("")).join(sep);
       },
     }),
     legend: commonLegend(themeMode, {

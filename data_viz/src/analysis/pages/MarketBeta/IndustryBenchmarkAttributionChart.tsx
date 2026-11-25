@@ -18,6 +18,7 @@ import { BaseChart, useChartData, useChartThemeMode } from "@/shared/charts/base
 import type { AiAskSpec } from "@/shared/ai-ask";
 import { useDocs } from "@/shared/docs";
 import { fetchIndustryBenchmarkAttribution } from "@/lib/api-client";
+import { fmtDate } from "@/shared/datetime";
 import type { AttributionChartProps } from "./types";
 import { buildIndustryBenchmarkAttributionOption } from "./industryBenchmarkAttributionOption";
 
@@ -60,7 +61,7 @@ export function IndustryBenchmarkAttributionChart({
       title={`${industryLabel || industryId} — Benchmark Attribution`}
       subtitle={
         data
-          ? `${industryLabel || industryId} — ${data.benchmarks.length} benchmarks · as-of ${data.latest_date || "—"}`
+          ? `${industryLabel || industryId} — ${data.benchmarks.length} benchmarks · as-of ${fmtDate(data.latest_date)}`
           : `${industryLabel || industryId}`
       }
       aiAsk={aiAsk}

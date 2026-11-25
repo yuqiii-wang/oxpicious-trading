@@ -48,6 +48,7 @@ import {
 } from "@/shared/styles/expanded-table-styles";
 import { UP_COLOR, DOWN_COLOR } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
+import { fmtDate } from "@/shared/datetime";
 import type { QuarterlyCompositionQuarter } from "@shared/types";
 import useTableHeaderFilters, { type HeaderFilterDef } from "@/hooks/table-header-filters";
 import IndustryDrilldown from "./IndustryDrilldown";
@@ -217,7 +218,7 @@ export default function QuarterlyChangesTable({
               <TableCell key={q.quarter} align="right" sx={expandedTableHeadCellSx}>
                 <Box>{q.quarter}</Box>
                 <Box sx={{ fontSize: "0.58rem", fontWeight: 400, opacity: 0.8 }}>
-                  {q.snapshot_date} · {q.n_holdings} hold.
+                  {fmtDate(q.snapshot_date)} · {q.n_holdings} hold.
                 </Box>
               </TableCell>
             ))}

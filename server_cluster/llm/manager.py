@@ -15,8 +15,8 @@ ONE registry driving EVERY model uniformly:
 * :meth:`start` — ONE idle-watchdog daemon thread sweeping every
   ``check_s`` (``max(1, min(30, min_policy_age/10))``) driving the
   TWO-tier idle policy per model: a ``loaded`` model idle past its
-  ``idle_offload_s`` (30 min by default) offloads GPU → CPU, and an
-  ``offloaded`` model a further ``idle_unload_s`` (1 hr by default)
+  ``idle_offload_s`` (10 min by default) offloads GPU → CPU, and an
+  ``offloaded`` model a further ``idle_unload_s`` (20 min by default)
   past that drops its RAM weights entirely (the next use cold-loads
   from disk),
 * :meth:`warmup_all` — the startup warm-up pass (background thread):

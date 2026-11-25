@@ -1,0 +1,4 @@
+{
+  "view": "server_cluster/maintainer/daily_check/data_viz/sec_composition",
+  "notes": "data_viz UI source sec_composition (stats.sec_composition max(snapshot_date), the UI latest-dates probe): provider snapshots land monthly/quarterly (CSI/SZSE closeweight files), NOT daily — the 40-day tolerance is the snapshot cadence slack; beyond it the composition builds stopped."
+}

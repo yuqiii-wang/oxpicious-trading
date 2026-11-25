@@ -1,0 +1,4 @@
+{
+  "view": "server_cluster/maintainer/daily_check/analysis/analysis_composites",
+  "notes": "analysis_daily step 7 (analysis.analysis_composites): analysis_composites.industry_corr_benchmark_offsets max(start_date) vs the trailing 20-day window's start on the global index calendar (min(WINDOWS)=20 — the latest trailing window every run refreshes). A lagging max(start_date) means the nightly composites pass stopped (without it the table went stale silently — the 2026-10-05 incident)."
+}

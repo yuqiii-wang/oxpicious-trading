@@ -1252,11 +1252,12 @@ export interface SignalAmplificationHistoryRow {
   code: string;
   sec_type: string;
   /** The amplifier PARENT TYPE, decoded (static.label_dim
-   *  'signal_amplifier_type': ohlcv / margin). */
+   *  'signal_amplifier_type': ohlcv / margin / news). */
   amplifier_type: string;
   /** The amplifier's specific pattern (SUB TYPE) — decoded via the
    *  per-parent mirror ('signal_amplifier' when ohlcv,
-   *  'signal_amplifier_margin' when margin). */
+   *  'signal_amplifier_margin' when margin, 'signal_amplifier_news'
+   *  when news). */
   sub_type: string;
   /** 'YYYY-MM-DD' — the amplifier day. */
   date: string;
@@ -1265,7 +1266,8 @@ export interface SignalAmplificationHistoryRow {
   amt_ratio: number | null;
   close_pos: number | null;
   /** The margin amplifiers' qualifying fact: the balance vs its own
-   *  trailing quantile bar (NULL for the ohlcv amplifiers). */
+   *  trailing quantile bar (NULL for the ohlcv and news amplifiers —
+   *  the news state values ride amplifier_params.facts). */
   margin_vs_bar: number | null;
   depth: number | null;
   /** Per bound family: [{signal_type, action, base_bp, amplify_bp,
@@ -1280,6 +1282,7 @@ export interface SignalAmplificationHistoryRow {
 const AMP_SUB_VOCABULARIES: Record<string, Record<string, number>> = {
   ohlcv: LABEL_CODE.signal_amplifier,
   margin: LABEL_CODE.signal_amplifier_margin,
+  news: LABEL_CODE.signal_amplifier_news,
 };
 
 /** Decode a sub label from its parent type label + the raw sub code
@@ -1294,9 +1297,9 @@ function ampSubLabel(
 }
 
 /** Resolve an amplifier filter label to its (parent type code, optional
- *  sub code): a PARENT TYPE label (ohlcv / margin) filters the parent
- *  axis only; a SUB label pins both (the sub vocabularies are
- *  per-parent, so both branches are probed). Undefined = unknown label
+ *  sub code): a PARENT TYPE label (ohlcv / margin / news) filters the
+ *  parent axis only; a SUB label pins both (the sub vocabularies are
+ *  per-parent, so all branches are probed). Undefined = unknown label
  *  (filters to nothing). */
 function ampFilterCodes(
   label: string,

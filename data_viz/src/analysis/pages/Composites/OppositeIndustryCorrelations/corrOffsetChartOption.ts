@@ -16,6 +16,7 @@ import {
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
+import { fmtDate, fmtMonth } from "@/shared/datetime";
 import type { IndustryCorrOffsetRow, IndustryCorrOffsetsResponse } from "@shared/types";
 import { METRIC_COLS, METRIC_LABELS, pairLabel, rowEndDate, rowVal } from "./constants";
 import type { CorrWindow, OffsetMetric } from "./constants";
@@ -100,7 +101,7 @@ export function buildCorrOffsetChartOption(
         if (!dateStr) return "";
         const children: React.ReactNode[] = [];
         children.push(React.createElement(tooltipComponents.Header, null,
-          `${dateStr} (window end)`));
+          `${fmtDate(dateStr)} (window end)`));
         children.push(React.createElement("div", {
           style: { marginTop: 2, opacity: 0.7 },
         }, `${METRIC_LABELS[metric]} · ${win} window · benchmark ${data.benchmark_code} (stride every ${data.offsets[0]?.interval ?? 20} trading days + trailing window at the latest date)`));
@@ -149,7 +150,7 @@ export function buildCorrOffsetChartOption(
       axisLabel: {
         color: c.textColor,
         fontSize: 9,
-        formatter: (v: string) => v.slice(0, 7),
+        formatter: (v: string) => fmtMonth(v),
       },
       splitLine: { show: false },
     },

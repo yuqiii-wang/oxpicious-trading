@@ -450,8 +450,15 @@ export function saveDeepAgentLimits(
 /** The closed secret_type vocabulary (mirror of
  *  static.label_dim 'secret_type'; the provider column's label domain
  *  is SELECTED BY the type — the audit pattern: llm / jev /
- *  tokenization → ext_llm_provider, web_search → ext_http_source). */
-export const SECRET_TYPES = ["llm", "web_search", "jev", "tokenization"] as const;
+ *  tokenization / ocr → ext_llm_provider, web_search →
+ *  ext_http_source). */
+export const SECRET_TYPES = [
+  "llm",
+  "web_search",
+  "jev",
+  "tokenization",
+  "ocr",
+] as const;
 export type SecretType = (typeof SECRET_TYPES)[number];
 
 /** The closed sub_type vocabulary (mirror of
@@ -459,6 +466,13 @@ export type SecretType = (typeof SECRET_TYPES)[number];
  *  general = the standard tier, pro = the paid-pro tier. */
 export const SECRET_SUB_TYPES = ["general", "pro"] as const;
 export type SecretSubType = (typeof SECRET_SUB_TYPES)[number];
+
+/** The closed modality vocabulary (mirror of
+ *  static.label_dim 'llm_modality') — the modality PROFILE a
+ *  credential's model accepts (inputModality) / produces
+ *  (outputModality). */
+export const LLM_MODALITIES = ["text", "text+vision", "text+image-gen", "audio", "other"] as const;
+export type LlmModality = (typeof LLM_MODALITIES)[number];
 
 /** One credential row. NO key material ever crosses to the client:
  *  `apiKeyHint` is the masked preview (•••••••• + last 4) the server
@@ -481,6 +495,13 @@ export interface SecretEntry {
   /** Chat (llm) rows only: max context window in tokens; null =
    *  unspecified. */
   contextLength: number | null;
+  /** The modality profile the model accepts / produces (text+vision =
+   *  the VLM case — the news image lane's chart comprehension consults
+   *  this). */
+  inputModality: LlmModality;
+  inputModalityCode: number;
+  outputModality: LlmModality;
+  outputModalityCode: number;
   /** The credential's endpoint; null = the consumer's built-in default. */
   apiUrl: string | null;
   apiKeyHint: string | null;
@@ -507,6 +528,8 @@ export interface SecretSaveBody {
   subType: SecretSubType;
   modelName: string | null;
   contextLength: number | null;
+  inputModality: LlmModality;
+  outputModality: LlmModality;
   apiUrl: string | null;
   apiKey?: string | null;
   isActive: boolean;

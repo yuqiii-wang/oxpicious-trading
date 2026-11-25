@@ -14,14 +14,24 @@
 --  provider domain is selected by it: ext_llm_provider when
 --  llm / jev / tokenization, ext_http_source when web_search;
 --  secret_sub_type — the credential service tier, ONE shared domain
---  across all types), maintenance.src_data_backup (backup_mode /
+--  across all types; input_modality / output_modality — the
+--  llm_modality profile a credential's model accepts / produces, ONE
+--  shared domain across both columns), maintenance.src_data_backup (backup_mode /
 --  backup_status), monitor.db_table_audit.write_flag +
 --  monitor.db_table_alert.severity (db_write_flag),
 --  monitor.non_daily_task_state.state (non_daily_state),
 --  monitor.caution_log (caution_source / caution_severity),
 --  monitor.orchestration_task_state.state (orchestration_plan_state —
 --  the arrangement verdict due / not_due of ONE orchestration-tier
---  service, written by the monitor area's OrchestrationArranger).
+--  service, written by the monitor area's OrchestrationArranger) and
+--  .basis (orchestration_plan_basis — WHAT that verdict rests on: the
+--  freq-calendar rule, or the data pre-check's reading of the missing
+--  / downloaded sessions behind the nightly chain's run / skip),
+--  monitor.service_command.command (service_command — the downward
+--  mailbox command, Phase 4 of the 2026-11-21 control unification
+--  plan), monitor.service_heartbeat.progress_phase /
+--  progress_state (progress_phase / progress_state — the child-
+--  reported phase machine + run state at its safe checkpoints).
 -- ============================================================================
 
 INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
@@ -54,6 +64,9 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- E Fund fund-site family (downloads.etf.efunds.*): the efundcf.com.cn
     -- detail pages and the www/api.efunds.com.cn fundlist/assetinfo backends.
     ('ext_http_source', 16, 'efunds',    16),
+    -- SGE 上海黄金交易所 (downloads.macro.gold_silver): the sge.com.cn
+    -- daily spot bars backend.
+    ('ext_http_source', 17, 'sge',       17),
     ('ext_http_source', 99, 'other',     99),
     -- ext_llm_provider: sub_type when resource_type = 1 — the provider
     -- name (RetryingJsonClient's owning BaseLlmProvider.name); 99 fallback
@@ -89,6 +102,11 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     ('secret_type', 1, 'web_search', 1),
     ('secret_type', 2, 'jev', 2),
     ('secret_type', 3, 'tokenization', 3),
+    -- 4 ocr = the resident host's image-transcription credential
+    -- (paddleocr-vl-1.6, POST /v1/ocr) — a model-serving credential
+    -- like jev/tokenization, not a chat-LLM one (2026-11-22; the
+    -- news image lane's Pseudo Imagea records it in the registry)
+    ('secret_type', 4, 'ocr', 4),
     -- secret_sub_type: static.secret_config.sub_type — the credential
     -- SERVICE TIER, one shared domain across both secret_types (0
     -- general = the standard tier — glm flash chat models, the
@@ -170,10 +188,79 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- the ARRANGEMENT verdict of ONE orchestration-tier service, computed
     -- by the monitor area's OrchestrationArranger from the service_config
     -- freq window vs the last successful exit (the same rule as the UI
-    -- run guard's FREQ_PERIOD_MS): due = run it in the arranged pass;
-    -- not_due = the freq window holds (or once + a success ever) — the
-    -- nightly chain skips the step instead of spawning a no-op. Code
-    -- order is semantic: unknown -> due -> not_due.
+    -- run guard's FREQ_PERIOD_MS), or — for a service with a declared
+    -- data pre-check — from what that pre-check found (see
+    -- orchestration_plan_basis): due = run it in the arranged pass;
+    -- not_due = the freq window holds (or once + a success ever) or the
+    -- pre-check found no work — the nightly chain skips the step instead
+    -- of spawning a no-op. Code order is semantic: unknown -> due ->
+    -- not_due.
     ('orchestration_plan_state', 0, 'unknown',  0),
     ('orchestration_plan_state', 1, 'due',      1),
     ('orchestration_plan_state', 2, 'not_due',  2);
+
+INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
+    -- orchestration_plan_basis: monitor.orchestration_task_state.basis —
+    -- the EVIDENCE behind the arrangement verdict. calendar = the
+    -- service declares no data pre-check, so the freq-calendar rule
+    -- decided (every cadence tier, a no-window freq, an unconfigured
+    -- step). The rest are the nightly chain's data pre-check over the
+    -- latest closed sessions: data_present (every expected session is
+    -- in the service's data table — nothing to do),
+    -- db_missing (a session is absent from that table and no source-csv
+    -- stage applies — the service runs to produce it), csv_present
+    -- (absent from the table but its source csv is downloaded — a
+    -- download skips, its build loads), csv_missing (absent and not
+    -- downloaded either — a download runs, a build waits for it),
+    -- check_failed (the pre-check itself errored — the service runs
+    -- fail-open, its own guards decide). csv_present / csv_missing flip
+    -- the verdict by ROLE (fetch / load), so state stays the verdict
+    -- and basis the reading.
+    ('orchestration_plan_basis', 0, 'calendar',     0),
+    ('orchestration_plan_basis', 1, 'data_present', 1),
+    ('orchestration_plan_basis', 2, 'db_missing',   2),
+    ('orchestration_plan_basis', 3, 'csv_present',  3),
+    ('orchestration_plan_basis', 4, 'csv_missing',  4),
+    ('orchestration_plan_basis', 5, 'check_failed', 5);
+
+INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
+    -- service_command: monitor.service_command.command — the downward
+    -- mailbox command a running child claims+consumes from its
+    -- heartbeat thread (control unification plan Phase 4, 2026-11-21;
+    -- SIGTERM stays the backstop). Code order = delivery order in the
+    -- fleet's command surface.
+    ('service_command', 0, 'flush_now', 0),
+    ('service_command', 1, 'pause',     1),
+    ('service_command', 2, 'resume',    2),
+    -- progress_phase: monitor.service_heartbeat.progress_phase — the
+    -- child-REPORTED work phase at its last safe checkpoint (the
+    -- three-phase machine per run: what the DB frontier cannot see
+    -- about in-flight buffers). NULL = never reported.
+    ('progress_phase', 0, 'downloading', 0),
+    ('progress_phase', 1, 'reading',     1),
+    ('progress_phase', 2, 'writing',     2),
+    -- progress_state: monitor.service_heartbeat.progress_state — the
+    -- child-REPORTED run state at its last safe checkpoint; a FRESH
+    -- beat with paused is a DELIBERATE pause, not a wedged runtime
+    -- (the hung detector's legal state). Code order = lifecycle:
+    -- running -> pausing -> paused -> done. NULL = never reported.
+    ('progress_state', 0, 'running', 0),
+    ('progress_state', 1, 'pausing', 1),
+    ('progress_state', 2, 'paused',  2),
+    ('progress_state', 3, 'done',    3);
+
+INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
+    -- llm_modality: static.secret_config.input_modality /
+    -- output_modality — the MODALITY PROFILE a credential's model
+    -- accepts (input) / produces (output), ONE shared domain across
+    -- both columns (classifies the profile, not the provider — the
+    -- secret_sub_type pattern). 0 text = plain text in/out; 1
+    -- text+vision = the model also accepts images (the VLM case —
+    -- glm-5.3-flash); 2 text+image-gen = it also GENERATES images;
+    -- 3 audio = audio in/out; 99 other. DEFAULT 0 — an unspecified
+    -- modality is plain text.
+    ('llm_modality', 0,  'text',           0),
+    ('llm_modality', 1,  'text+vision',    1),
+    ('llm_modality', 2,  'text+image-gen', 2),
+    ('llm_modality', 3,  'audio',          3),
+    ('llm_modality', 99, 'other',          99);

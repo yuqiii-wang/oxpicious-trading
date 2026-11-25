@@ -568,8 +568,10 @@ class SzseIndexCompositionDownload(DownloadJob):
             logger.warning("No index codes to download")
             return {"out_dir": str(out_dir), "downloaded": 0, "skipped_cached": 0, "failed": 0}
 
-        # Quarter-start trigger: on the 1st of a quarter-start month
-        # (Jan/Apr/Jul/Oct, or when forced), bypass the cache and stamp CSVs
+        # Quarter-start trigger: inside the quarter-start refresh window
+        # (Jan/Apr/Jul/Oct up to QUARTER_REFRESH_LAST_DAY — the tier fires one
+        # week after the quarter start; see downloads._common.monthly, or when
+        # forced), bypass the cache and stamp CSVs
         # with today's date so a fresh quarterly snapshot flows to prod even
         # if the API still reports the previous biz day.
         today = date.today()

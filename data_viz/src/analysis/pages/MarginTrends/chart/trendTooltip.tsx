@@ -18,6 +18,7 @@ import React from "react";
 import type { MarginAnalytics } from "./types";
 import { MEMBERS_SUFFIX, RET_SUFFIX, VOL_SUFFIX, fmtShare } from "./types";
 import { fmtNum } from "@/lib/series";
+import { fmtDate } from "@/shared/datetime";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import { UP_COLOR, DOWN_COLOR, axisColors } from "@/theme/chart-palette";
 import type { ThemeMode } from "@/store/filters";
@@ -79,7 +80,7 @@ export function buildTrendTooltip(args: TrendTooltipArgs) {
         .slice(0, 8);
 
       const children: React.ReactNode[] = [];
-      children.push(React.createElement(tooltipComponents.Header, null, dateStr));
+      children.push(React.createElement(tooltipComponents.Header, null, fmtDate(dateStr)));
       for (const p of marginRows) {
         const v = p.value as number;
         const code = labelToCode.get(p.seriesName ?? "");

@@ -120,6 +120,19 @@ DB — nullable exceptions noted):
   kw_language  zh=0 en=1 (static.keyword_maps.language — the keyword's
                language; the seed files default to zh, the English rows
                in statics/08_seed_english.sql carry en explicitly)
+  news_type    news_article=0 financial_report=1 social_media=2 ai_digest=3
+               other=99 (text.news_providers.news_type — the origin's
+               media type; derived from source by the news_audit registry
+               sync, 2026-11-21)
+  fin_dict_polarity negative=0 positive=1 both=2
+               (static.fin_sentiment_dict.polarity — the CFSD 中文金融
+               情感词典 word's polarity; 2 both = the 21 words the source
+               lists in both sheets, seeded ONLY in the both slice,
+               2026-11-21)
+  news_scope_kind market_all=0 market_recap=1 industry=2
+               (text.news_text_daily.scope_kind — which scope a daily
+               news-text metric row speaks for; industry rows are
+               EVENT-DAY rows only, 2026-11-22)
 
 PENDING domains (vocabulary registered in label_dim and the mirrors, but
 the target columns are STILL TEXT and the writers still emit strings —
@@ -202,11 +215,13 @@ SIGNAL_AMPLIFIER_CODE: dict[str, int] = {
 # bound amplifiers[] inside signal_amplification_rules.rule_params). The
 # specific pattern under each type is the sub_type column: the
 # SIGNAL_AMPLIFIER_CODE vocabulary when ohlcv, the
-# SIGNAL_AMPLIFIER_MARGIN_CODE vocabulary when margin (the
+# SIGNAL_AMPLIFIER_MARGIN_CODE vocabulary when margin, the
+# SIGNAL_AMPLIFIER_NEWS_CODE vocabulary when news (the
 # external_resource_audit resource_type/sub_type precedent).
 SIGNAL_AMPLIFIER_TYPE_CODE: dict[str, int] = {
     "ohlcv": 0,   # the K-line day anatomy amplifiers (gap / wick / volume shapes)
     "margin": 1,  # the 融资融券 margin-balance level amplifiers (rz_balance vs its own trailing quantile bars)
+    "news": 2,    # the daily news-text MARKET-state amplifiers (the 2026-11-22 migrated news_wash rules)
 }
 # the MARGIN sub-type vocabulary (the parent 'margin' branch): the
 # 融资余额 (rz_balance) LEVEL vs its own trailing-window quantile bars —
@@ -215,6 +230,31 @@ SIGNAL_AMPLIFIER_TYPE_CODE: dict[str, int] = {
 SIGNAL_AMPLIFIER_MARGIN_CODE: dict[str, int] = {
     "margin_washout": 0,  # 融资余额低位: rz_balance <= its trailing-252d q10 bar — BUY reversion amplification
     "margin_crowding": 1, # 融资余额高位: rz_balance >= its trailing-252d q90 bar — SELL exit amplification
+}
+# the NEWS sub-type vocabulary (the parent 'news' branch, 2026-11-22 —
+# migrated from the deleted news_wash detection family): the daily
+# news-text MARKET state (text.news_text_daily, scope market_all)
+# AMPLIFIES the existing families' signals — the deep-negative states
+# on the code's own drop leg mark the capitulation washout (BUY
+# reversion), the weekly aggregates persist ~a quarter (the
+# Heston-Sinha horizon finding), the euphoric states on the drop leg
+# are the "good news can't lift it" divergence (BUY, the evidence
+# judges), and the weekly tone recovery is the one SELL exit. The
+# daily states ride the drop leg; the weekly ones fire un-gated.
+SIGNAL_AMPLIFIER_NEWS_CODE: dict[str, int] = {
+    "sent_shock": 0,          # 情绪冲击: sent_z <= -2.0 on the drop leg — BUY reversion
+    "tone_panic": 1,          # 关键词情绪恐慌: lex_tone_z <= -1.5 on the drop leg — BUY reversion
+    "neg_wave": 2,            # 负面报道浪潮: flow_neg >= 5 on the drop leg — BUY reversion
+    "quiet_cov": 3,           # 报道异常冷清: flow_af <= -1.0 on the drop leg — BUY reversion (marginal)
+    "sent_euphoria": 4,       # 情绪亢奋背离: sent_z >= +1.5 on the drop leg — the divergence, BUY
+    "tone_euphoria": 5,       # 关键词亢奋背离: lex_tone_z >= +1.5 on the drop leg — the divergence, BUY
+    "week_neg_wave": 6,       # 周度负面浪潮: sum(flow_neg,5) >= 10 — BUY reversion
+    "week_tone": 7,           # 周度情绪恐慌: mean(lex_tone_z,5) <= -1.0 — BUY reversion (the strongest)
+    "week_shock": 8,          # 周度情绪冲击: mean(sent_z,5) <= -1.0 — BUY reversion
+    "shock_wave": 9,          # 情绪冲击浪潮: sent_z <= -1.5 & flow_neg >= 3 on the drop leg — BUY
+    "wave_disagree": 10,      # 情绪冲击分歧: the shock + wave + disp_z >= 1.0 — BUY (interaction)
+    "tone_disagree": 11,      # 负面声浪分歧: lex_tone_z <= -1.5 & disp_z >= 1.0 — BUY (interaction, strongest)
+    "week_tone_recovery": 12, # 周度情绪修复: wt crosses up through 0 after a deep episode — SELL exit
 }
 # the code's own trend classification in force for a signal_rules cell
 # (the PK member that makes rule_params per-PK — the same sub signal
@@ -279,6 +319,10 @@ SIGNAL_TYPE_CODE: dict[str, int] = {
     # timing). Data-driven universe (the codes with vol rows — index
     # only while the panel's run scope is the study indices).
     "volatility": 12,
+    # news_wash (13) RETIRED 2026-11-22: the family was migrated into
+    # the amplifier tier (signal_amplifier_type 'news' — the news
+    # states AMPLIFY the existing families' signals, never create
+    # their own) and its rows/labels deleted; code 13 stays reserved.
 }
 # the family config grid (analysis_signals.signal_thresholds /
 # history_signals / signal_curves — converted 2026-10-11).
@@ -836,6 +880,10 @@ SIGNAL_SUB_TYPE_THRESHOLD: dict[str, int] = {
     "ewma_10pct": 6215,
     "ewma_15pct": 6216,
     "ewma_20pct": 6217,
+    # the NEWS_WASH block (6220-6235) RETIRED 2026-11-22: the family
+    # was migrated into the amplifier tier (signal_amplifier_type
+    # 'news' + the signal_amplifier_news vocabulary) and its rows and
+    # labels deleted; the block stays reserved.
 }
 SIGNAL_SUB_TYPE_CODE: dict[str, int] = {
     **SIGNAL_SUB_TYPE_SERIES, **SIGNAL_SUB_TYPE_THRESHOLD,
@@ -912,6 +960,9 @@ SKEW_TYPE_CODE: dict[str, int] = {
     "greek_vega": 4,
 }
 CONTRACT_TYPE_CODE: dict[str, int] = {"index": 0, "bond": 1}
+# stats.macro_identity.metal_type — the macro daily family's metal class
+# (SGE Au99.99 / COMEX GC → gold; SGE Ag99.99 / COMEX SI → silver)
+MACRO_METAL_CODE: dict[str, int] = {"gold": 0, "silver": 1}
 # 3 = industry: composite industry entity (code = industry_id, e.g. BANKS)
 # — the stats.industry_basic_stats pool-'all' slice as an analysis universe
 # (mov_ave_spread + pe_and_dividends read it via stats.industry_identity)
@@ -937,6 +988,9 @@ EXT_HTTP_SOURCE_CODE: dict[str, int] = {
     # E Fund fund-site family (downloads.etf.efunds.*): efundcf.com.cn
     # detail pages and the www/api.efunds.com.cn fundlist/assetinfo backends.
     "efunds": 16,
+    # SGE 上海黄金交易所 (downloads.macro.gold_silver): the sge.com.cn
+    # daily spot bars backend.
+    "sge": 17,
     "other": 99,
 }
 EXT_LLM_PROVIDER_CODE: dict[str, int] = {"zhipu": 0, "dummy": 1,
@@ -950,12 +1004,22 @@ EXT_LLM_PROVIDER_CODE: dict[str, int] = {"zhipu": 0, "dummy": 1,
 # /v1/tokenization/segment) — both retyped out of llm 2026-11-11 (the
 # deep agent's chat config reads ONLY llm rows).
 SECRET_TYPE_CODE: dict[str, int] = {"llm": 0, "web_search": 1,
-                                    "jev": 2, "tokenization": 3}
+                                    "jev": 2, "tokenization": 3,
+                                    "ocr": 4}
 # static.secret_config.sub_type — the credential SERVICE TIER, one
 # shared domain across both secret_types (general = the standard tier
 # — glm flash chat models, the offline dummy, generic content search;
 # pro = the paid-pro tier — the zhipu search_pro web-search engine).
 SECRET_SUB_TYPE_CODE: dict[str, int] = {"general": 0, "pro": 1}
+# static.secret_config.input_modality / output_modality — the MODALITY
+# PROFILE a credential's model accepts / produces, ONE shared domain
+# across both columns (text = plain text in/out; text+vision = it also
+# accepts images — the VLM case, glm-5.3-flash; text+image-gen = it
+# also GENERATES images; audio = audio in/out; other = 99). DEFAULT 0 —
+# an unspecified modality is plain text.
+LLM_MODALITY_CODE: dict[str, int] = {"text": 0, "text+vision": 1,
+                                     "text+image-gen": 2, "audio": 3,
+                                     "other": 99}
 # DB health sampler (monitor.db_health) — replication_state is the WAL
 # shipping state as seen from the SAMPLED instance (primary: the standby's
 # pg_stat_replication.state; replica: pg_stat_wal_receiver.status);
@@ -988,12 +1052,29 @@ NON_DAILY_STATE_CODE: dict[str, int] = {
 # — the run / don't-run decision of ONE orchestration-tier service,
 # computed by the monitor area's OrchestrationArranger from the
 # service_config freq window vs the last successful exit (the same rule
-# as the UI run guard's freq auto-skip): 'due' = run it in the arranged
-# pass; 'not_due' = the freq window holds (or once + a success ever) —
-# the nightly chain skips the step instead of spawning a no-op. Code
-# order is semantic: unknown -> due -> not_due.
+# as the UI run guard's freq auto-skip), or — for a service with a
+# declared data pre-check — from what that pre-check found: 'due' = run
+# it in the arranged pass; 'not_due' = the freq window holds (or once +
+# a success ever) or the pre-check found no work — the nightly chain
+# skips the step instead of spawning a no-op. Code order is semantic:
+# unknown -> due -> not_due.
 ORCHESTRATION_PLAN_STATE_CODE: dict[str, int] = {
     "unknown": 0, "due": 1, "not_due": 2,
+}
+# The EVIDENCE behind the arrangement verdict
+# (monitor.orchestration_task_state.basis): 'calendar' = the service
+# declares no data pre-check, so the freq-calendar rule decided; the
+# rest are the nightly chain's data pre-check over the latest closed
+# sessions — 'data_present' (every expected session is in the
+# service's data table), 'db_missing' (a session is absent
+# and no source-csv stage applies — the service runs to produce it),
+# 'csv_present' (absent from the table but its source csv is
+# downloaded — a download skips, its build loads), 'csv_missing'
+# (absent and not downloaded either — a download runs, a build waits),
+# 'check_failed' (the pre-check errored — the service runs fail-open).
+ORCHESTRATION_PLAN_BASIS_CODE: dict[str, int] = {
+    "calendar": 0, "data_present": 1, "db_missing": 2,
+    "csv_present": 3, "csv_missing": 4, "check_failed": 5,
 }
 # Cross-service caution trail (monitor.caution_log — source /
 # severity_level). Source: a running service hitting an error, an AI run
@@ -1004,6 +1085,23 @@ ORCHESTRATION_PLAN_STATE_CODE: dict[str, int] = {
 CAUTION_SOURCE_CODE: dict[str, int] = {"service": 0, "ai": 1, "manual": 2}
 CAUTION_SEVERITY_CODE: dict[str, int] = {
     "info": 0, "warning": 1, "error": 2, "critical": 3,
+}
+# The downward command mailbox (monitor.service_command.command — Phase
+# 4 of the 2026-11-21 control unification plan): the cooperative
+# commands a running child claims+consumes from its heartbeat thread;
+# SIGTERM stays the backstop.
+SERVICE_COMMAND_CODE: dict[str, int] = {
+    "flush_now": 0, "pause": 1, "resume": 2,
+}
+# The child-REPORTED progress (monitor.service_heartbeat.progress_phase
+# / progress_state): the three-phase machine per run and the run state
+# at its safe checkpoints; a FRESH beat with 'paused' is a DELIBERATE
+# pause, not a wedged runtime. NULL columns = never reported.
+PROGRESS_PHASE_CODE: dict[str, int] = {
+    "downloading": 0, "reading": 1, "writing": 2,
+}
+PROGRESS_STATE_CODE: dict[str, int] = {
+    "running": 0, "pausing": 1, "paused": 2, "done": 3,
 }
 # the generic analysis intermediate-result cache
 # (analysis_signals.analysis_cache.kind) — which analysis owns the row's
@@ -1139,6 +1237,46 @@ NEWS_CATEGORY_CODE: dict[str, int] = {
     "discussion": 0, "analysis": 1, "opinion": 2,
     "statement": 3, "other": 99,
 }
+# text.news_providers.news_type — the origin's MEDIA type (2026-11-21):
+# what kind of outlet the origin is, read against the audit metrics (a
+# fake share concentrated in social_media origins is the expected shape;
+# the same share in financial_report is the alarm). Derived from
+# text.news.source by the registry sync's classify
+# (analysis/news_audit/config.py — curated platform list + substring
+# guards; everything unmapped defaults to news_article, the scraped-
+# portal norm). Ninth text.* vocabulary
+NEWS_TYPE_CODE: dict[str, int] = {
+    "news_article": 0,      # news portals + official news (gov, ndrc, web)
+    "financial_report": 1,  # pboc_lpr / pboc_omo / pboc_oma releases
+    "social_media": 2,      # zhihu / xueqiu / weibo / guba / communities
+    "ai_digest": 3,         # ai_daily — the repo's own AI digest
+    "other": 99,
+}
+# static.fin_sentiment_dict.polarity — the CFSD 中文金融情感词典
+# (姜富伟/孟令超/唐国豪) word's polarity (2026-11-21): 8,793 words built by
+# translating the Loughran-McDonald dictionary into Chinese and expanding
+# with word2vec over Chinese financial corpora; A-share validated
+# (媒体文本情绪与股票回报预测, 经济学(季刊) 2021(4)). 2 both = the 21 words
+# the source lists in BOTH sheets (context-dependent sign — 冷静/大胆/揭示);
+# the PK(word) table stores one row per word, so they carry their own code.
+# Source of record: database/sql/static/fin_sentiment_dict/ (01..03 seeds).
+# Tenth text/llm vocabulary
+FIN_DICT_POLARITY_CODE: dict[str, int] = {
+    "negative": 0, "positive": 1, "both": 2,
+}
+# text.news_text_daily.scope_kind — which scope a daily news-text metric
+# row speaks for (2026-11-22). Code order = market breadth: 0 market_all =
+# every digested article that day (vs the SSE Composite), 1 market_recap =
+# the BROAD_SSE-tagged recap subset (the CFSD source-class split), 2
+# industry = EVENT-DAY rows per industry_id (a row only on article-days —
+# the daily-index grain is infeasible at ~1-2 articles/industry-day), 3
+# sector = EVENT-DAY rows per sector_id (the industry rows rolled UP the
+# taxonomy to the L1 parent sector — text.news.sector_id; the same
+# event-day framing, denser per day because a sector pools its member
+# industries' coverage). Eleventh text/llm vocabulary
+NEWS_SCOPE_KIND_CODE: dict[str, int] = {
+    "market_all": 0, "market_recap": 1, "industry": 2, "sector": 3,
+}
 
 # static.keyword_maps (database/sql/static/keyword_maps/) — the seeded
 # keyword → category map for news-text auditing (2026-11-01). Industry rows
@@ -1209,6 +1347,7 @@ LABEL_MAPS: dict[str, dict[str, int]] = {
     "signal_amplifier": SIGNAL_AMPLIFIER_CODE,
     "signal_amplifier_type": SIGNAL_AMPLIFIER_TYPE_CODE,
     "signal_amplifier_margin": SIGNAL_AMPLIFIER_MARGIN_CODE,
+    "signal_amplifier_news": SIGNAL_AMPLIFIER_NEWS_CODE,
     "trend": TREND_CODE,
     "signal_type": SIGNAL_TYPE_CODE,
     "signal_sub_type": SIGNAL_SUB_TYPE_CODE,
@@ -1226,6 +1365,7 @@ LABEL_MAPS: dict[str, dict[str, int]] = {
     "option_type": OPTION_TYPE_CODE,
     "skew_type": SKEW_TYPE_CODE,
     "contract_type": CONTRACT_TYPE_CODE,
+    "macro_metal": MACRO_METAL_CODE,
     "sec_type": SEC_TYPE_CODE,
     "attribution_type": ATTRIBUTION_TYPE_CODE,
     "trade_side": TRADE_SIDE_CODE,
@@ -1235,6 +1375,7 @@ LABEL_MAPS: dict[str, dict[str, int]] = {
     "ext_llm_provider": EXT_LLM_PROVIDER_CODE,
     "secret_type": SECRET_TYPE_CODE,
     "secret_sub_type": SECRET_SUB_TYPE_CODE,
+    "llm_modality": LLM_MODALITY_CODE,
     "db_instance": DB_INSTANCE_CODE,
     "db_replication_state": DB_REPLICATION_STATE_CODE,
     "db_write_flag": DB_WRITE_FLAG_CODE,
@@ -1242,8 +1383,12 @@ LABEL_MAPS: dict[str, dict[str, int]] = {
     "backup_status": BACKUP_STATUS_CODE,
     "non_daily_state": NON_DAILY_STATE_CODE,
     "orchestration_plan_state": ORCHESTRATION_PLAN_STATE_CODE,
+    "orchestration_plan_basis": ORCHESTRATION_PLAN_BASIS_CODE,
     "caution_source": CAUTION_SOURCE_CODE,
     "caution_severity": CAUTION_SEVERITY_CODE,
+    "service_command": SERVICE_COMMAND_CODE,
+    "progress_phase": PROGRESS_PHASE_CODE,
+    "progress_state": PROGRESS_STATE_CODE,
     "analysis_cache_kind": ANALYSIS_CACHE_KIND_CODE,
     "portfolio_type": PORTFOLIO_TYPE_CODE,
     "portfolio_sub_type": PORTFOLIO_SUB_TYPE_CODE,
@@ -1257,6 +1402,9 @@ LABEL_MAPS: dict[str, dict[str, int]] = {
     "agent_child_kind": AGENT_CHILD_KIND_CODE,
     "search_table": SEARCH_TABLE_CODE,
     "news_category": NEWS_CATEGORY_CODE,
+    "news_type": NEWS_TYPE_CODE,
+    "fin_dict_polarity": FIN_DICT_POLARITY_CODE,
+    "news_scope_kind": NEWS_SCOPE_KIND_CODE,
     "kw_category_type": KW_CATEGORY_TYPE_CODE,
     "kw_market": KW_MARKET_CODE,
     "kw_pos": KW_POS_CODE,
@@ -1296,6 +1444,7 @@ EXT_HTTP_SOURCE_LABEL: dict[int, str] = CODE_MAPS["ext_http_source"]
 EXT_LLM_PROVIDER_LABEL: dict[int, str] = CODE_MAPS["ext_llm_provider"]
 SECRET_TYPE_LABEL: dict[int, str] = CODE_MAPS["secret_type"]
 SECRET_SUB_TYPE_LABEL: dict[int, str] = CODE_MAPS["secret_sub_type"]
+LLM_MODALITY_LABEL: dict[int, str] = CODE_MAPS["llm_modality"]
 DB_INSTANCE_LABEL: dict[int, str] = CODE_MAPS["db_instance"]
 DB_REPLICATION_STATE_LABEL: dict[int, str] = CODE_MAPS["db_replication_state"]
 BACKUP_MODE_LABEL: dict[int, str] = CODE_MAPS["backup_mode"]
@@ -1312,6 +1461,7 @@ AGENT_CONTEXT_KIND_LABEL: dict[int, str] = CODE_MAPS["agent_context_kind"]
 LANGGRAPH_TYPE_LABEL: dict[int, str] = CODE_MAPS["langgraph_type"]
 SEARCH_TABLE_LABEL: dict[int, str] = CODE_MAPS["search_table"]
 NEWS_CATEGORY_LABEL: dict[int, str] = CODE_MAPS["news_category"]
+NEWS_TYPE_LABEL: dict[int, str] = CODE_MAPS["news_type"]
 
 # Display order for responses that list a domain's vocabulary —
 # pool_size deliberately NOT in code order here: API/UI lists keep the
@@ -1326,6 +1476,7 @@ LABEL_ORDER: dict[str, tuple[str, ...]] = {
     "signal_amplifier": tuple(SIGNAL_AMPLIFIER_CODE),
     "signal_amplifier_type": tuple(SIGNAL_AMPLIFIER_TYPE_CODE),
     "signal_amplifier_margin": tuple(SIGNAL_AMPLIFIER_MARGIN_CODE),
+    "signal_amplifier_news": tuple(SIGNAL_AMPLIFIER_NEWS_CODE),
     "trend": tuple(TREND_CODE),
     "signal_type": tuple(SIGNAL_TYPE_CODE),
     "signal_sub_type": tuple(SIGNAL_SUB_TYPE_CODE),
@@ -1346,6 +1497,7 @@ LABEL_ORDER: dict[str, tuple[str, ...]] = {
     "skew_type": ("oi_moneyness", "iv_smile", "greek_delta",
                   "greek_gamma", "greek_vega"),
     "contract_type": ("index", "bond"),
+    "macro_metal": ("gold", "silver"),
     "sec_type": ("etf", "index", "stock"),
     "attribution_type": ("equal", "trading_amt"),
     "trade_side": ("BUY", "SELL"),
@@ -1355,6 +1507,7 @@ LABEL_ORDER: dict[str, tuple[str, ...]] = {
     "ext_llm_provider": tuple(EXT_LLM_PROVIDER_CODE),
     "secret_type": tuple(SECRET_TYPE_CODE),
     "secret_sub_type": tuple(SECRET_SUB_TYPE_CODE),
+    "llm_modality": tuple(LLM_MODALITY_CODE),
     "db_instance": tuple(DB_INSTANCE_CODE),
     "db_replication_state": tuple(DB_REPLICATION_STATE_CODE),
     "db_write_flag": tuple(DB_WRITE_FLAG_CODE),
@@ -1362,8 +1515,12 @@ LABEL_ORDER: dict[str, tuple[str, ...]] = {
     "backup_status": tuple(BACKUP_STATUS_CODE),
     "non_daily_state": tuple(NON_DAILY_STATE_CODE),
     "orchestration_plan_state": tuple(ORCHESTRATION_PLAN_STATE_CODE),
+    "orchestration_plan_basis": tuple(ORCHESTRATION_PLAN_BASIS_CODE),
     "caution_source": tuple(CAUTION_SOURCE_CODE),
     "caution_severity": tuple(CAUTION_SEVERITY_CODE),
+    "service_command": tuple(SERVICE_COMMAND_CODE),
+    "progress_phase": tuple(PROGRESS_PHASE_CODE),
+    "progress_state": tuple(PROGRESS_STATE_CODE),
     "analysis_cache_kind": tuple(ANALYSIS_CACHE_KIND_CODE),
     "portfolio_type": tuple(PORTFOLIO_TYPE_CODE),
     "portfolio_sub_type": tuple(PORTFOLIO_SUB_TYPE_CODE),
@@ -1377,6 +1534,9 @@ LABEL_ORDER: dict[str, tuple[str, ...]] = {
     "agent_child_kind": tuple(AGENT_CHILD_KIND_CODE),
     "search_table": tuple(SEARCH_TABLE_CODE),
     "news_category": tuple(NEWS_CATEGORY_CODE),
+    "news_type": tuple(NEWS_TYPE_CODE),
+    "fin_dict_polarity": tuple(FIN_DICT_POLARITY_CODE),
+    "news_scope_kind": tuple(NEWS_SCOPE_KIND_CODE),
     "kw_category_type": tuple(KW_CATEGORY_TYPE_CODE),
     "kw_market": tuple(KW_MARKET_CODE),
     "kw_pos": tuple(KW_POS_CODE),

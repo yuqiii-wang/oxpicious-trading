@@ -20,6 +20,7 @@ import {
   Search as SearchIcon,
 } from "@mui/icons-material";
 import DateEventStrip from "@/shared/components/date-events/DateEventStrip";
+import { fmtDate } from "@/shared/datetime";
 import PostFeed from "@/shared/components/post-feed/PostFeed";
 import AiQaCard from "@/dataviz/features/ai/AiQaCard";
 import NewsPostCard from "@/shared/components/news/NewsPostCard";
@@ -177,7 +178,7 @@ export default function SentimentFeedSection({
         loading={activeItemsLoading || hdLoading}
         error={activeItemsError}
         errorLabel={feed === "ai" ? "Failed to load Q&A" : "Failed to load news"}
-        scopeLabel={`${scopeLabel}${dateWindow ? ` · ${dateWindow.from} ~ ${dateWindow.to}` : ""}${search ? ` · “${search}”` : ""}`}
+        scopeLabel={`${scopeLabel}${dateWindow ? ` · ${fmtDate(dateWindow.from)} ~ ${fmtDate(dateWindow.to)}` : ""}${search ? ` · “${search}”` : ""}`}
         countNoun={feed === "ai" ? "条问答" : "条新闻"}
         empty={!activeItemsLoading && (activeItems?.items ?? []).length === 0}
         emptyText={

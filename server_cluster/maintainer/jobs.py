@@ -17,6 +17,7 @@ import shutil
 from abc import ABC, abstractmethod
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path, PureWindowsPath
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field
 
@@ -24,6 +25,7 @@ from _common.caution_log import record_service_error
 from _common.db_commons import get_db_connection, get_db_connection_async
 from _common.labels import (BACKUP_MODE_LABEL, BACKUP_STATUS_CODE,
                             BACKUP_STATUS_LABEL)
+from _common.sql_views import render_sql_view
 from _common.sql_writes import render_sql_write
 from database import db_table_audit_archive
 from server_cluster.maintainer.backup import (BackupAudit,
@@ -36,6 +38,8 @@ logger = logging.getLogger(__name__)
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 LOG_ROOT = _REPO_ROOT / "logs"
 TEMPS_ROOT = _REPO_ROOT / "temps"
+
+CHINA_TZ = ZoneInfo("Asia/Shanghai")
 
 DEFAULT_RETENTION_DAYS = 30
 # Caution-log retention: resolved rows (monitor.caution_log) older than
@@ -100,6 +104,87 @@ class PassAudit:
             await conn.execute(write.sql, *write.params)
         finally:
             await conn.close()
+
+
+class MissedFireGuard:
+    """The missed-fire tripwire a scheduled job runs at pass start.
+
+    A fire that found no live server (the 2026-11-22 Sunday 07:00 pass:
+    the fleet was down around the fire, nothing ran, nothing caught it
+    up) leaves NO trace — the scheduler never catches up a missed fire.
+    This guard closes that gap the next time the job DOES run: it reads
+    the previous pass row for the job's audit service from
+    ``monitor.service_audit`` and cautions when that pass predates the
+    job's PREVIOUS scheduled fire — the most recent fire is the pass now
+    running, so the one before it having no pass after it means it was
+    missed. Every fire writes an audit row (a trading-day skip
+    included), so gated jobs stay honest; a manual on-demand run also
+    writes one, so a manual run between fires reads as service — this
+    is a tripwire, not a heartbeat.
+    """
+
+    def __init__(self, service: str, fire_at: str, job: str) -> None:
+        self._service = service
+        self._fire_at = fire_at
+        self._job = job
+
+    def check(self) -> None:
+        """One best-effort check — a failed read or caution write is
+        logged, never fatal to the pass it guards."""
+        try:
+            asyncio.run(self._check_async())
+        except Exception:  # noqa: BLE001 — the guard must never take
+            logger.warning(  # the pass down
+                "missed-fire guard failed for %s", self._service,
+                exc_info=True)
+
+    async def _check_async(self) -> None:
+        last = await self._last_pass_started_at()
+        if last is None:
+            return  # first pass ever — nothing to compare against
+        previous_fire, most_recent_fire = self._previous_fires()
+        if last >= previous_fire:
+            return
+        prev_local = previous_fire.astimezone(CHINA_TZ).isoformat(
+            timespec="minutes")
+        last_local = last.astimezone(CHINA_TZ).isoformat(timespec="minutes")
+        record_service_error(
+            f"maintainer missed fire(s): {self._job} — last pass "
+            f"{last_local} predates the previous {self._fire_at} fire "
+            f"({prev_local}); that fire found no live server",
+            dedupe_key=f"missed-fire:{self._service}",
+            detail={
+                "job": self._job,
+                "service": self._service,
+                "fire_at": self._fire_at,
+                "last_pass_started_at": last.isoformat(),
+                "previous_fire": previous_fire.isoformat(),
+                "most_recent_fire": most_recent_fire.isoformat(),
+            },
+            service="server_cluster.maintainer", severity="warning")
+
+    async def _last_pass_started_at(self) -> datetime | None:
+        view = render_sql_view(
+            "server_cluster/maintainer/jobs/last_pass_started_at",
+            service=self._service)
+        conn = await get_db_connection_async()
+        try:
+            rows = await conn.fetch(view.sql, *view.params)
+        finally:
+            await conn.close()
+        return rows[0][0] if rows else None
+
+    def _previous_fires(self) -> tuple[datetime, datetime]:
+        """(previous, most-recent) scheduled fire, China local — the
+        comparison base and the detail's reference point. The most
+        recent fire is the one this (now running) pass services."""
+        hh, mm = (int(part) for part in self._fire_at.split(":"))
+        now = datetime.now(CHINA_TZ)
+        today_fire = now.replace(hour=hh, minute=mm, second=0,
+                                 microsecond=0)
+        if now >= today_fire:
+            return today_fire - timedelta(days=1), today_fire
+        return today_fire - timedelta(days=2), today_fire - timedelta(days=1)
 
 
 class JobResult(BaseModel):

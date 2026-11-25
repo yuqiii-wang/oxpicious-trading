@@ -35,6 +35,7 @@ import {
 import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
 import { buildItemGroupColors } from "@/theme/group-colors";
 import { fmtNum } from "@/lib/series";
+import { fmtDate, fmtMonth } from "@/shared/datetime";
 import React from "react";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 
@@ -472,7 +473,7 @@ export function buildIndustryEtfPriceOption(
         const dt = dates[idx] ?? "—";
         const children: React.ReactNode[] = [];
         children.push(
-          React.createElement(tooltipComponents.Header, null, dt)
+          React.createElement(tooltipComponents.Header, null, fmtDate(dt))
         );
         for (let ii = 0; ii < industryOrder.length; ii++) {
           const indLabel = industryLabelById.get(industryOrder[ii]) ?? industryOrder[ii];
@@ -563,7 +564,7 @@ export function buildIndustryEtfPriceOption(
         // of each displayed month (full date still shown in the tooltip).
         interval: (_idx: number, value: string) =>
           displayMonths.has(value.slice(0, 7)) && firstDateOfMonth.has(value),
-        formatter: (v: string) => v.slice(0, 7), // YYYY-MM
+        formatter: (v: string) => fmtMonth(v), // YYYY-Mmm
       },
       splitLine: { show: false },
     },

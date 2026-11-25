@@ -117,39 +117,34 @@ RISK_GRADE_ELEVATED_BOUND = 6.0  # < 6.0 → ELEVATED; else HIGH
 
 
 # ---------------------------------------------------------------------------
-#  ORACLE mode — structural LITTLE grade
-# ---------------------------------------------------------------------------
-# The oracle mode's strategy_name carries the 'oracle' prefix ('oracle',
-# 'oracle_ft10' — the _ft{N} suffix is the fault-tolerance variant; portfolio
-# names always start with 'portfolio:', so the prefix match is unambiguous).
-# The oracle replays the PERFECT-FORESIGHT upper bound (hindsight local-min/
-# max pivots from analysis.oracle_signals) — by construction it carries NO
-# forecasting risk, so it is structurally the risk floor and grades LITTLE
-# regardless of the computed score (2026-11-20, user-directed "the oracle
-# should have the lowest risk"). The score + factor rows STAY computed: the
-# oracle's residual losses (graded partial exits, the flat-book sell skips
-# before the code's first buy, the full-size frontier replay near the data
-# end) are replay artifacts, and the factor rows remain the per-component
-# diagnostic of where that residual comes from (the 2026-11-20 attribution:
-# the MODERATE label was entirely the losing-month streak's +1.0 — two
-# adjacent replay-artifact losing months crossing the LOW bound at 1.0).
-ORACLE_STRATEGY_PREFIX = "oracle"
-
-
-# ---------------------------------------------------------------------------
 #  LITTLE risk grade — criteria-based, below LOW
 # ---------------------------------------------------------------------------
-# LITTLE is a STRUCTURAL grade for the safest strategies: almost no losing
-# trades AND stable gains (low gain coefficient of variation) AND net
-# profitable. Checked BEFORE score-based grades — if the criteria are met,
-# the strategy is LITTLE regardless of score (the criteria guarantee safety).
+# LITTLE is a STRUCTURAL grade for the safest strategies: almost no LOSSES
+# (by magnitude) AND no material losing period AND net profitable. Checked
+# BEFORE score-based grades — if the criteria are met, the strategy is
+# LITTLE regardless of score (the criteria guarantee safety).
+#
+# MAGNITUDE-NATIVE (2026-11-21, user-directed "the calculated result on
+# oracle should be little"): the former per-trade gates (loss COUNT ratio
+# < 10%, gain CV < 1.5) measured trade COUNTS/SIZES — the flat ±100 replay
+# era's assumptions. A grade-sized replay (the oracle's graded partial
+# exits: many dust losing sells, gain sizes varying with the grade) fails
+# both gates while carrying 5-6% loss magnitude — the calibration study
+# (temp_scripts/risk_little_calib_study.py) showed the honest measures are
+# the score's own loss-fraction basis:
 #
 # Criteria (ALL must hold):
-#   1. loss_ratio = n_losses / n_sells < LITTLE_LOSS_RATIO  (< 10% losing)
-#   2. gain_cv = gain_std / gain_mean < LITTLE_GAIN_CV_MAX  (gains stable)
+#   1. loss_mag_share = sum|losing realized_pnl| / sum|realized_pnl|
+#      < LITTLE_LOSS_MAG_SHARE  (< 10% of the P&L volume is losses)
+#   2. worst_loss_month_share = |worst losing month's summed realized_pnl|
+#      / sum|realized_pnl| < LITTLE_MAX_LOSS_MONTH_SHARE
+#      (no single month materially dents the P&L)
 #   3. total_realized_pnl > 0  (net profitable)
-LITTLE_LOSS_RATIO = 0.10       # max fraction of losing trades for LITTLE
-LITTLE_GAIN_CV_MAX = 1.5       # max gain coefficient of variation (std/mean)
+# Measured (2026-11-21 calibration): oracle runs 5.2-6.2% loss share /
+# 1.5-2.9% worst month — comfortably inside; regular-run drift 4 → 7 of
+# 88 (the new qualifiers all carry dust losses + net profit).
+LITTLE_LOSS_MAG_SHARE = 0.10        # max loss share of total |P&L|
+LITTLE_MAX_LOSS_MONTH_SHARE = 0.05  # max worst losing month share
 
 
 # ---------------------------------------------------------------------------

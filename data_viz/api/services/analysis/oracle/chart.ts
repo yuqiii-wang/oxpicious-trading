@@ -15,10 +15,11 @@
  * bounce is not a high — and no close 5%+ above within the next 20
  * rows — a higher exit is imminent), then the favorable-move
  * grading: each surviving pivot graded 0-100 by its favorable move
- * on EITHER side — the weighted sum 0.3 x the backward-60-row move
+ * on EITHER side — the weighted sum 0.3 x the backward-20-row move
  * into the pivot + 0.7 x the forward-20-row move
- * after it (user-directed 2026-11-20 "let future look only be 20d
- * not 60d"; each leg ramped 2% no-action floor / 10% full — a zero
+ * after it (all windows 20 both directions — user-directed 2026-11-20
+ * "let future look only be 20d not 60d" + 2026-11-21 "also only look
+ * back 20d not 60d"; each leg ramped 2% no-action floor / 10% full — a zero
  * weighted grade means the pivot is not in the table at all), from
  * analysis.oracle_signals (built by analysis.oracle_signals;
  * DECOUPLED from the analysis_signals rule tier — its own table, its

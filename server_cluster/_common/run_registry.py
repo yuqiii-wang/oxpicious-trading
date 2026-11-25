@@ -12,12 +12,19 @@ restarts.
 * FINISHED runs — a bounded LRU store (the Express API fetches the
   result right after completion; a run's captured output IS its
   service-log tail, see ``ProcessManager.tail``).
-* ADOPTION — at startup the server re-attaches orphaned children:
-  open ``monitor.service_audit`` rows under the area's prefixes whose
-  pid still runs the module (``pid_alive_for_service``). ADOPTED runs
-  have no ``Popen`` handle (the child was spawned by a dead process),
-  so their exit is liveness-detected with an unknown exit code — the
-  child's own heartbeat audit row is the durable record then.
+* ADOPTION — at STARTUP the server re-attaches orphaned children, and
+  on a periodic sweep too (Phase 1b of the 2026-11-21 control
+  unification): open ``monitor.service_audit`` rows under the area's
+  prefixes whose pid still runs the module (``pid_alive_for_service``).
+  The startup pass covers this server's own restart; the PERIODIC pass
+  covers children this server never saw — residue of a restart of a
+  DIFFERENT server (pre-Phase-1 cross-area parenting), an operator-
+  started run, or a re-parented chain child — without waiting for this
+  server's own restart. ADOPTED runs have no ``Popen`` handle (the
+  child was spawned by a dead process), so their exit is liveness-
+  detected with an unknown exit code — the child's own heartbeat audit
+  row is the durable record then. A pid already tracked among the
+  active runs is never double-adopted under the ``adopted:`` tag.
 
 The adoption SELECT is a module constant beside its logic, following
 the monitoring-internals precedent (``database/stream_watchdog.py``);
@@ -39,11 +46,21 @@ from .process_manager import UNKNOWN_EXIT_CODE, ProcessManager
 
 logger = logging.getLogger(__name__)
 
+# The periodic re-adopt cadence: every Nth registry sweep (5s poll →
+# ~60s). The query is one bounded SELECT + one pid-liveness probe per
+# candidate — cheap at this cadence.
+_READOPT_EVERY_PASSES = 12
+
+# Bound on one adoption pass's rows (more than this many open area
+# audits is pathological; the pass skips to keep the sweep cheap).
+_OPEN_AUDITS_LIMIT = 200
+
 _OPEN_AREA_AUDITS_SQL = """
 SELECT a.id, a.service, a.pid, a.started_at
 FROM monitor.service_audit a
 WHERE a.ended_at IS NULL
   AND ({prefix_clauses})
+LIMIT {limit}
 """
 
 
@@ -84,6 +101,7 @@ class RunRegistry:
         self._lock = threading.Lock()
         self._active: dict[str, RunEntry] = {}
         self._finished: OrderedDict[str, RunEntry] = OrderedDict()
+        self._sweep_passes = 0
 
     # ------------------------------------------------------------------
     # submit / stop
@@ -132,7 +150,9 @@ class RunRegistry:
         """One reaping pass over the active runs: own spawns exit through
         their Popen handle, adopted runs through /proc liveness (unknown
         code). Returns how many runs finished. Called from the lifespan
-        sweep thread every ``poll_interval_s``."""
+        sweep thread every ``poll_interval_s``; every
+        ``_READOPT_EVERY_PASSES``-th pass also carries the continuous
+        adoption sweep (Phase 1b)."""
         with self._lock:
             entries = list(self._active.values())
         finished = 0
@@ -148,6 +168,9 @@ class RunRegistry:
                 if code is not None:
                     self._finish(entry.tag, code)
                     finished += 1
+        self._sweep_passes += 1
+        if self._sweep_passes % _READOPT_EVERY_PASSES == 0:
+            self.readopt()
         return finished
 
     def _finish(self, tag: str, exit_code: int) -> None:
@@ -236,16 +259,39 @@ class RunRegistry:
 
     def adopt(self) -> int:
         """Re-attach running children left by a previous life of this
-        server: open ``monitor.service_audit`` rows under the area's
-        prefixes whose pid still runs the module. Returns how many runs
-        were adopted. Best effort — a DB outage degrades to zero
-        adoptions (dedupe then rides the children's own heartbeat
-        parallel claims)."""
-        rows = self._open_area_audit_rows()
+        server (the STARTUP pass — the lifespan calls it before the
+        sweep thread starts). Returns how many runs were adopted. Best
+        effort — a DB outage degrades to zero adoptions (dedupe then
+        rides the children's own heartbeat parallel claims)."""
+        return self._adopt_rows(self._open_area_audit_rows())
+
+    def readopt(self) -> int:
+        """The CONTINUOUS adoption sweep (Phase 1b — every Nth registry
+        sweep): re-attach running children this registry never tracked.
+        Same query and liveness rule as :meth:`adopt`, but a pid already
+        tracked among the active runs is never double-adopted (our own
+        spawns and the already-adopted ones stay under their tags).
+        Best effort by the same contract."""
+        return self._adopt_rows(self._open_area_audit_rows())
+
+    def _adopt_rows(self, rows: list[tuple]) -> int:
+        """The shared adoption body: one RunEntry per live candidate,
+        keyed ``adopted:{service}:{pid}``. A pid already tracked among
+        the active runs is skipped (the periodic pass would otherwise
+        re-adopt our own spawns under a second tag), and so is this
+        area's own RESIDENT population — the supervisor tracks those
+        lives (a resident in the registry would double-book its every
+        restart as a finished run and inflate /stats)."""
+        resident_services = {r.service for r in self._config.residents}
+        with self._lock:
+            tracked_pids = {e.pid for e in self._active.values()
+                            if e.pid is not None}
         adopted = 0
         for _audit_id, service, pid, started_at in rows:
-            if pid is None:
+            if pid is None or pid in tracked_pids:
                 continue
+            if service in resident_services:
+                continue  # the supervisor owns that life, not the registry
             from _common.service_heartbeat import pid_alive_for_service
 
             if not pid_alive_for_service(pid, service):
@@ -258,9 +304,11 @@ class RunRegistry:
                 log_path=str(_guess_log_path(service)),
                 adopted=True)
             with self._lock:
-                if tag in self._active:
+                if tag in self._active or any(
+                        e.pid == pid for e in self._active.values()):
                     continue
                 self._active[tag] = entry
+                tracked_pids.add(pid)
             adopted += 1
             logger.info("adopted %s (pid %d) from an open audit row",
                         service, pid)
@@ -269,11 +317,13 @@ class RunRegistry:
         return adopted
 
     def _open_area_audit_rows(self) -> list[tuple]:
-        """Open audit rows under this area's prefixes (one round trip;
-        the prefix LIKE list is built from the config's own prefixes)."""
+        """Open audit rows under this area's prefixes (one bounded round
+        trip; the prefix LIKE list is built from the config's own
+        prefixes)."""
         prefixes = self._config.module_prefixes
         clauses = " OR ".join(["a.service LIKE %s"] * len(prefixes))
-        sql = _OPEN_AREA_AUDITS_SQL.format(prefix_clauses=clauses)
+        sql = _OPEN_AREA_AUDITS_SQL.format(prefix_clauses=clauses,
+                                           limit=_OPEN_AUDITS_LIMIT)
         try:
             from _common.db_commons import get_db_connection
 

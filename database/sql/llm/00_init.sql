@@ -19,6 +19,7 @@
 \ir kg_queries.sql
 \ir kg_rule_entities.sql
 \ir kg_rule_syncs.sql
+\ir kg_search_stats.sql
 \ir llm_qa.sql
 \ir llm_qa_by_ask.sql
 \ir llm_qa_by_research.sql

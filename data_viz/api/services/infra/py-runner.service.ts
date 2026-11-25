@@ -483,6 +483,72 @@ export async function getPythonProcessResult(
 }
 
 // ---------------------------------------------------------------------------
+//  The downward command mailbox (2026-11-21 control unification Phase 4)
+// ---------------------------------------------------------------------------
+
+/** The verdict of ONE command enqueue at the owning area server:
+ *  `enqueued` true = the mailbox row is in; false = refused, `refused`
+ *  carries the gate's reason verbatim (the route 409s with it). */
+export interface ServiceCommandVerdict {
+  enqueued: boolean;
+  refused?: string;
+}
+
+/** Send ONE cooperative command (flush_now | pause | resume) down to a
+ *  running child: POST the OWNING area server's
+ *  ``/processes/{service}/command`` (the Phase 4 mailbox's enqueue face
+ *  — the child's heartbeat thread claims + consumes it atomically at
+ *  its next safe checkpoint; SIGTERM stays the backstop). The area
+ *  server gates the command class (a PAUSE for a not-pausable /
+ *  gpu-class service is a 409 with the reason — surfaced verbatim as a
+ *  refusal). Transport failure throws (the route 502s). */
+export async function sendServiceCommand(
+  service: string,
+  command: string,
+  payload?: Record<string, unknown>,
+): Promise<ServiceCommandVerdict> {
+  const baseUrl = clusterBaseFor(service);
+  if (baseUrl == null) {
+    return {
+      enqueued: false,
+      refused: `${service} matches no cluster area's module prefixes — `
+        + "nothing owns it, so no command can be delivered",
+    };
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SUBMIT_TIMEOUT_MS);
+  try {
+    const res = await fetch(
+      `${baseUrl}/processes/${encodeURIComponent(service)}/command`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ command, payload: payload ?? null }),
+        signal: controller.signal,
+      },
+    );
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try {
+        const j = (await res.json()) as { detail?: string };
+        if (j?.detail) detail = j.detail;
+      } catch {
+        // non-JSON error body — the status line is the message
+      }
+      return { enqueued: false, refused: detail };
+    }
+    return { enqueued: true };
+  } catch (err) {
+    throw new Error(
+      `owning server at ${baseUrl} unreachable for ${service}: `
+        + (err instanceof Error ? err.message : String(err)),
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ---------------------------------------------------------------------------
 //  Runner
 // ---------------------------------------------------------------------------
 

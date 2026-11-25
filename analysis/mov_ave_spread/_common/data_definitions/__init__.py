@@ -9,6 +9,7 @@ circular-import cycles."""
 
 _EXPORTS = {
     "StepRun": "step_run",
+    "StepTargets": "step_targets",
 }
 
 __all__ = sorted(_EXPORTS)

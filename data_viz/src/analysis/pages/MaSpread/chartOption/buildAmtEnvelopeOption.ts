@@ -36,6 +36,7 @@ import type {
   MovAveSpreadOhlcGapDay,
 } from "@shared/types";
 import type { OhlcMode } from "@/lib/ohlc";
+import { fmtMonth } from "@/shared/datetime";
 import type { ChartZoomRange } from "../types";
 import type {
   LongBandStreak,
@@ -415,7 +416,7 @@ export function buildAmtEnvelopeOption({
       axisLabel: {
         color: c.textColor,
         fontSize: 9,
-        formatter: (v: string) => v.slice(0, 7),
+        formatter: (v: string) => fmtMonth(v),
         interval: Math.max(1, Math.floor(n / 6)),
       },
       splitLine: { show: false },

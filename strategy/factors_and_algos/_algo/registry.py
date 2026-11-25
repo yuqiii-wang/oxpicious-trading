@@ -25,10 +25,13 @@ from strategy.factors_and_algos._algo.base import AlgoBase
 ALGO_REGISTRY: dict[str, str] = {
     "macd": "strategy.factors_and_algos.macd",
     # The ORACLE mode (2026-11-19): the hindsight local-min/max pivot
-    # tier — its own ISOLATED package (analysis.oracle_signals source,
-    # swing-proportional confidence; see _oracle/algo.py's docstring).
-    # This registry entry is the mode's ONLY footprint outside its
-    # package.
+    # tier (analysis.oracle_signals source, swing-proportional
+    # confidence; see _oracle/algo.py's docstring). Its former
+    # dedicated optimizer is DEMISED (2026-11-21): the existing
+    # _optm_engine trainer optimizes the oracle's confidence-scaling
+    # knobs via TUNABLE_SPACE, always binary/solo — this registry
+    # entry (dedicated fetch + reason phrasing) stays the mode's ONLY
+    # footprint outside its package.
     "oracle": "strategy.factors_and_algos._oracle",
 }
 

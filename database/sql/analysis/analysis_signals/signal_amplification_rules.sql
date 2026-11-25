@@ -21,9 +21,10 @@
 --  rule_params JSONB GRAMMAR (engine-generated, never hand-typed):
 --    {
 --      "amplifiers": [                       -- the bound amplifier set
---        {"amplifier_type": 0,               -- the PARENT TYPE, static.label_dim 'signal_amplifier_type' code (0 ohlcv / 1 margin)
+--        {"amplifier_type": 0,               -- the PARENT TYPE, static.label_dim 'signal_amplifier_type' code (0 ohlcv / 1 margin / 2 news)
 --         "sub_type": 0,                     -- the specific pattern: 'signal_amplifier' code when ohlcv,
---                                             --   'signal_amplifier_margin' code when margin
+--                                             --   'signal_amplifier_margin' code when margin,
+--                                             --   'signal_amplifier_news' code when news
 --         "action": 0,                       -- the side amplified (0 buy / 1 sell)
 --         "base_bp": 150,                    -- the amplifier's base strength, bp
 --         "depth_factor": 0.5,               -- confidence: base * (1 + factor * min(depth, cap))
@@ -49,8 +50,8 @@
 --  --force deletes the sec_type's rows and re-emits.
 -- ============================================================================
 -- kg entity (ns0 db_semantics_tables reads the payload below):
--- description: The signal amplification binding config — per code and signal family, which amplifiers (the two-level axis: ohlcv K-line anatomy sub types or margin 融资余额 level sub types) amplify that family's signals, their base strength, depth scale and the measured evidence that the amplifier days improve the family's forward response.
--- tags: signal amplification, 信号放大, amplifier, 放大器, amplifier type, 放大器类型, sub type, 子类型, binding, 绑定, ohlcv anatomy, K线形态, margin, 融资融券, 融资余额, volume, 量能, config, 配置
+-- description: The signal amplification binding config — per code and signal family, which amplifiers (the two-level axis: ohlcv K-line anatomy sub types, margin 融资余额 level sub types or news news-text state sub types) amplify that family's signals, their base strength, depth scale and the measured evidence that the amplifier days improve the family's forward response.
+-- tags: signal amplification, 信号放大, amplifier, 放大器, amplifier type, 放大器类型, sub type, 子类型, binding, 绑定, ohlcv anatomy, K线形态, margin, 融资融券, 融资余额, news, 新闻, sentiment, 情绪, volume, 量能, config, 配置
 
 DROP TABLE IF EXISTS analysis_signals.signal_amplification_rules CASCADE;
 
@@ -73,7 +74,7 @@ SELECT public.create_hash_partitions('analysis_signals', 'signal_amplification_r
 CREATE INDEX IF NOT EXISTS idx_signal_amplification_rules_family
     ON analysis_signals.signal_amplification_rules (sec_type, signal_type);
 
-COMMENT ON TABLE  analysis_signals.signal_amplification_rules IS 'Signal AMPLIFICATION RULES: one row per (code, sec_type, signal_type) — the binding config stating which amplifiers amplify that signal family on that code (rule_params JSONB: amplifiers[] with the two-level amplifier_type (parent: signal_amplifier_type) + sub_type (signal_amplifier when ohlcv / signal_amplifier_margin when margin) + action/base_bp/depth scale/bar_def + cap_bp + the measured per-amplifier evidence). Constant-only, wiped + reinserted per run. The event records live in signal_amplification_history (the original record keeper). Populated by python -m analysis.analysis_signals.signal_amplification; --force deletes the sec_type''s rows and re-emits.';
+COMMENT ON TABLE  analysis_signals.signal_amplification_rules IS 'Signal AMPLIFICATION RULES: one row per (code, sec_type, signal_type) — the binding config stating which amplifiers amplify that signal family on that code (rule_params JSONB: amplifiers[] with the two-level amplifier_type (parent: signal_amplifier_type) + sub_type (signal_amplifier when ohlcv / signal_amplifier_margin when margin / signal_amplifier_news when news) + action/base_bp/depth scale/bar_def + cap_bp + the measured per-amplifier evidence). Constant-only, wiped + reinserted per run. The event records live in signal_amplification_history (the original record keeper). Populated by python -m analysis.analysis_signals.signal_amplification; --force deletes the sec_type''s rows and re-emits.';
 COMMENT ON COLUMN analysis_signals.signal_amplification_rules.signal_type IS 'The AMPLIFIED signal family as its static.label_dim (''signal_type'') domain SMALLINT code — the binding TARGET (the family whose signals the amplifiers strengthen/discount), not an amplifier code.';
-COMMENT ON COLUMN analysis_signals.signal_amplification_rules.rule_params IS 'The binding config (grammar in this file''s header): amplifiers[] — each {amplifier_type (the PARENT TYPE, static.label_dim ''signal_amplifier_type'' code: 0 ohlcv / 1 margin), sub_type (the specific pattern: ''signal_amplifier'' code when ohlcv, ''signal_amplifier_margin'' code when margin), action (the side amplified: 0 buy / 1 sell), base_bp, depth_factor, depth_cap, bar_def (the amplifier''s constant bars)}; cap_bp — the |amplify_bp| cap; evidence — nested {str(amplifier_type): {str(sub_type): the measured {n, base_dir_ave_pct, amp_dir_ave_pct, delta_pct, hit_pct, is_valid}}} (amplifier days vs the family''s own base on this code''s history). Engine-generated, never hand-typed.';
+COMMENT ON COLUMN analysis_signals.signal_amplification_rules.rule_params IS 'The binding config (grammar in this file''s header): amplifiers[] — each {amplifier_type (the PARENT TYPE, static.label_dim ''signal_amplifier_type'' code: 0 ohlcv / 1 margin / 2 news), sub_type (the specific pattern: ''signal_amplifier'' code when ohlcv, ''signal_amplifier_margin'' code when margin, ''signal_amplifier_news'' code when news), action (the side amplified: 0 buy / 1 sell), base_bp, depth_factor, depth_cap, bar_def (the amplifier''s constant bars)}; cap_bp — the |amplify_bp| cap; evidence — nested {str(amplifier_type): {str(sub_type): the measured {n, base_dir_ave_pct, amp_dir_ave_pct, delta_pct, hit_pct, is_valid}}} (amplifier days vs the family''s own base on this code''s history). Engine-generated, never hand-typed.';
 COMMENT ON COLUMN analysis_signals.signal_amplification_rules.is_valid IS 'TRUE when at least one bound amplifier''s evidence block is valid (n >= the evidence floor AND the amplifier-day forward mean improves on the family''s own base with the claimed sign). FALSE = observational config (rows still ship — the amplification is unproven on this code, not disproven).';

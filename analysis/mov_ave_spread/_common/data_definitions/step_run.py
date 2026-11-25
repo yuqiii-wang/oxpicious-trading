@@ -30,3 +30,10 @@ class StepRun:
     code_filter: Optional[str]
     # --backfill: lift the default increment bound (deep backlog too).
     backfill: bool
+    # The parent's target dates for the core detail / trailing tables of
+    # the sec_type being processed: every same-grain step unions them
+    # into its own targets, so a date (re)opened in the core — a per-code
+    # gap, a purge, a corrected source bar — is (re)opened across the
+    # whole family. None = no core scope (force / single-code modes
+    # recompute everything anyway).
+    core_target_dates: Optional[frozenset] = None

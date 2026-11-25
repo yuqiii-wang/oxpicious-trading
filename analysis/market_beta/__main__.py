@@ -47,7 +47,8 @@ Pipeline
   5. INTERNAL STEP: pre-compute top-5 (HYPE) + bottom-5 (DRAIN)
      industries -> analysis.industry_hypes_and_drains (see
      hypes_and_drains.py). Depends on step 3 (attributions) being
-     populated first. Always full recompute.
+     populated first. Incremental (missing dates + warm-up-scoped
+     slice); force cascades from the parent.
   6. INTERNAL STEP: per-industry daily pct-change bucket counts ->
      analysis.industry_stock_change_dist (see stock_attribution.py; the
      Stock Attribution audit on the Market Beta page). Self-managing
@@ -147,7 +148,11 @@ async def _up_to_date_checks(analysis: DataAnalysis, conn) -> None:
                   "populating...")
             await run_hypes_and_drains(conn, force=True)
         else:
-            logger.info("    -> DB is up to date; nothing to do.")
+            # hypes_and_drains self-managing incremental pass (cheap
+            # no-op when its dates are already covered): heals a run
+            # that died between the attributions and hypes steps
+            # without paying the full rebuild.
+            await run_hypes_and_drains(conn)
 
 
 class MarketBetaAnalysis(DataAnalysis):
@@ -311,9 +316,11 @@ class MarketBetaAnalysis(DataAnalysis):
         # (MAIN=SS+SZ, INNOV=GEM+STAR) -> analysis.industry_hypes_and_drains.
         # Reuses this same connection. See hypes_and_drains.py. Depends on
         # step 3 (attributions, incl. the 120d column) being populated first.
-        # Always runs full recompute (truncate-then-recompute) — the table
-        # is small (~245K rows max) and rankings shift when any date changes.
-        await run_hypes_and_drains(conn, force=True)
+        # Incremental: missing-date detection + a warm-up-scoped slice
+        # (the former always-force recompute was the daily run's dominant
+        # cost at ~18 min); force cascades from the parent — required
+        # after a forced attributions rebuild changed historical values.
+        await run_hypes_and_drains(conn, force=args.force)
 
         # ---- Step 6: INTERNAL stock-attribution step -------------------
         # Per-industry daily pct-change bucket counts ->

@@ -1,0 +1,4 @@
+{
+  "view": "server_cluster/maintainer/daily_check/analysis/pe_and_dividends",
+  "notes": "analysis_daily step 3 (analysis.pe_and_dividends): analysis.pe and analysis.dividends max(date) per sec_type vs that sec_type's identity table (SEC_TYPE_IDENTITY_TABLE, the module's own frontier). A lagging row means the nightly PE/dividend pass stopped for that sec_type."
+}

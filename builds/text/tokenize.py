@@ -9,6 +9,14 @@ catalog metadata): every taxonomy keyword that appears in the question
 becomes a search token. Matching is plain substring (whole-word for
 pure-ASCII), the same convention the build uses for extraction.
 
+Stock codes: A-share / BSE / index codes and their exchange-prefixed forms
+(``600519``, ``SH600519``, ``600519.SH``, ``931743.CSI``, ``0700.HK``) are
+extracted alongside the taxonomy keywords (:func:`stock_codes`) and merged
+into the token list by first occurrence — a question naming a code finds the
+articles that print it (the items search ILIKEs each token against
+title/content). Each code normalizes to its bare digit form (the form the
+corpus prints), HK zero-padded to 5 digits.
+
 Post-processing: tokens that are substrings of another matched token are
 dropped (工商银行 keeps 银行 out) and the rest are ordered by first occurrence
 in the question, so the API-side OR search and the UI chip read naturally.
@@ -29,7 +37,7 @@ import base64
 import json
 import re
 import sys
-from typing import List
+from typing import List, Tuple
 
 from builds.text.keywords import KeywordTaxonomy
 
@@ -40,18 +48,72 @@ TOKENIZE_RESULT_MARKER = "@@NEWS_TOKENIZE_JSON@@"
 
 DEFAULT_LIMIT = 8
 
+# ---------------------------------------------------------------------------
+# Stock code extraction — A-share / BSE / index codes and their
+# exchange-prefixed forms, plus HK dotted form. Bare 6-digit codes are
+# PREFIX-GATED (only the established stock/index families) so amounts and
+# dates don't match; the digit-run guards keep a code from matching inside
+# an 8-digit date or a longer number. Every match normalizes to the bare
+# digit form the corpus prints (SH600519 / 600519.SH -> 600519; HK
+# zero-padded to 5 digits: 0700.HK -> 00700).
+# ---------------------------------------------------------------------------
+_STOCK_CODE_FAMILIES = (
+    "600|601|603|605"      # SH main board
+    "|688|689"             # STAR market
+    "|000|001|002|003"     # SZ main board / SME
+    "|300|301|302"         # ChiNext
+    "|399"                 # SZ indexes
+    "|93"                  # CSI indexes (930xxx..93xxxx)
+    "|43|83|87|920"        # BSE / NEEQ
+    "|899"                 # BSE indexes
+)
+_STOCK_CODE_RE = re.compile(
+    r"(?<![0-9A-Za-z])(?:"
+    r"(?:SH|SZ|BJ)(\d{6})"                 # prefix form: SH600519 / sz000001
+    r"|(\d{6})\.(?:SH|SZ|BJ|CSI)"          # suffix form: 600519.SH / 931743.CSI
+    r"|(\d{4,5})\.HK"                      # HK: 0700.HK / 00700.HK
+    rf"|((?:{_STOCK_CODE_FAMILIES})\d{{3}})"  # bare 6-digit code families
+    r")(?![0-9])",
+    re.IGNORECASE,
+)
+
+
+def stock_codes(text: str) -> "List[Tuple[str, int]]":
+    """Extract stock/index codes from *text* with their first positions.
+
+    Returns (code, position) pairs — the code normalized to its bare digit
+    form (HK zero-padded to 5 digits) — ordered by first occurrence. Bare
+    codes are prefix-gated to the established stock/index families; an
+    exchange prefix (SH600519) or suffix (600519.SH) matches regardless of
+    the family gate.
+    """
+    out: "List[Tuple[str, int]]" = []
+    seen: set = set()
+    for m in _STOCK_CODE_RE.finditer(text):
+        group = next(
+            (i for i in range(1, 5) if m.group(i) is not None), None)
+        if group is None:
+            continue
+        digits = m.group(group)
+        if group == 3:  # HK dotted form — pad to 5 digits
+            digits = digits.zfill(5)
+        if digits not in seen:
+            seen.add(digits)
+            out.append((digits, m.start(group)))
+    return out
+
 
 def tokenize(text: str, *, limit: int = DEFAULT_LIMIT) -> List[str]:
-    """Split *text* naively into taxonomy keywords, most-specific kept.
+    """Split *text* naively into taxonomy keywords + stock codes.
 
-    Returns at most *limit* keywords ordered by first occurrence in *text*.
+    Taxonomy keywords are most-specific kept; stock codes (see
+    :func:`stock_codes`) ride alongside them. Returns at most *limit*
+    tokens ordered by first occurrence in *text*.
     """
     if not text or not text.strip():
         return []
     taxonomy = KeywordTaxonomy()
     matched = list(taxonomy.match(text)[0].keys())
-    if not matched:
-        return []
 
     # Drop tokens contained in another matched token (keep the specific one):
     # 工商银行 matched → its substring 银行 adds nothing to an OR search.
@@ -67,8 +129,14 @@ def tokenize(text: str, *, limit: int = DEFAULT_LIMIT) -> List[str]:
             pos = lowered.find(kw.lower())  # ASCII keyword, different case
         return pos if pos >= 0 else len(text)
 
-    kept.sort(key=lambda kw: (first_pos(kw), -len(kw)))
-    return kept[:limit]
+    # Taxonomy keywords + stock codes in one first-occurrence order (a code
+    # is never a substring of a taxonomy keyword, so the containment drop
+    # above can't have eaten one).
+    entries: "List[Tuple[int, int, str]]" = [
+        (first_pos(kw), -len(kw), kw) for kw in kept]
+    entries.extend((pos, -len(code), code) for code, pos in stock_codes(text))
+    entries.sort()
+    return [t for _pos, _len, t in entries][:limit]
 
 
 def main() -> None:
@@ -84,7 +152,9 @@ def main() -> None:
 
     text = args.text
     if not text and args.text_b64:
-        text = base64.b64decode(args.text_b64).decode("utf-8")
+        # altchars: the API route sends the URL-SAFE alphabet (the cluster
+        # arg charset forbids '/') — decode both alphabets.
+        text = base64.b64decode(args.text_b64, altchars=b"-_").decode("utf-8")
 
     tokens = tokenize(text or "", limit=args.limit)
     try:  # WSL is UTF-8 already; guard native-Windows invocations

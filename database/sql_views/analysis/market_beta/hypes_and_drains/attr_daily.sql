@@ -7,8 +7,12 @@
 -- broad-market tag rows (e.g. 000001 = BROAD_SSE + benchmark_broadmarket)
 -- — a JOIN would fan every attribution row out per tag row. The
 -- shared_return_1d inversion + per-period compounding are computed in
--- pandas afterwards.
--- args: none
+-- pandas afterwards. The incremental fetch passes a date floor (the
+-- 504-day-window warm-up start of the earliest missing target date); the
+-- force fetch passes 1900-01-01 so the predicate matches every row and
+-- the row space is unchanged.
+-- args:
+--   min_date: value date — fetch floor (inclusive)
     SELECT ia.benchmark_code,
            extract(epoch from ia.date)::float8                 AS date,
            ia.industry_id,
@@ -18,6 +22,7 @@
     FROM analysis.industry_attributions ia
     WHERE ia.attribution_type = 'trading_amt'
       AND ia.benchmark_non_this_industry_price IS NOT NULL
+      AND ia.date >= {{min_date}}::date
       AND ia.benchmark_code IN (
           SELECT sit.code FROM stats.sec_index_tags sit
           WHERE sit.is_broad_market = TRUE)

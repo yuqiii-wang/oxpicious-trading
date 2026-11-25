@@ -49,17 +49,22 @@
 --  nothing — the embedded blobs only land on a FRESH install).
 -- ----------------------------------------------------------------------------
 INSERT INTO static.secret_config
-    (secret_type, provider, sub_type, model_name, context_length, api_url,
+    (secret_type, provider, sub_type, model_name, context_length,
+     input_modality, output_modality, api_url,
      is_active, notes)
 SELECT st.code, ld.code, sd.code, 'glm-5.3-flash', NULL,
+       im.code, om.code,
        'https://open.bigmodel.cn/api/paas/v4/chat/completions', TRUE,
        'seed — mirrors ZhipuChatProvider''s built-in constants (model + '
        'chat URL); the API key migrates from the root .env or is set '
        'through the Config → Secrets tab'
-FROM static.label_dim st, static.label_dim ld, static.label_dim sd
+FROM static.label_dim st, static.label_dim ld, static.label_dim sd,
+     static.label_dim im, static.label_dim om
 WHERE st.domain = 'secret_type' AND st.label = 'llm'
   AND ld.domain = 'ext_llm_provider' AND ld.label = 'zhipu'
   AND sd.domain = 'secret_sub_type' AND sd.label = 'general'
+  AND im.domain = 'llm_modality' AND im.label = 'text+vision'
+  AND om.domain = 'llm_modality' AND om.label = 'text'
 ON CONFLICT (secret_type, provider, COALESCE(model_name, '')) DO NOTHING;
 
 -- The dummy langgraph double (test/dummy_langgraph at the project
@@ -161,6 +166,41 @@ FROM static.label_dim st, static.label_dim ld, static.label_dim sd
 WHERE st.domain = 'secret_type' AND st.label = 'tokenization'
   AND ld.domain = 'ext_llm_provider' AND ld.label = 'local'
   AND sd.domain = 'secret_sub_type' AND sd.label = 'general'
+ON CONFLICT (secret_type, provider, COALESCE(model_name, '')) DO NOTHING;
+
+-- The resident local-model host's OCR model — PaddleOCR-VL
+-- (paddleocr-vl-1.6 per host_config.json, POST /v1/ocr: images in
+-- (base64/multipart), per-image transcription out; the layout mode's
+-- text spotting feeds builds/text/image_text.py's Pseudo Imagea
+-- blocks). Typed ocr (NOT llm) — a model-serving credential like
+-- jev/tokenization; input_modality text+vision (it ACCEPTS images),
+-- output text. The endpoint enforces the Bearer like every serving
+-- route — same KNOWN DUMMY lmh-dummy key story as the jev row above,
+-- embedded in the INSERT below.
+INSERT INTO static.secret_config
+    (secret_type, provider, sub_type, model_name, context_length,
+     input_modality, output_modality, api_url,
+     api_key_enc, api_key_hint, is_active, notes)
+SELECT st.code, ld.code, sd.code, 'paddleocr-vl-1.6', NULL,
+       im.code, om.code,
+       'http://127.0.0.1:8767/v1/ocr',
+       'v1:dxz8FPC5ahDXh3VA.RyvWUbpS93ch+/Pm3b2y4rZxCmYFxKeiCw==',
+       '••••••••ummy', TRUE,
+       'seed — the resident local-model host''s PaddleOCR-VL image '
+       'transcriber (server_cluster.llm, paddleocr-vl-1.6, '
+       'POST /v1/ocr; typed ocr, not llm — a model-serving credential; '
+       'input_modality text+vision: the model accepts images, output '
+       'text; the endpoint enforces the Bearer like every serving '
+       'route — the lmh-dummy api key is embedded in this seed '
+       '(encrypted at rest), the host accepts any non-empty Bearer '
+       'while its auth_token is null)'
+FROM static.label_dim st, static.label_dim ld, static.label_dim sd,
+     static.label_dim im, static.label_dim om
+WHERE st.domain = 'secret_type' AND st.label = 'ocr'
+  AND ld.domain = 'ext_llm_provider' AND ld.label = 'local'
+  AND sd.domain = 'secret_sub_type' AND sd.label = 'general'
+  AND im.domain = 'llm_modality' AND im.label = 'text+vision'
+  AND om.domain = 'llm_modality' AND om.label = 'text'
 ON CONFLICT (secret_type, provider, COALESCE(model_name, '')) DO NOTHING;
 
 INSERT INTO static.secret_config

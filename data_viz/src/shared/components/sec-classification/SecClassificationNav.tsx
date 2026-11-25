@@ -15,6 +15,10 @@
  *   - `chipSize`  — "small" | "medium" (default "small")
  *   - `density`   — "compact" | "comfortable" (controls row spacing)
  *   - `showExchange` — show/hide the exchange filter row (default true)
+ *   - `mode`      — selection grain: "tree" (default) is the full
+ *                 drill-down navigator; "sector" is the L1-aggregate
+ *                 variant (Sector / Strategy rows only, no exchange row,
+ *                 one L1 pick IS the scope — see the mode prop below)
  *   - `allMode`   — ALL scope: only the locked (all-selected, unclickable)
  *                   Exchange row renders; no tree columns, no L3 row
  *
@@ -78,6 +82,16 @@ interface Props {
   selectedIndustrySlugs?: string[];
   onMultiIndustryChange?: (slugs: string[]) => void;
 
+  /** Single-select ALL-chip override (optional). When provided, the L2
+   *  rows' mass "All (N)" chips report the row's own L1 id through it
+   *  (industry row → the active sector, theme row → the active strategy)
+   *  INSTEAD of the default "clear the pick" null emission — the page
+   *  interprets the All chip as the L1 aggregate scope. Nav-internal
+   *  clears keep flowing through onIndustryChange/onThemeChange with
+   *  null, so "clear" and "All" stay distinguishable. Pages that don't
+   *  pass it keep the exact legacy behavior ("All" = clear). */
+  onAllPick?: (l1Id: string) => void;
+
   /** Optional L3 security-level row. */
   itemKind?: "Index" | "ETF" | "Stock" | "Industry";
   selectedItemCode?: string | null;
@@ -108,8 +122,23 @@ interface Props {
   chipSize?: "small" | "medium";
   /** Row spacing density. "compact" = 0.75, "comfortable" = 1.5. */
   density?: "compact" | "comfortable";
-  /** Show/hide the exchange filter row (default true). */
+  /** Show/hide the exchange filter row (default true). Ignored in sector
+   *  mode — the L1 aggregate is exchange-independent, so the row never
+   *  renders there. */
   showExchange?: boolean;
+
+  /** Selection grain. "tree" (default): the full drill-down navigator —
+   *  sector → industry LEFT, strategy → theme RIGHT, exchange filter; the
+   *  two columns keep their own selection channels with the mutual
+   *  exclusivity below. "sector": the L1-AGGREGATE variant — only the
+   *  Sector / Strategy L1 chip rows render (no industry/theme drill-down,
+   *  no exchange row), and ONE L1 chip pick in EITHER column IS the leaf
+   *  scope: it is reported through onSectorChange, with sectorId carrying
+   *  the active id whichever tree it belongs to (the column is resolved
+   *  from the trees internally — strategyId/themeSlug are ignored). Used
+   *  by pages whose scope is an L1 aggregate (e.g. News Text States'
+   *  sector mode — the kind-3 L1 rollup IS the scope). */
+  mode?: "tree" | "sector";
 
   /** ALL mode: the classification tree is replaced by ONE locked Exchange
    *  row — every exchange chip rendered selected (filled) WITHOUT a click
@@ -167,6 +196,7 @@ export default function SecClassificationNav({
   multiSelect = false,
   selectedIndustrySlugs = [],
   onMultiIndustryChange,
+  onAllPick,
   itemKind,
   selectedItemCode = null,
   onItemSelected,
@@ -179,6 +209,7 @@ export default function SecClassificationNav({
   chipSize = "small",
   density = "compact",
   showExchange = true,
+  mode = "tree",
   allMode = false,
   mutuallyExclusive = true,
   loading = false,
@@ -193,6 +224,21 @@ export default function SecClassificationNav({
   const activeStrategy = hasStrategyColumn
     ? (strategies!.find((s) => s.sector_id === strategyId) ?? null)
     : null;
+
+  // --- Sector mode (mode="sector") ---
+  // ONE scope channel: the picked L1 id resolves against the strategy tree
+  // first — the unified classification id space means only one tree can
+  // match, so the column holding the scope follows from the id itself.
+  const isSectorMode = mode === "sector";
+  const scopeIsStrategy =
+    isSectorMode && !!sectorId &&
+    (strategies?.some((s) => s.sector_id === sectorId) ?? false);
+  // The strategy column's active chip: the picked scope id in sector mode
+  // (null when the scope lives in the sector tree), the classic channel in
+  // tree mode.
+  const strategyActiveId = isSectorMode
+    ? (scopeIsStrategy ? sectorId : null)
+    : strategyId;
 
   const activeColumn = sectorId ? "industry" : (strategyId ? "strategy" : "industry");
   const rowSpacing = density === "compact" ? 0.75 : 1.5;
@@ -308,11 +354,16 @@ export default function SecClassificationNav({
   }
 
   // --- Mutual exclusivity handlers ---
-  // Clicking a sector chip clears any strategy-column selection, and vice
-  // versa. When strategies is empty, the strategy-clear calls are no-ops.
+  // Sector MODE: the single scope channel — an L1 pick in EITHER column
+  // lands on onSectorChange; no cross-clears are needed (the highlight
+  // resolves from the picked id itself, so picking one column inherently
+  // clears the other). Tree mode keeps the two-channel contract: clicking
+  // a sector chip clears any strategy-column selection, and vice versa.
+  // When strategies is empty, the strategy-clear calls are no-ops.
   // When `mutuallyExclusive` is FALSE, both columns can be selected
   // simultaneously — cross-column clears are skipped.
   const handleSectorClick = (id: string | null) => {
+    if (isSectorMode) { onSectorChange(id); return; }
     onSectorChange(id);
     if (id && mutuallyExclusive) {
       onStrategyChange?.(null);
@@ -321,6 +372,7 @@ export default function SecClassificationNav({
   };
 
   const handleStrategyClick = (id: string | null) => {
+    if (isSectorMode) { onSectorChange(id); return; }
     onStrategyChange?.(id);
     if (id && mutuallyExclusive) {
       onSectorChange(null);
@@ -409,7 +461,9 @@ export default function SecClassificationNav({
             size={chipSize}
             color={allChipSelected ? "secondary" : "default"}
             variant={allChipSelected ? "filled" : "outlined"}
-            onClick={handleAllClick}
+            onClick={onAllPick
+              ? () => onAllPick(activeSector.sector_id)
+              : handleAllClick}
             sx={{ fontSize: chipFontSize }}
           />
         )}
@@ -443,7 +497,7 @@ export default function SecClassificationNav({
 
   // --- Render: strategy chips (RIGHT column L1) ---
   const renderStrategyChips = () => strategies!.map((s) => {
-    const isActive = s.sector_id === strategyId;
+    const isActive = s.sector_id === strategyActiveId;
     return (
       <Chip
         key={s.sector_id}
@@ -469,7 +523,9 @@ export default function SecClassificationNav({
             size={chipSize}
             color={!themeSlug ? "secondary" : "default"}
             variant={!themeSlug ? "filled" : "outlined"}
-            onClick={() => onThemeChange?.(null)}
+            onClick={onAllPick
+              ? () => onAllPick(activeStrategy.sector_id)
+              : () => onThemeChange?.(null)}
             sx={{ fontSize: chipFontSize }}
           />
         )}
@@ -770,8 +826,10 @@ export default function SecClassificationNav({
           to expand. Indented under row 1 to indicate hierarchy. Both rows
           drive the same single `exchange` filter state. "All (primary)" is the
           DEFAULT (value="PRIMARY") — matches SS/STAR/SZ/GEM/BJ, excluding
-          cross-border so HK/Overseas securities are opt-in. */}
-      {showExchange && (
+          cross-border so HK/Overseas securities are opt-in.
+          Sector mode never renders the row (the L1 aggregate spans every
+          exchange — see the mode prop). */}
+      {showExchange && !isSectorMode && (
         <>
           <ChipRow
             label="Exchange"
@@ -836,24 +894,25 @@ export default function SecClassificationNav({
         </>
       )}
 
-      {/* Classification columns */}
+      {/* Classification columns — sector mode drops the L2 drill-down rows
+          (Industry / Theme); the L1 chips are the leaf scope. */}
       {hasStrategyColumn ? (
         <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" }, gap: 2 }}>
           {/* LEFT: Sector → Industry */}
           <Stack spacing={rowSpacing}>
             <ChipRow label="Sector" chipSize={chipSize}>{renderSectorChips()}</ChipRow>
-            {renderIndustryChips()}
+            {!isSectorMode && renderIndustryChips()}
           </Stack>
           {/* RIGHT: Strategy → Theme */}
           <Stack spacing={rowSpacing}>
             <ChipRow label="Strategy" chipSize={chipSize}>{renderStrategyChips()}</ChipRow>
-            {renderThemeChips()}
+            {!isSectorMode && renderThemeChips()}
           </Stack>
         </Box>
       ) : (
         <Stack spacing={rowSpacing}>
           <ChipRow label="Sector" chipSize={chipSize}>{renderSectorChips()}</ChipRow>
-          {renderIndustryChips()}
+          {!isSectorMode && renderIndustryChips()}
         </Stack>
       )}
 

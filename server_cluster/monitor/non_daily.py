@@ -5,7 +5,8 @@ The CONCEPTS come from the orchestration tier files: the non-daily tiers
 (:data:`NON_DAILY_TIERS` — downloads monthly/quarterly/semiannually/once,
 builds monthly/semiannually/once, strategy once, monitoring occasionally)
 ride the nightly chain, but their own cadence guards make off-cadence
-runs no-ops (quarterly compositions refresh only at quarter start,
+runs no-ops (quarterly compositions refresh only around the quarter
+start — the arrangement fires them one week after the boundary,
 semiannual dividends at half-year boundaries) — so a FAILED cadence
 window leaves the task's related data missing for weeks, invisible to
 the nightly self-heal. HOW each task runs comes from the same registry
@@ -39,12 +40,17 @@ higher-priority run (the nightly chain, a manual run, a finish pass) —
 and both sides contend for the machine and the anti-bot-guarded query
 destinations. Each re-run therefore gives way to the runner's priority
 board (:meth:`orchestration.OrchestrationRunner.priority_claims` —
-every step ranked by its service_config ``priority``: downloads
+every claim ranked by its service_config ``priority``: downloads
 outrank non-downloads, then frequency): it waits out a strictly
 higher-priority run BEFORE its submit, and one arriving MID-RUN stops
 the child (registry stop) until it finishes, then resumes it as a
 fresh child of the same tag — the force args make the resumed run
-pick up where the stop left off. Equal priorities never give way;
+pick up where the stop left off. The re-run also holds back on a
+SAME-SRC claim (its tier step's ``src_host`` — same-src children never
+overlap regardless of rank, the equal-priority case the rank alone
+cannot order) and its own in-flight child sits ON the board
+(register_claim / release_claim), so the runner's steps give way to it
+symmetrically. Equal-priority, different-src claims never give way;
 each stop shows up as the rerun record's ``yields`` count.
 
 Endpoints (sync ``def`` on purpose — a check pass / re-run drive is
@@ -78,6 +84,7 @@ from .data_definitions import (
     NonDailyBackfillRequest, NonDailyBackfillResponse, NonDailyBackfillRerun,
     NonDailyEvaluateResponse, NonDailyInventoryResponse, NonDailyTaskRow)
 from .orchestration import OrchestrationRunner
+from .step_router import OwningStepsClient, StepRouter, UnroutedModuleError
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +98,8 @@ CHECKS_DIR = (_REPO_ROOT / "database" / "sql" / "monitoring" / "static"
 
 # The inventory's tier files (NIGHTLY_CHAIN minus the daily tiers — the
 # "concepts" this surface monitors). Kept explicit and deliberate, in
-# chain order.
+# chain order. (The former analysis_weekly tier is gone 2026-11-21 —
+# the hindsight-oracle pipeline moved INTO analysis_daily as step 13.)
 NON_DAILY_TIERS: list[str] = [
     "monitoring_occasionally",
     "downloads_weekly",
@@ -102,7 +110,6 @@ NON_DAILY_TIERS: list[str] = [
     "builds_monthly",
     "builds_semiannually",
     "builds_once",
-    "analysis_weekly",
     "strategy_once",
 ]
 
@@ -114,7 +121,6 @@ RERUN_ELIGIBLE_TIERS: set[str] = {
     "downloads_weekly",
     "downloads_monthly", "downloads_quarterly", "downloads_semiannually",
     "builds_monthly", "builds_semiannually", "builds_once",
-    "analysis_weekly",
 }
 
 # The backfill's fire anchor: Saturday 05:00 China time (the maintainer
@@ -136,6 +142,13 @@ _RERUN_POLL_S = 2.0
 # only guards a stalled registry sweep).
 _LANE_LOG_EVERY = 30
 _STOP_EXIT_CAP_S = 300.0
+
+# How long the re-run's OWNING server may stay unreachable before the
+# rerun is abandoned with an unknown exit (the orchestration runner's
+# _AREA_UNREACHABLE_CAP_S, same lost-run semantics — the loop must
+# never spin forever: the backfill request's thread holds the
+# _backfill_lock).
+_UNREACHABLE_CAP_S = 120.0
 
 _STATE_VIEW = "server_cluster/monitor/non_daily/task_state"
 _UPSERT_WRITE = ("server_cluster/monitor/non_daily/non_daily_task_state/"
@@ -207,8 +220,13 @@ class NonDailyOps:
     on ``app.state.non_daily``; thread-safe — the router resolves the
     instance off app.state)."""
 
-    def __init__(self, registry, orchestration: OrchestrationRunner) -> None:
-        self._registry = registry
+    def __init__(self, step_router: StepRouter,
+                 orchestration: OrchestrationRunner) -> None:
+        # Re-runs execute at the OWNING server (the 2026-11-21 scope-
+        # ownership unification — the same route the orchestration
+        # runner's steps take; no local registry handle any more).
+        self._router = step_router
+        self._steps = OwningStepsClient()
         self._orchestration = orchestration
         self._backfill_lock = threading.Lock()
 
@@ -530,7 +548,8 @@ class NonDailyOps:
                 args=args, dry_run=req.dry_run)
             if not req.dry_run:
                 record.submitted, record.exit_code, record.yields = (
-                    self._drive_rerun(service, step.script, args))
+                    self._drive_rerun(service, step.script, args,
+                                      step.src_host))
                 record.state_after = self._recheck_one(configs, service)
             reruns.append(record)
         yields = sum(r.yields for r in reruns)
@@ -548,17 +567,21 @@ class NonDailyOps:
             due=[service for service, _ in due], reruns=reruns,
             detail=detail)
 
-    def _drive_rerun(self, service: str, module: str,
-                     args: list[str]) -> tuple[bool, int | None, int]:
-        """Submit one re-run through the run registry and poll it to its
-        exit (registry dedupe + per-service max_parallel + the module's
-        single-instance lock all still apply). The re-run GIVES WAY to
-        the orchestration priority board (the module's service_config
-        ``priority``): it waits out a strictly higher-priority
-        orchestration run before the submit, and one arriving mid-run
-        stops the child (registry stop), waits the blocker out, and
-        resumes it as a fresh child of the same tag — the force args
-        make the resumed run pick up where the stop left off. Records
+    def _drive_rerun(self, service: str, module: str, args: list[str],
+                     src_host: str | None) -> tuple[bool, int | None, int]:
+        """Submit one re-run AT ITS OWNING AREA SERVER (POST /jobs/run
+        there — its registry dedupes, the per-service max_parallel and
+        the module's single-instance lock all still apply) and poll it
+        to its exit there. The re-run GIVES WAY to the orchestration
+        priority board (the module's service_config ``priority`` plus
+        the tier step's ``src_host``): it waits out a strictly
+        higher-priority orchestration run — or ANY same-src run —
+        before the submit, and one arriving mid-run stops the child
+        (owning-server stop), waits the blocker out, and resumes it as
+        a fresh child of the same tag — the force args make the
+        resumed run pick up where the stop left off. The running child
+        sits ON the board (register_claim; released in a finally) so
+        the runner's own steps give way to it symmetrically. Records
         the attempt + next weekly gate whatever the exit. Returns
         (submitted, exit_code, yields)."""
         label = f"non-daily rerun {service}"
@@ -566,78 +589,138 @@ class NonDailyOps:
                f"{datetime.now(CHINA_TZ).strftime('%Y%m%d')}")
         priority = priority_for(module)
         yields = 0
-        self._wait_priority_clear(priority, label)
+        self._wait_priority_clear(priority, src_host, tag, label)
         try:
-            entry, already = self._registry.submit(module, args, tag)
+            route = self._router.route(module)
+        except UnroutedModuleError as exc:
+            logger.error("non-daily backfill: %s unrouted (%r) — "
+                         "not submitted", service, exc)
+            return False, None, 0
+        try:
+            entry_tag, already = self._steps.submit(route, module, args,
+                                                    tag)
         except Exception:  # noqa: BLE001 — one task's submit failure
             logger.exception(  # must not abort the drive
-                "non-daily backfill: submit failed for %s", service)
+                "non-daily backfill: submit failed for %s at %s", service,
+                route.base_url)
             return False, None, 0
         if already:
             logger.info("non-daily backfill: %s deduped to an in-flight "
-                        "run (%s)", service, entry.tag)
-        code: int | None = None
-        while True:
-            status = self._registry.status_many([entry.tag]).get(entry.tag)
-            if status is not None and status.get("running", True):
-                blocker = self._priority_blocker(priority)
-                if blocker is None:
+                        "run (%s)", service, entry_tag)
+        # On the board from submit to exit — the runner's steps see
+        # this re-run's priority rank and src_host like any other run's
+        # child; the finally releases it on EVERY exit path (exit,
+        # abandon, resume-submit failure, an escaped exception).
+        self._orchestration.register_claim(tag, priority, src_host, label)
+        try:
+            code: int | None = None
+            unreachable_since: float | None = None
+            while True:
+                try:
+                    status = self._steps.status_many(
+                        route, [entry_tag]).get(entry_tag)
+                    unreachable_since = None
+                except Exception:  # noqa: BLE001 — owning server
+                    # unreachable: bounded like the chain (a dead area
+                    # fails the rerun like a lost run)
+                    now_mono = time.monotonic()
+                    if unreachable_since is None:
+                        unreachable_since = now_mono
+                    elif (now_mono - unreachable_since
+                            >= _UNREACHABLE_CAP_S):
+                        logger.error(
+                            "non-daily backfill: %s owning server %s "
+                            "unreachable for %.0fs — rerun abandoned "
+                            "(unknown exit; the audit row stays open)",
+                            service, route.base_url,
+                            now_mono - unreachable_since)
+                        code = None
+                        break
+                    logger.warning(
+                        "non-daily backfill: status poll of %s at %s "
+                        "failed; retrying (%.0fs)", service,
+                        route.base_url, now_mono - unreachable_since)
                     time.sleep(_RERUN_POLL_S)
                     continue
-                yields += 1
-                logger.warning(
-                    "non-daily backfill: %s (P%d) — higher-priority run "
-                    "%s — stopping to give way (yield %d)", label,
-                    priority, blocker, yields)
-                self._registry.stop(entry.tag)
-                self._await_run_exit(entry.tag, label)
-                self._wait_priority_clear(priority, label)
-                try:
-                    entry, already = self._registry.submit(module, args,
-                                                           tag)
-                except Exception:  # noqa: BLE001 — a failed resume is
-                    logger.exception(  # the rerun's own failure
-                        "non-daily backfill: resume submit failed for "
-                        "%s", service)
-                    code = None
-                    break
-                logger.info("non-daily backfill: %s resumed (%s)",
-                            service, entry.tag)
-                continue
-            code = status.get("exit_code") if status else None
-            break
+                if status is not None and status.get("running", True):
+                    blocker = self._priority_blocker(priority, src_host,
+                                                     tag)
+                    if blocker is None:
+                        time.sleep(_RERUN_POLL_S)
+                        continue
+                    yields += 1
+                    logger.warning(
+                        "non-daily backfill: %s (P%d) — %s — stopping "
+                        "to give way (yield %d)", label, priority,
+                        blocker, yields)
+                    try:
+                        self._steps.stop(route, entry_tag)
+                    except Exception as exc:  # noqa: BLE001 — the stop
+                        # is best effort; the await bounds it
+                        logger.warning(
+                            "non-daily backfill: stop of %s at %s "
+                            "failed: %s", service, route.base_url, exc)
+                    self._await_run_exit(entry_tag, route, label)
+                    self._wait_priority_clear(priority, src_host, tag,
+                                              label)
+                    try:
+                        entry_tag, already = self._steps.submit(
+                            route, module, args, tag)
+                    except Exception:  # noqa: BLE001 — a failed resume
+                        # is the rerun's own failure
+                        logger.exception(
+                            "non-daily backfill: resume submit failed "
+                            "for %s", service)
+                        code = None
+                        break
+                    logger.info("non-daily backfill: %s resumed (%s)",
+                                service, entry_tag)
+                    continue
+                code = status.get("exit_code") if status else None
+                break
+        finally:
+            self._orchestration.release_claim(tag)
         asyncio.run(self._record_rerun_async(service))
         logger.info("non-daily backfill: %s rerun exit %s (%d give-way "
-                    "stop(s))", service, code, yields)
+                    "stop(s))", label, code, yields)
         return True, code, yields
 
     # ------------------------------------------------------------------
     # priority give-way (the runner holds the priority board)
     # ------------------------------------------------------------------
 
-    def _priority_blocker(self, priority: int) -> str | None:
-        """The highest STRICTLY higher-priority claim on the
-        orchestration board, if any (None = clear to run) — the re-run
-        side of the give-way; equal priorities never block."""
-        claims = self._orchestration.priority_claims()
-        top = max((p for p in claims if p > priority), default=None)
-        if top is None:
-            return None
-        return f"{claims[top][0]} [P{top}]"
+    def _priority_blocker(self, priority: int, src_host: str | None,
+                          own_tag: str) -> str | None:
+        """The blocker for this re-run on the orchestration board, if
+        any (None = clear to run): a claim STRICTLY above ``priority``
+        as before, or any claim on the SAME ``src_host`` — same-src
+        children never overlap regardless of rank (the equal-priority
+        case the rank alone cannot order). ``own_tag`` excludes this
+        re-run's own registered claim; equal-priority, different-src
+        claims never block."""
+        board = self._orchestration.priority_claims(own_tag)
+        top = max((p for p in board.claims if p > priority), default=None)
+        if top is not None:
+            return f"{board.claims[top][0]} [P{top}]"
+        if src_host:
+            busy = board.src_claims.get(src_host)
+            if busy:
+                return f"src {src_host} busy: {busy[0]}"
+        return None
 
-    def _wait_priority_clear(self, priority: int, label: str) -> None:
-        """Block while a strictly higher-priority orchestration run is
-        in flight (the give-way BEFORE a submit — the blocker finishes,
-        then the non-daily task starts/resumes)."""
-        blocker = self._priority_blocker(priority)
+    def _wait_priority_clear(self, priority: int, src_host: str | None,
+                             tag: str, label: str) -> None:
+        """Block while a strictly higher-priority — or same-src —
+        orchestration run is in flight (the give-way BEFORE a submit —
+        the blocker finishes, then the non-daily task starts/resumes)."""
+        blocker = self._priority_blocker(priority, src_host, tag)
         if blocker is None:
             return
         logger.info("non-daily backfill: %s (P%d) giving way to "
-                    "higher-priority run %s — waiting", label, priority,
-                    blocker)
+                    "run %s — waiting", label, priority, blocker)
         polls = 0
         while True:
-            blocker = self._priority_blocker(priority)
+            blocker = self._priority_blocker(priority, src_host, tag)
             if blocker is None:
                 break
             polls += 1
@@ -648,13 +731,17 @@ class NonDailyOps:
         logger.info("non-daily backfill: %s priority board clear — "
                     "resuming", label)
 
-    def _await_run_exit(self, entry_tag: str, label: str) -> None:
-        """Poll one registry tag to its exit (a give-way-stopped child:
-        SIGTERM grace then SIGKILL bounds the child; the cap only
-        guards a stalled registry sweep)."""
+    def _await_run_exit(self, entry_tag: str, route, label: str) -> None:
+        """Poll one tag AT ITS OWNING SERVER to its exit (a give-way-
+        stopped child: SIGTERM grace then SIGKILL bounds the child; the
+        cap only guards a stalled registry sweep)."""
         deadline = time.monotonic() + _STOP_EXIT_CAP_S
         while time.monotonic() < deadline:
-            status = self._registry.status_many([entry_tag]).get(entry_tag)
+            try:
+                status = self._steps.status_many(
+                    route, [entry_tag]).get(entry_tag)
+            except Exception:  # noqa: BLE001 — unreachable: keep waiting
+                status = {"running": True}
             if status is None or not status.get("running", True):
                 return
             time.sleep(_RERUN_POLL_S)
@@ -685,13 +772,15 @@ class NonDailyOps:
     def _tier_step(service: str):
         """The service's (tier, step) from the non-daily tier files —
         the module + args the backfill re-runs (its give-way priority
-        comes from the module's service_config entry, not the step).
-        None when absent."""
+        comes from the module's service_config entry, not the step; its
+        give-way src_host comes from the step itself). None when
+        absent."""
 
         class _TierStep(BaseModel):
             tier: str
             script: str
             args: list[str] = Field(default_factory=list)
+            src_host: str | None = None
 
         for tier in NON_DAILY_TIERS:
             try:
@@ -701,7 +790,8 @@ class NonDailyOps:
             for step in plan.steps:
                 if step.script == service:
                     return _TierStep(tier=tier, script=step.script,
-                                     args=list(step.args))
+                                     args=list(step.args),
+                                     src_host=step.src_host)
         return None
 
     @staticmethod

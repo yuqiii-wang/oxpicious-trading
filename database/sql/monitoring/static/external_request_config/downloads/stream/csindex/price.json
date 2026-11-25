@@ -18,7 +18,7 @@
     "urls": {
       "base": "https://www.csindex.com.cn"
     },
-    "notes": "csindex.com.cn endpoint inventory (default request_type; the intraday fetch itself rides the downloads.index.csindex.quote service); pacing stays on the page row. URLs migrated from code constants 2026-10-17",
+    "notes": "csindex.com.cn endpoint inventory (default request_type; the intraday fetch itself rides the downloads.index.csindex.price service (the former quote module, split 2026-11-23)); pacing stays on the page row. URLs migrated from code constants 2026-10-17",
     "source_ref": "downloads/stream/csindex/price/__main__.py; downloads/stream/csindex/price/_fetch.py",
     "updated_at": "2026-10-17T00:00:00.000000+00:00"
   },

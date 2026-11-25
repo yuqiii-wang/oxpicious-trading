@@ -1,0 +1,11 @@
+{
+  "service": "strategy.singleton_trading",
+  "kind": "derive",
+  "tables": [
+    {
+      "table": "strategy.strategy_identity",
+      "date_column": "end_date"
+    }
+  ],
+  "notes": "One row per strategy sequence: a session is present when a sequence ends on it (end_date — the same present-session set the 12.5M-row strategy_daily.trade_date yields, read in milliseconds instead of tens of seconds cold: 22.8k rows). A sequence's end_date equals its last strategy_daily trade_date (22,118 of 22,520)."
+}

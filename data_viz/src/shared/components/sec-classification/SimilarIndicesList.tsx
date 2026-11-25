@@ -21,6 +21,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Alert, Box, Chip, CircularProgress, Stack, Typography } from "@mui/material";
 import { ExpandMore, Scale } from "@mui/icons-material";
 import { fetchSimilarIndices } from "@/lib/api-client";
+import { fmtDate } from "@/shared/datetime";
 import type { SimilarIndicesResponse, SimilarIndexRow } from "@shared/types";
 
 interface Props {
@@ -94,7 +95,7 @@ export default function SimilarIndicesList({
             color="text.secondary"
             sx={{ fontSize: chipFontSize, whiteSpace: "nowrap" }}
           >
-            as of {data.snapshot_date}
+            as of {fmtDate(data.snapshot_date)}
           </Typography>
         )}
       </Box>

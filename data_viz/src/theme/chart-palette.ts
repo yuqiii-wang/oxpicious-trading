@@ -11,6 +11,7 @@
  */
 import type { CSSProperties } from "react";
 import type { ThemeMode } from "@/store/filters";
+import { fmtDate } from "@/shared/datetime/display";
 
 /**
  * Resolve a CSS custom property to its current value.
@@ -411,9 +412,9 @@ export function commonDataZoom(
         areaStyle: { color: "rgba(120,144,156,0.08)" },
       },
       labelFormatter: (val: string | number) => {
-        // Show YYYY-MM-DD (short) for category-axis date strings
-        const s = String(val);
-        return s.length > 10 ? s.slice(0, 10) : s;
+        // Show the UI-wide yyyy-Mmm-dd date display for category-axis date
+        // strings (and ms values on time axes); non-date values pass through.
+        return fmtDate(val);
       },
       ...overrides,
     },
@@ -500,6 +501,11 @@ export const LPR_SERIES = [
   { col: "lpr_1y", label: "1Y LPR", color: MUTED_PALETTE[0] },
   { col: "lpr_5y", label: "5Y+ LPR", color: MUTED_PALETTE[1] },
 ] as const;
+
+// Macro (gold/silver) — SGE onshore series (left axis) vs COMEX offshore
+// series (right axis); the two quote units never share a scale.
+export const MACRO_SGE_COLOR = MUTED_PALETTE[0];
+export const MACRO_COMEX_COLOR = MUTED_PALETTE[2];
 
 export const MAX_PAIN_COLOR = MA60_COLOR;
 export const OI_WEIGHTED_COLOR = MA20_COLOR;

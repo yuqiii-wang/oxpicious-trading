@@ -5,19 +5,61 @@
  * (the service's daily run-count curve; click a day for its run list,
  * each run click opens its log in the page-level LogViewerDialog). The
  * cells shown depend on the section variant (each section renders its
- * own matching table head).
+ * own matching table head); all three share the p95 run-duration cell
+ * (the duration 95% of the last 20 completed runs finished within).
+ * A service the DATA PRE-CHECK arranged shows its reading instead of
+ * the calendar boundary — the queue's why-due chip and the no-need
+ * reason — with the absent / staged sessions in the tooltip.
  */
 import { Box, Chip, Collapse, TableCell, TableRow, Tooltip } from "@mui/material";
 import { ExpandLess, ExpandMore } from "@mui/icons-material";
 import { fmtDateTimeShanghai } from "@/shared/datetime";
 import type {
   OrchestrationBoardTask,
+  OrchestrationPreCheckDetail,
   ServiceAuditEntry,
 } from "@/lib/api-client/monitor";
 import { fmtAge, liveAge } from "@/monitor/fmt";
 import ServiceRunTrend from "@/monitor/components/service-run-trend";
 
 export type BoardSection = "running" | "queue" | "noNeed";
+
+/** The pre-check bases a queue chip names (the label codes, readably). */
+const BASIS_LABEL: Record<string, string> = {
+  db_missing: "db missing",
+  csv_present: "csv staged",
+  csv_missing: "csv missing",
+  check_failed: "check failed",
+};
+
+function mmdd(dates: string[] | undefined): string {
+  return (dates ?? []).map((s) => s.slice(5)).join(", ");
+}
+
+/** The pre-check's session lists as tooltip lines: the probed window
+ *  and table slices, the absent sessions, and which of them have a
+ *  final source csv. */
+function preCheckTip(task: OrchestrationBoardTask): string {
+  const d: OrchestrationPreCheckDetail | null = task.missingDetail;
+  if (d == null) return "";
+  return [
+    `pre-check (${d.kind ?? "?"}) ${d.from ?? ""} .. ${d.to ?? ""}`,
+    (d.tables ?? []).length > 0 ? `tables: ${(d.tables ?? []).join(", ")}` : null,
+    (d.missing?.length ?? 0) > 0 ? `absent: ${mmdd(d.missing)}` : null,
+    (d.csv_present?.length ?? 0) > 0 ? `csv staged: ${mmdd(d.csv_present)}` : null,
+    (d.csv_missing?.length ?? 0) > 0 ? `no final csv: ${mmdd(d.csv_missing)}` : null,
+    ...Object.entries(d.slice_missing ?? {}).map(
+      ([table, list]) => `${table} lacks ${mmdd(list)}`,
+    ),
+    d.error ?? null,
+  ]
+    .filter((s): s is string => s != null && s !== "")
+    .join("\n");
+}
+
+/** Whether the data pre-check (not the calendar rule) arranged the task. */
+const isPreChecked = (task: OrchestrationBoardTask): boolean =>
+  task.basis !== "calendar";
 
 export default function BoardRow({
   task,
@@ -83,6 +125,20 @@ export default function BoardRow({
       )}
     </TableCell>
   );
+  // The p95 run-duration cell (every section): the duration 95% of the
+  // service's last 20 completed normal-exit runs finished within —
+  // em dash before the first completed run.
+  const p95RunCell = (
+    <TableCell>
+      {task.p95RunS != null ? (
+        <Tooltip title="duration 95% of the last 20 completed runs finished within">
+          <span>{fmtAge(Math.round(task.p95RunS))}</span>
+        </Tooltip>
+      ) : (
+        "—"
+      )}
+    </TableCell>
+  );
 
   return (
     <>
@@ -92,6 +148,7 @@ export default function BoardRow({
         {section === "running" && (
           <>
             {freqCell}
+            {p95RunCell}
             <TableCell>{task.pid ?? "—"}</TableCell>
             <TableCell>{fmtDateTimeShanghai(task.startedAt)}</TableCell>
             <TableCell>
@@ -105,6 +162,7 @@ export default function BoardRow({
               {task.step}
             </TableCell>
             {freqCell}
+            {p95RunCell}
             <TableCell align="right">
               <Tooltip title="the service_config priority — downloads outrank non-downloads, then frequency (the give-way rank)">
                 <span>{task.priority}</span>
@@ -130,7 +188,16 @@ export default function BoardRow({
               </Tooltip>
             </TableCell>
             <TableCell>
-              {task.dueAt != null ? (
+              {isPreChecked(task) ? (
+                <Tooltip title={preCheckTip(task)}>
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    color={task.basis === "check_failed" ? "error" : "primary"}
+                    label={`${BASIS_LABEL[task.basis] ?? task.basis} · ${task.missingCount}`}
+                  />
+                </Tooltip>
+              ) : task.dueAt != null ? (
                 <Tooltip title="the calendar boundary that put it back in the queue">
                   <span>{fmtDateTimeShanghai(task.dueAt)}</span>
                 </Tooltip>
@@ -159,6 +226,7 @@ export default function BoardRow({
         {section === "noNeed" && (
           <>
             {freqCell}
+            {p95RunCell}
             <TableCell>
               <Tooltip
                 title={
@@ -175,13 +243,21 @@ export default function BoardRow({
               </Tooltip>
             </TableCell>
             <TableCell>{fmtDateTimeShanghai(task.dueAt)}</TableCell>
-            <TableCell>{task.reason ?? "—"}</TableCell>
+            <TableCell>
+              {isPreChecked(task) && preCheckTip(task) !== "" ? (
+                <Tooltip title={preCheckTip(task)}>
+                  <span style={{ cursor: "help" }}>{task.reason ?? "—"}</span>
+                </Tooltip>
+              ) : (
+                (task.reason ?? "—")
+              )}
+            </TableCell>
           </>
         )}
       </TableRow>
       <TableRow>
         <TableCell
-          colSpan={section === "queue" ? 8 : 6}
+          colSpan={section === "queue" ? 9 : 7}
           sx={{ py: 0, border: 0 }}
         >
           <Collapse in={open} unmountOnExit>

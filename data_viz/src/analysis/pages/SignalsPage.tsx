@@ -45,9 +45,10 @@ export const SIGNALS_ANALYSES: SignalItem[] = [
     slug: "signal-amplification",
     title: "Signal Amplification",
     description:
-      "The OHLCV-anatomy amplifiers — intraday gaps, wicks and volume " +
-      "shapes that amplify (or discount) the close-only signal families' " +
-      "claims, with their measured evidence.",
+      "The day-anatomy amplifiers — intraday gaps, wicks and volume " +
+      "shapes, margin levels and news-text states that amplify (or " +
+      "discount) the signal families' claims, with their measured " +
+      "evidence.",
   },
   {
     slug: "oracle",

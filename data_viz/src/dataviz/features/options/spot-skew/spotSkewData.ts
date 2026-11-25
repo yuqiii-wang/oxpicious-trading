@@ -22,6 +22,7 @@
  * docs/options_vol_smile_study.md.
  */
 import type { OptionsRow, SkewDailyRow } from "@shared/types";
+import { fmtDate } from "@/shared/datetime/display";
 
 /** Selectable OTM wing for the risk reversal. */
 export type SkewDelta = 25 | 10;
@@ -272,7 +273,9 @@ export function buildSkewTermStructure(
   const groups = groupsByDate.get(date);
   if (!groups) return [];
   return groups.map((g) => ({
-    label: g.expiryDate.slice(5), // MM-DD
+    // UI-wide display label (the tooltip reads expiryDate directly, so the
+    // formatted label stays display-only).
+    label: fmtDate(g.expiryDate),
     expiryDate: g.expiryDate,
     dte: g.minDte,
     rr: groupRr(g, delta),

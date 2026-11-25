@@ -55,7 +55,14 @@ Loop (every ``--interval``, default 60s), for each service in
     ``RunRequest.provider`` field). First sighting ALERTS only; when the
     same mismatch persists one scan (sources quiet), the process is
     SIGTERM'd (grace) / SIGKILL'd and restarted on the fresh sources —
-    the same burst guard as any restart. Per-service opt-out:
+    the same burst guard as any restart, but the guard gates the SIGTERM
+    itself: a restart the backoff would refuse is DEFERRED (the running
+    process keeps serving the previous sources; the gate retries next
+    scan) — never kill a live process the watchdog cannot immediately
+    replace (observed 2026-11-24: the monitor was SIGTERM'd for stale
+    sources, the respawn was then backed off 10 min, and the fleet
+    supervisor sat dark — /api/monitor/fleet fetch-failed). Per-service
+    opt-out:
     ``stale_process_check: false`` in the service's service_config/
     JSON.
 
@@ -357,9 +364,42 @@ def _mark_stop(conn, service: str, reason: str) -> None:
         logger.warning("%s: could not mark stop record: %s", service, reason)
 
 
+def _burst_count(conn, module: str) -> int:
+    """Restart rows this watchdog recorded for the service within the
+    burst window — true crash restarts AND designed stale-code restarts
+    (the guard bounds both: a crash-looping service must not be hammered,
+    a self-mismatching fingerprint must not loop kill/restart)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            _BURST_SQL,
+            (module, RESTART_REASON_PREFIX + "%", RESTART_BURST_WINDOW_S),
+        )
+        (n_recent,) = cur.fetchone()
+    return n_recent
+
+
+def _crash_loop_alert(module: str, n_recent: int) -> None:
+    """Log + caution (deduped per service) that the burst guard is
+    blocking restarts for the backoff window."""
+    logger.error(
+        "[ALERT] %s: %d restarts in the last %d min — crash loop suspected; "
+        "backing off %d min (fix the cause in logs/ and restart manually).",
+        module, n_recent, RESTART_BURST_WINDOW_S // 60, RESTART_BACKOFF_S // 60,
+    )
+    record_service_error(
+        f"{module} crash loop: {n_recent} watchdog restarts in "
+        f"{RESTART_BURST_WINDOW_S // 60} min — backed off",
+        dedupe_key=f"watchdog-crash-loop:{module}",
+        detail={"service": module, "recent_restarts": n_recent,
+                "window_s": RESTART_BURST_WINDOW_S},
+        service=module,
+    )
+
+
 def _restart(
     conn, module: str, reason: str, dry_run: bool,
     ended_hint_s: float | None = None,
+    guard_prechecked: bool = False,
 ) -> bool:
     """(Re)start a service, with crash-loop guard. True = alert.
 
@@ -368,32 +408,23 @@ def _restart(
     exit_reason (prev beat age is part of ``reason``; ended_hint_s — the
     last beat's age — estimates the death time), then the fresh process
     is spawned — it opens its own new audit life on registration.
+
+    ``guard_prechecked`` — the caller already passed the burst guard
+    BEFORE its destructive action (the stale-code terminate, the wedged
+    SIGKILL) and must not be re-judged here: the stale path writes its
+    audit override row between the two checks, and that fresh row would
+    count against the very restart the pre-check just authorized (the
+    2026-11-24 outage shape: kill admitted at 2, spawn refused at 3).
     """
     if dry_run:
         logger.warning("[ALERT] %s: WOULD restart (%s)", module, reason)
         return True
 
-    with conn.cursor() as cur:
-        cur.execute(
-            _BURST_SQL,
-            (module, RESTART_REASON_PREFIX + "%", RESTART_BURST_WINDOW_S),
-        )
-        (n_recent,) = cur.fetchone()
-    if n_recent >= RESTART_BURST_LIMIT:
-        logger.error(
-            "[ALERT] %s: %d restarts in the last %d min — crash loop suspected; "
-            "backing off %d min (fix the cause in logs/ and restart manually).",
-            module, n_recent, RESTART_BURST_WINDOW_S // 60, RESTART_BACKOFF_S // 60,
-        )
-        record_service_error(
-            f"{module} crash loop: {n_recent} watchdog restarts in "
-            f"{RESTART_BURST_WINDOW_S // 60} min — backed off",
-            dedupe_key=f"watchdog-crash-loop:{module}",
-            detail={"service": module, "recent_restarts": n_recent,
-                    "window_s": RESTART_BURST_WINDOW_S},
-            service=module,
-        )
-        return True
+    if not guard_prechecked:
+        n_recent = _burst_count(conn, module)
+        if n_recent >= RESTART_BURST_LIMIT:
+            _crash_loop_alert(module, n_recent)
+            return True
 
     pid = _spawn(module)
     ended_hint = (
@@ -429,7 +460,7 @@ def _restart(
 
 
 # A one-shot pipeline life open this long is a hang (or a recycled pid
-# holding the row): the longest observed legit runs are the csindex quote
+# holding the row): the longest observed legit runs are the csindex price
 # crawl (~9h) and the SSE pe_latest sweep (~3.2h). Alert-only — the
 # watchdog never closes a row whose pid is still alive.
 STALE_OPEN_RUN_AFTER_S = 24 * 3600.0
@@ -596,7 +627,12 @@ def _check_stale_code(
     anything. A first mismatch only ALERTS; the restart fires when the
     same mismatching disk hash is still there one scan later (the
     debounce keeps a mid-edit storm from killing the service under the
-    developer's hands)."""
+    developer's hands). The crash-loop burst guard is consulted BEFORE
+    the terminate: a restart the backoff would refuse is deferred (the
+    running process keeps serving the previous sources and this gate
+    retries next scan — _STALE_SEEN stays set so the retry skips the
+    first-sighting ALERT); the watchdog never kills a live process it
+    cannot immediately replace."""
     if not stale_check_for(module):
         return 0
     if not row_fingerprint or row_fingerprint == "unknown":
@@ -614,6 +650,17 @@ def _check_stale_code(
             "restarting next scan if the sources stay unchanged",
             module, pid,
         )
+        return 1
+    n_recent = _burst_count(conn, module)
+    if n_recent >= RESTART_BURST_LIMIT:
+        logger.error(
+            "[ALERT] %s: stale-process restart DEFERRED — %d restarts in "
+            "the last %d min (crash-loop backoff); pid %d keeps serving "
+            "the previous sources; retrying next scan.",
+            module, n_recent, RESTART_BURST_WINDOW_S // 60, pid,
+        )
+        if not dry_run:
+            _crash_loop_alert(module, n_recent)
         return 1
     _STALE_SEEN.pop(module, None)
     if dry_run:
@@ -653,6 +700,7 @@ def _check_stale_code(
         reason[len(RESTART_REASON_PREFIX):],
         dry_run,
         ended_hint_s=0,
+        guard_prechecked=True,
     )
 
 
@@ -735,6 +783,22 @@ def check_once(
                     ended_hint_s=beat_age_s,
                 )
             elif beat_age_s > hung_after_s:
+                # Same rule as the stale-code gate: never kill a live
+                # process the crash-loop backoff would leave dead — the
+                # wedged pid is left for inspection and the kill retries
+                # next scan once the window clears.
+                n_recent = _burst_count(conn, module) if not dry_run else 0
+                if not dry_run and n_recent >= RESTART_BURST_LIMIT:
+                    logger.error(
+                        "[ALERT] %s: wedged-runtime kill DEFERRED — %d "
+                        "restarts in the last %d min (crash-loop backoff); "
+                        "pid %d left alive for inspection; retrying next "
+                        "scan.",
+                        module, n_recent, RESTART_BURST_WINDOW_S // 60, pid,
+                    )
+                    _crash_loop_alert(module, n_recent)
+                    alerts += 1
+                    continue
                 logger.warning(
                     "[ALERT] %s: beat stale %.0fs and pid %d still alive — "
                     "wedged runtime; killing and restarting.",
@@ -753,6 +817,7 @@ def check_once(
                     "wedged, killed",
                     dry_run,
                     ended_hint_s=beat_age_s,
+                    guard_prechecked=True,
                 )
             else:
                 logger.warning(

@@ -1,0 +1,13 @@
+{
+  "service": "downloads.macro.gold_silver",
+  "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
+  "is_resident": false,
+  "freq": "daily",
+  "priority": 170,
+  "schedule": "every A-share trading date, in the 16:00 nightly chain (downloads_daily step 32)",
+  "notes": "4 full-history requests per run (SGE Au99.99/Ag99.99 spot OHLC + sina COMEX GC/SI main-continuous klines) → overwrites temps/gold_silver/*.csv; builds.macro loads them into stats.macro_identity/basic_stats.",
+  "source_ref": "scripts/orchestration/downloads_daily.json",
+  "updated_at": "2026-11-21T00:00:00.000000+00:00"
+}

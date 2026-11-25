@@ -1,0 +1,4 @@
+{
+  "view": "server_cluster/maintainer/daily_check/analysis/mov_ave_spread",
+  "notes": "analysis_daily step 2 (analysis.mov_ave_spread): analysis.mov_ave_spreads_detail max(date) per sec_type vs that sec_type's identity table (stats.{etf,index,stock,industry}_identity) — the pipeline's own frontier. A lagging sec_type means the nightly detail+rsi pass stopped for it."
+}

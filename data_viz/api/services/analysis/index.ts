@@ -7,7 +7,16 @@ export { listPerfAttrCodes, getPerfAttrAttribution, listPerfAttrThemes, getPerfA
 export { listMarketBetaThemes, listMarketBetaStrategyThemes, getMarketBetaChart, getMarketBetaChartByCode, getMarketParticipation, type MarketParticipationRow } from "./market-beta/index.js";
 export { getIndustryCorrelations } from "./industry-correlations.js";
 export { getIndustryCorrOffsets, listIndustryCorrOffsetBenchmarks, listIndustryCorrOffsetIndustries, invalidateIndustryCorrOffsetCoverage } from "./industry-corr-offsets.js";
-export { getNewsProviderAudit, getNewsContentAudit } from "./news-audit.js";
+export {
+  getNewsProviderAudit,
+  getNewsContentAudit,
+  getNewsCoverageAudit,
+} from "./news-audit.js";
+export {
+  getSignalAuditMeta,
+  getSignalOverlap,
+  getSignalTypeSummary,
+} from "./signal-rules-audit.js";
 export { listPairPctRatioUniverse, getPairPctRatios } from "./pair-pct-ratios.js";
 export { getBenchmarkPriceChart, getIndustryAttributionPriceSeries } from "./benchmark-price-chart.js";
 export { getAllIndustriesAttribution, getMemberIndexAttribution } from "./industry-attribution-bars.js";
@@ -49,3 +58,11 @@ export {
   listOracleCodes,
   getOracleSeries,
 } from "./oracle/index.js";
+export {
+  getNewsTextStatesChart,
+  listNewsTextDisagreement,
+  listNewsTextStatesEvents,
+  listNewsTextStatesRecentLevels,
+  listNewsTextStatesScopes,
+  listNewsTextStrongNegEvents,
+} from "./news-text-states/chart.js";

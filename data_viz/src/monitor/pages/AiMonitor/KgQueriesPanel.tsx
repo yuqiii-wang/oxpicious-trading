@@ -39,6 +39,7 @@ import {
   useChartData,
 } from "@/shared/charts/base-chart";
 import { buildKgGraphOption } from "@/config/pages/KnowledgeGraphPage/kgGraphOption";
+import { fmtStamp } from "@/shared/datetime";
 
 const LIMIT = 50;
 
@@ -170,7 +171,7 @@ export default function KgQueriesPanel() {
                     sx={{ cursor: "pointer" }}
                   >
                     <TableCell sx={{ whiteSpace: "nowrap" }}>
-                      {r.loggedAt.slice(0, 16).replace("T", " ")}
+                      {fmtStamp(r.loggedAt.slice(0, 16))}
                     </TableCell>
                     <TableCell>
                       <Typography

@@ -1,0 +1,13 @@
+{
+  "service": "analysis.pe_and_dividends",
+  "kind": "derive",
+  "tables": [
+    {
+      "table": "analysis.pe"
+    },
+    {
+      "table": "analysis.dividends"
+    }
+  ],
+  "notes": "Presence = the session in analysis.pe AND analysis.dividends (pk code, sec_type, date)."
+}

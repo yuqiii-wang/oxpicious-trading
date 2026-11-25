@@ -1,0 +1,10 @@
+{
+  "service": "builds.industry",
+  "kind": "derive",
+  "tables": [
+    {
+      "table": "stats.industry_basic_stats"
+    }
+  ],
+  "notes": "DB-only (reads stats.index_identity + member maps). Presence = stats.industry_basic_stats — the build's own gate table."
+}

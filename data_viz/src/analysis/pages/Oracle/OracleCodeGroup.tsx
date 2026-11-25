@@ -12,6 +12,7 @@
 import { Alert, Box, Chip, Paper, Stack, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Typography } from "@mui/material";
 import { useChartData } from "@/shared/charts/base-chart";
 import { fetchOracleSeries, type OracleSecType } from "@/lib/api-client";
+import { fmtDate } from "@/shared/datetime";
 import type { OracleRow } from "@shared/types";
 import OracleDecisionChart from "./OracleDecisionChart";
 import { TABLE_ROWS } from "./constants";
@@ -122,7 +123,7 @@ function PivotRow({ row }: { row: OracleRow }) {
     : null;
   return (
     <TableRow>
-      <TableCell>{row.date}</TableCell>
+      <TableCell>{fmtDate(row.date)}</TableCell>
       <TableCell>
         <Chip
           size="small"
@@ -138,7 +139,7 @@ function PivotRow({ row }: { row: OracleRow }) {
           ? Math.round(row.confidence)
           : "pending"}
       </TableCell>
-      <TableCell>{row.ext_date ?? "—"}</TableCell>
+      <TableCell>{fmtDate(row.ext_date)}</TableCell>
       <TableCell align="right">{row.ext_offset ?? "—"}</TableCell>
       <TableCell align="right">
         {row.ext_price != null ? row.ext_price.toFixed(2) : "—"}

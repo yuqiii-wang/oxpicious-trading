@@ -1,0 +1,17 @@
+{
+  "service": "downloads.stock.szse.trend",
+  "kind": "fetch",
+  "tables": [
+    {
+      "table": "stats.stock_basic_stats",
+      "code_scope": "\\.SZ$"
+    }
+  ],
+  "csv": [
+    {
+      "dir": "temps/szse_trend",
+      "pattern": "szse_trend_stock_{date}.csv"
+    }
+  ],
+  "notes": "SZSE stock EOD (one date-named file per session → builds.stock). Presence = the SZSE slice of stats.stock_basic_stats (codes carry the .SZ suffix) — the data table, not stock_identity, which the SZSE stream pre-writes intraday. A pre-close snapshot file does not count (after_close)."
+}

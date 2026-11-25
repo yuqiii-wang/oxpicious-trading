@@ -1,0 +1,10 @@
+{
+  "service": "downloads.macro.gold_silver",
+  "kind": "fetch",
+  "tables": [
+    {
+      "table": "stats.macro_identity"
+    }
+  ],
+  "notes": "SGE Au99.99 / Ag99.99 + COMEX GC / SI (four full-history files overwritten each run, no date in the name). DB slice only: stats.macro_identity — the SGE day session is final by 15:30, the COMEX bar of the same date lands with the next run."
+}

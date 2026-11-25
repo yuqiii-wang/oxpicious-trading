@@ -1,0 +1,11 @@
+{
+  "service": "downloads.margin.sse",
+  "kind": "fetch",
+  "tables": [
+    {
+      "table": "stats.stock_liquidity_margin",
+      "code_scope": "\\.SS$"
+    }
+  ],
+  "notes": "SSE margin detail. DB slice only: a no-data session leaves a header-only csv (181 bytes) and the detail publishes T+1. Presence = the SSE slice of stats.stock_liquidity_margin."
+}

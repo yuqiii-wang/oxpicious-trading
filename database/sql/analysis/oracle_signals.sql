@@ -79,9 +79,11 @@
 --      LOOKFORWARD_DAYS (20 — user-directed 2026-11-20 "let future
 --      look only be 20d not 60d"; the v4 2026-11-19 calibration ran
 --      60) traded rows OR the biggest DROP within
---      the LOOKBACK_DAYS (60) rows before it; a SELL by the biggest
---      DROP after / biggest RISE before (the max favorable excursion
---      on both sides). Each leg grades 0..100 on its own linear ramp
+--      the LOOKBACK_DAYS (20 — 2026-11-21 user-directed "also only
+--      look back 20d not 60d"; the v5 calibration ran 60) rows before
+--      it; a SELL by the biggest DROP after / biggest RISE before
+--      (the max favorable excursion on both sides). Each leg grades
+--      0..100 on its own linear ramp
 --      from CONF_NO_ACTION_MOVE (2%) to CONF_FULL_MOVE (10%,
 --      clipped — fixed % bars, user choice; the measured buy/sell
 --      distributions are near-identical, so the bars are SYMMETRIC);
@@ -104,12 +106,14 @@
 --      as the forward realizes); only a backward-dust UNREALIZED
 --      window (< 60 future rows at the data frontier) is NOT graded:
 --      the row emits with confidence NULL — unknown is not small —
---      and is re-graded (or dropped) by later runs' DATE-BASED
---      revisable tail (~25 traded rows back per code — the future
---      horizons are ALL 20, user-directed "only 20d future look
---      forward", + the action span). Omitted
---      pivots still OCCUPY their 5-row unit (placement precedes
---      grading).
+--      and is re-graded (or dropped) by the DAILY incremental's diff
+--      (user-directed 2026-11-21 "the incremental daily run should
+--      be able to update last 20d signals to add/remove signals
+--      since local max/min are known" — the former weekly tier +
+--      config.WEEKLY_GATE_DAYS gate retired; the future horizons
+--      are ALL 20, user-directed "only 20d future look forward").
+--      Omitted pivots still OCCUPY their 5-row unit (placement
+--      precedes grading).
 --    • THE GENUINE-EXTREME RULE (v7, both sides x both directions —
 --      each side speaks only at a genuine extreme of its own
 --      horizon; the horizons UNIFIED at 20, user-directed "why 30?
@@ -147,8 +151,8 @@
 --      future legs read the
 --      REALIZED portion of the window and are MONOTONE at the
 --      frontier (a partial window already showing the disqualifying
---      level omits now; the revisable tail — 25 rows, the 20d
---      horizon + the action span — re-decides the rest); the recent
+--      level omits now; the daily incremental re-decides the rest as
+--      the window realizes); the recent
 --      legs are
 --      realized at placement (past rows only). A suppressed pivot
 --      still OCCUPIES its 5-row unit and still anchors later rows'
@@ -156,8 +160,12 @@
 --    • A candidate needs its 2 right-side bars, so the trail ends 2
 --      bars before the data frontier; closed units are immutable, but
 --      the frontier unit's placement can UPGRADE forward as bars
---      arrive and frontier pivots re-grade — the incremental run
---      rewrites each code's rows at/after its tail cutoff date.
+--      arrive and frontier pivots re-grade — the DAILY incremental
+--      run diffs the target against the engine's full re-decision
+--      (upserts every missing/changed decision, deletes every row no
+--      longer decided — the previous frontier action's NULL
+--      swing-target legs close at any depth of history the moment
+--      the opposite pivot is placed).
 --    • The ext_* legs carry the row's hindsight SWING TARGET: the
 --      NEXT PLACED ACTION of the OPPOSITE side (a BUY's target = the
 --      next placed sell; a SELL's = the next placed buy) — PLACED-
@@ -183,7 +191,7 @@ CREATE TABLE IF NOT EXISTS analysis.oracle_signals (
     ext_date    DATE,                    -- the NEXT OPPOSITE placed pivot — the row's hindsight swing target; NULL at the frontier
     ext_offset  SMALLINT,                -- traded rows pivot -> opposite pivot (>= 1); NULL at the frontier
     ext_price   DOUBLE PRECISION,        -- the opposite pivot's close (the hindsight exit / re-entry price); NULL at the frontier
-    confidence  DOUBLE PRECISION,        -- the v5 favorable-move grade 0..100: the WEIGHTED SUM of the two legs' linear-ramp grades — CONF_BACK_WEIGHT (0.3) x the backward-60-row move INTO the pivot + CONF_FWD_WEIGHT (0.7) x the forward-20-row move after it (user-directed 2026-11-20 "let future look only be 20d not 60d"; each leg ramped 2% floor / 10% full); a pivot failing any leg of the v7 genuine-extreme gate never reaches the grading; NULL only while the forward window is unrealized AND the backward leg misses the floor (frontier pivots)
+    confidence  DOUBLE PRECISION,        -- the v5 favorable-move grade 0..100: the WEIGHTED SUM of the two legs' linear-ramp grades — CONF_BACK_WEIGHT (0.3) x the backward-20-row move INTO the pivot + CONF_FWD_WEIGHT (0.7) x the forward-20-row move after it (all windows 20 both directions, user-directed 2026-11-20 "let future look only be 20d not 60d" + 2026-11-21 "also only look back 20d not 60d"; each leg ramped 2% floor / 10% full); a pivot failing any leg of the v7 genuine-extreme gate never reaches the grading; NULL only while the forward window is unrealized AND the backward leg misses the floor (frontier pivots)
 
     created_at  TIMESTAMPTZ    NOT NULL DEFAULT now(),
 
@@ -203,7 +211,7 @@ CREATE INDEX IF NOT EXISTS idx_oracle_signals_date
 CREATE INDEX IF NOT EXISTS idx_oracle_signals_ext_date
     ON analysis.oracle_signals (ext_date);
 
-COMMENT ON TABLE  analysis.oracle_signals IS 'Hindsight oracle actions per (sec_type, code, date) for the 10 study indices — the perfect-foresight tier, DECOUPLED from the analysis_signals rule tier: v7 pivot grammar (2026-11-20) — every local min of the 5-bar window (2 rows each side) takes a buy, every local max a sell, consecutive same-side actions >= 5 traded rows apart (a 5-row window holds one buy AND one sell), then the GENUINE-EXTREME gate on both sides (a BUY passing the genuine-deep-min test: the drawdown into the pivot from the prior 20 rows'' high is 5%+ — a genuine deep min always buys even when a deeper local min follows within 20 days, a shallower min being a small fluctuation that omits only when a materially deeper level is imminent within those 20 rows; a SELL only at a genuine high: no 5%+ fall from the prior 20 rows'' ceiling — a weak bounce is not a high — and no close 5%+ above within the next 20 rows — a higher exit is imminent), each surviving pivot then GRADED 0-100 by its favorable move on EITHER side (buy: biggest rise after / biggest drop before, sell: biggest drop after / biggest rise before — the forward window LOOKFORWARD_DAYS (20) traded rows, user-directed 2026-11-20 "let future look only be 20d not 60d"; the backward LOOKBACK_DAYS stays 60; each leg ramped linearly 2% no-action floor / 10% full and combined as the WEIGHTED SUM 0.3 * pre-action leg + 0.7 * forward leg), with a zero weighted grade (both legs below the floor) the pivot emits NOTHING (a backward-dust unrealized frontier window rides confidence NULL), each kept row carrying the next opposite placed pivot as its hindsight swing target. A pivot needs only its 2 right-side confirmation bars, so the trail ends 2 rows before the data frontier. Built by analysis.oracle_signals; serves the Signals Oracle page via /api/analysis/oracle/*.';
+COMMENT ON TABLE  analysis.oracle_signals IS 'Hindsight oracle actions per (sec_type, code, date) for the 10 study indices — the perfect-foresight tier, DECOUPLED from the analysis_signals rule tier: v7 pivot grammar (2026-11-20) — every local min of the 5-bar window (2 rows each side) takes a buy, every local max a sell, consecutive same-side actions >= 5 traded rows apart (a 5-row window holds one buy AND one sell), then the GENUINE-EXTREME gate on both sides (a BUY passing the genuine-deep-min test: the drawdown into the pivot from the prior 20 rows'' high is 5%+ — a genuine deep min always buys even when a deeper local min follows within 20 days, a shallower min being a small fluctuation that omits only when a materially deeper level is imminent within those 20 rows; a SELL only at a genuine high: no 5%+ fall from the prior 20 rows'' ceiling — a weak bounce is not a high — and no close 5%+ above within the next 20 rows — a higher exit is imminent), each surviving pivot then GRADED 0-100 by its favorable move on EITHER side (buy: biggest rise after / biggest drop before, sell: biggest drop after / biggest rise before — the forward window LOOKFORWARD_DAYS (20) traded rows, user-directed 2026-11-20 "let future look only be 20d not 60d"; the backward LOOKBACK_DAYS unified at 20, 2026-11-21 user-directed "also only look back 20d not 60d"; each leg ramped linearly 2% no-action floor / 10% full and combined as the WEIGHTED SUM 0.3 * pre-action leg + 0.7 * forward leg), with a zero weighted grade (both legs below the floor) the pivot emits NOTHING (a backward-dust unrealized frontier window rides confidence NULL), each kept row carrying the next opposite placed pivot as its hindsight swing target. A pivot needs only its 2 right-side confirmation bars, so the trail ends 2 rows before the data frontier. Built by analysis.oracle_signals; serves the Signals Oracle page via /api/analysis/oracle/*.';
 COMMENT ON COLUMN analysis.oracle_signals.sec_type    IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf, 1 = index, 2 = stock. Run scope: 1 (index) only for now — the 10 study indices.';
 COMMENT ON COLUMN analysis.oracle_signals.code        IS 'Security code (bare index code e.g. 000001).';
 COMMENT ON COLUMN analysis.oracle_signals.date        IS 'The action date — the local extreme bar itself (a candidate of the 5-bar window [date-2, date+2] that won its side''s 5d one-action selection). The oracle''s action executes AT the extreme.';
@@ -212,4 +220,4 @@ COMMENT ON COLUMN analysis.oracle_signals.window_days IS 'The grammar''s 5-row w
 COMMENT ON COLUMN analysis.oracle_signals.ext_date    IS 'The row''s hindsight SWING TARGET: the NEXT PLACED action of the OPPOSITE side (a buy''s target = the next sell; a sell''s = the next buy) — placed-level: the target may be a pivot whose own row was omitted by the grading floor. NULL when that opposite action is not placed yet (the frontier''s last unit).';
 COMMENT ON COLUMN analysis.oracle_signals.ext_offset  IS 'Traded-row distance pivot -> its opposite-pivot swing target (>= 1). NULL at the frontier.';
 COMMENT ON COLUMN analysis.oracle_signals.ext_price   IS 'The swing target''s close — the hindsight exit price for a buy / re-entry for a sell. NULL at the frontier.';
-COMMENT ON COLUMN analysis.oracle_signals.confidence IS 'The v5 FAVORABLE-MOVE GRADE, 0..100 (user-directed "look future 60d if there are big rise/drop trend, tune down action confidence even take no action" + "consider before and after local min/max rises and falls" + "rises/drops before action date weighted 30%, future weighted 70%"): the WEIGHTED SUM of the two favorable legs'' linear-ramp grades — each leg graded 0..100 from CONF_NO_ACTION_MOVE (2%) to CONF_FULL_MOVE (10%), clipped — weighted CONF_BACK_WEIGHT (0.3) for the BACKWARD leg (a buy''s biggest drop / a sell''s biggest rise within the LOOKBACK_DAYS rows before the pivot — the run-up into a top / the drawdown into a bottom, fully realized the moment the pivot is confirmed) and CONF_FWD_WEIGHT (0.7) for the FORWARD leg (a buy''s biggest rise / a sell''s biggest drop within the next LOOKFORWARD_DAYS traded rows — 20 since the 2026-11-20 user directive "let future look only be 20d not 60d"; the v4 2026-11-19 calibration ran 60). The v7 GENUINE-EXTREME gate runs FIRST on both sides (buy, refined v7.1 "it is still ok to buy if it is a local deep min despite even in 20d there is a deeper local min": the drawdown INTO the pivot from the prior PREPARE_HORIZON_DAYS=20 rows'' high at PREPARE_DEEP_MARGIN=5%+ makes it a genuine deep min that always buys, a shallower min being a small fluctuation that omits only when a 5%+-deeper level is imminent within those 20 rows; sell: no 5%+ fall from the prior SELL_HIGH_HORIZON_DAYS=20 rows'' ceiling and no close 5%+ above within the next 20 rows — all horizons unified at 20, user-directed "only 20d future look forward") — a pivot failing its gate is never graded. A zero weighted grade (both legs below the floor) OMITS the row entirely; an UNREALIZED frontier window whose backward leg also misses the floor emits NULL — unknown is not small — re-graded by later runs'' date-based revisable tail (a frontier row with a realized backward grade emits its 30% share and only grows). Calibrated by temp_scripts/oracle_forward60_study.py + temp_scripts/oracle_backward_leg_study.py + temp_scripts/oracle_prepare_deep_study.py + temp_scripts/oracle_genuine_extreme_study.py (docs/oracle_forward60_confidence_study_2026-11-19.md, docs/oracle_backward_leg_study_2026-11-19.md, docs/oracle_prepare_deep_study_2026-11-20.md, docs/oracle_genuine_extreme_study_2026-11-20.md).';
+COMMENT ON COLUMN analysis.oracle_signals.confidence IS 'The v5 FAVORABLE-MOVE GRADE, 0..100 (user-directed "look future 60d if there are big rise/drop trend, tune down action confidence even take no action" + "consider before and after local min/max rises and falls" + "rises/drops before action date weighted 30%, future weighted 70%"): the WEIGHTED SUM of the two favorable legs'' linear-ramp grades — each leg graded 0..100 from CONF_NO_ACTION_MOVE (2%) to CONF_FULL_MOVE (10%), clipped — weighted CONF_BACK_WEIGHT (0.3) for the BACKWARD leg (a buy''s biggest drop / a sell''s biggest rise within the LOOKBACK_DAYS rows before the pivot — the run-up into a top / the drawdown into a bottom, fully realized the moment the pivot is confirmed; UNIFIED at 20 rows, 2026-11-21 user-directed "also only look back 20d not 60d" — the v5 2026-11-19 calibration ran 60) and CONF_FWD_WEIGHT (0.7) for the FORWARD leg (a buy''s biggest rise / a sell''s biggest drop within the next LOOKFORWARD_DAYS traded rows — 20 since the 2026-11-20 user directive "let future look only be 20d not 60d"; the v4 2026-11-19 calibration ran 60). The v7 GENUINE-EXTREME gate runs FIRST on both sides (buy, refined v7.1 "it is still ok to buy if it is a local deep min despite even in 20d there is a deeper local min": the drawdown INTO the pivot from the prior PREPARE_HORIZON_DAYS=20 rows'' high at PREPARE_DEEP_MARGIN=5%+ makes it a genuine deep min that always buys, a shallower min being a small fluctuation that omits only when a 5%+-deeper level is imminent within those 20 rows; sell: no 5%+ fall from the prior SELL_HIGH_HORIZON_DAYS=20 rows'' ceiling and no close 5%+ above within the next 20 rows — all horizons unified at 20, user-directed "only 20d future look forward") — a pivot failing its gate is never graded. A zero weighted grade (both legs below the floor) OMITS the row entirely; an UNREALIZED frontier window whose backward leg also misses the floor emits NULL — unknown is not small — re-graded by the daily incremental''s diff (the engine re-decides the full grid every run; a frontier row with a realized backward grade emits its 30% share and only grows). Calibrated by temp_scripts/oracle_forward60_study.py + temp_scripts/oracle_backward_leg_study.py + temp_scripts/oracle_prepare_deep_study.py + temp_scripts/oracle_genuine_extreme_study.py (docs/oracle_forward60_confidence_study_2026-11-19.md, docs/oracle_backward_leg_study_2026-11-19.md, docs/oracle_prepare_deep_study_2026-11-20.md, docs/oracle_genuine_extreme_study_2026-11-20.md).';

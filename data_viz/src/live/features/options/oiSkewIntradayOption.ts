@@ -35,6 +35,7 @@ import {
   MUTED_PALETTE,
 } from "@/theme/chart-palette";
 import { fmtNum, fmtCompact } from "@/lib/series";
+import { fmtDate, fmtMonth } from "@/shared/datetime";
 import {
   renderReactElement,
   tooltipComponents,
@@ -174,7 +175,7 @@ function makeTooltipFormatter(
     const makeRow = (children: React.ReactNode, style?: React.CSSProperties) =>
       React.createElement(tooltipComponents.Row, { style }, children);
 
-    const children: React.ReactNode[] = [makeHeader(`${data.date} · ${hm(tick)}`)];
+    const children: React.ReactNode[] = [makeHeader(`${fmtDate(data.date)} · ${hm(tick)}`)];
 
     const spot = data.spotByTime.get(time);
     if (spot != null) {
@@ -224,7 +225,7 @@ function makeTooltipFormatter(
         children.push(
           makeRow([
             React.createElement("span", { key: "d", style: { color: expiryColorMap.get(exp) ?? "#888" } }, "● "),
-            `${exp.slice(0, 7)}: `,
+            `${fmtMonth(exp)}: `,
             React.createElement(tooltipComponents.Bold, null, pct),
             oi,
           ]),
@@ -274,7 +275,7 @@ export function buildOiSkewIntradayOption(
     const color = expiryColorMap.get(exp) ?? IV_BLUE;
     return {
       type: "line" as const,
-      name: `Skew ${exp.slice(0, 7)}`,
+      name: `Skew ${fmtMonth(exp)}`,
       showSymbol: false,
       smooth: false,
       connectNulls: false,

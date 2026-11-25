@@ -10,6 +10,12 @@
 
 const LLM_HOST_BASE = "http://127.0.0.1:8767";
 
+/** The known-dummy credential the local-model host accepts on every
+ *  model-consuming route (the seeded lmh-dummy value — the host checks
+ *  the Bearer's presence, not the secret, while its auth_token is
+ *  null). */
+const LLM_HOST_BEARER = "lmh-dummy";
+
 /** One fetch with an abort timeout; Error on ANY failure. */
 async function llmHostFetch<T>(
   path: string,
@@ -21,6 +27,10 @@ async function llmHostFetch<T>(
   try {
     const res = await fetch(`${LLM_HOST_BASE}${path}`, {
       ...init,
+      headers: {
+        ...(init.headers ?? {}),
+        Authorization: `Bearer ${LLM_HOST_BEARER}`,
+      },
       signal: controller.signal,
     });
     if (!res.ok) {

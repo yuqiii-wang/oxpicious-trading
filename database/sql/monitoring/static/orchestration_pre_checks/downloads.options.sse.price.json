@@ -1,0 +1,18 @@
+{
+  "service": "downloads.options.sse.price",
+  "kind": "fetch",
+  "tables": [
+    {
+      "table": "stats.options_terms",
+      "exchange": "SSE",
+      "code_column": "contract_code"
+    }
+  ],
+  "csv": [
+    {
+      "dir": "temps/sse_options_price",
+      "pattern": "sse_options_price_{date}.csv"
+    }
+  ],
+  "notes": "SSE options daily price → builds.options (its SSE gate reads stats.options_terms WHERE exchange = 'SSE'). options_identity is streamer-pre-seeded and is not the signal."
+}

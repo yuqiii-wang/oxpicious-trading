@@ -14,7 +14,7 @@
     "add_random_param": true,
     "enable_host_tracking": true,
     "host_block_cooldown_sec": null,
-    "notes": "SSE trade stats (query.sse.com.cn) — one request per stock per nightly sweep; pacing mirrors downloads.stock.sse.trend_pe's trade_stats row (the archive module's former trade_stats row).",
+    "notes": "SSE trade stats (query.sse.com.cn) — one request per stock per nightly sweep; pacing mirrors downloads.stock.sse.pe's trade_stats row (the archive module's former trade_stats row).",
     "source_ref": "downloads/stock/sse/pe_latest/__main__.py",
     "updated_at": "2026-11-20T12:00:00.000000+00:00"
   },
@@ -40,7 +40,7 @@
       "sse_company_referer": "http://www.sse.com.cn/assortment/stock/list/info/turnover/index.shtml",
       "referer": "https://www.sse.com.cn/market/price/trends/"
     },
-    "notes": "URL carrier mirroring downloads.stock.sse.trend_pe's rows — the PE fetch helpers themselves resolve endpoints from the trend_pe module's service_urls constants (re-homed from the archive module 2026-11-20); this row keeps the (service, default) lookup resolvable. Pacing mirrors the trend_pe trade_stats row.",
+    "notes": "URL carrier mirroring the PE service's (downloads.stock.sse.pe) rows — the PE fetch helpers themselves resolve endpoints from the pe module's service_urls constants (re-homed from the archive module 2026-11-20); this row keeps the (service, default) lookup resolvable. Pacing mirrors the pe trade_stats row.",
     "source_ref": "downloads/stock/sse/pe_latest/__main__.py",
     "updated_at": "2026-11-20T12:00:00.000000+00:00"
   }

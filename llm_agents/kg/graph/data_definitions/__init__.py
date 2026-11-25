@@ -13,6 +13,8 @@ _EXPORTS = {
     "KgEntity": "kg_entity",
     "ScoredNode": "scored_node",
     "SearchResult": "search_result",
+    "SearchTrace": "search_trace",
+    "ResolvedToken": "resolved_token",
     "SeedHit": "seed_hit",
     "WalkHit": "walk_hit",
 }

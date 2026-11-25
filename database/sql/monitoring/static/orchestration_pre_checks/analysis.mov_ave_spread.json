@@ -1,0 +1,10 @@
+{
+  "service": "analysis.mov_ave_spread",
+  "kind": "derive",
+  "tables": [
+    {
+      "table": "analysis.mov_ave_momentum"
+    }
+  ],
+  "notes": "Presence = the session in analysis.mov_ave_momentum (per-session dense over the study indices). mov_ave_price_vs_amt reads the same sessions but costs seconds cold (16 hash partitions, no date-prunable index), so it is not a second slice."
+}

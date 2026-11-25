@@ -1,0 +1,10 @@
+{
+  "service": "builds.cross_stats",
+  "kind": "derive",
+  "tables": [
+    {
+      "table": "stats.cross_stats_dates"
+    }
+  ],
+  "notes": "DB-only. Presence = stats.cross_stats_dates — the build's own gate (index dates minus the computed ones)."
+}

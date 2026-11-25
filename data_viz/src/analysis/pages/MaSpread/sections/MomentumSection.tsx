@@ -12,6 +12,7 @@
  */
 import { Box, Chip, Typography } from "@mui/material";
 import { REGIME_LABELS } from "@/shared/charts/regimeBands";
+import { fmtDate } from "@/shared/datetime";
 import type { MovAveSpreadMomentumDay } from "@shared/types";
 import { SectionLabel } from "../SectionLabel";
 import {
@@ -76,7 +77,7 @@ export function MomentumSection({
               color="text.secondary"
               sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
             >
-              momentum = price[t]/price[t−n] − 1 · latest {last.date}:{" "}
+              momentum = price[t]/price[t−n] − 1 · latest {fmtDate(last.date)}:{" "}
               {REGIME_LABELS[last.regime]} ({vol}
               short {last.lb_short}d · mid {last.lb_mid}d · long{" "}
               {last.lb_long}d — lookbacks adapt to the regime's median
